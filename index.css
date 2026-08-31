@@ -1,0 +1,246 @@
+@import "tailwindcss";
+
+/* Native Mobile App Touch & Scroll Engine */
+html {
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  -webkit-overflow-scrolling: touch;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Momentum scroll support for all scrollable containers & dialogs */
+.overflow-y-auto,
+.overflow-x-auto,
+.overflow-auto,
+[data-scroll-container],
+.modal-body,
+.scroll-touch {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  overscroll-behavior-y: contain;
+}
+
+/* Horizontal momentum scrolling with scroll snapping support */
+.horizontal-scroll-touch {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
+  touch-action: pan-x pan-y pinch-zoom;
+}
+
+/* Prevent rubber-banding on fixed overlays / modals */
+.modal-backdrop,
+.fixed.inset-0 {
+  overscroll-behavior: contain;
+}
+
+/* Subtle modern scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 150, 150, 0.45);
+}
+
+/* Custom Typography & Font Presets */
+.font-editorial-heading {
+  font-family: 'Cormorant Garamond', 'Playfair Display', Georgia, serif !important;
+}
+.font-editorial-body {
+  font-family: 'Newsreader', Georgia, serif !important;
+}
+
+.font-minimal-heading {
+  font-family: 'Outfit', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif !important;
+}
+.font-minimal-body {
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif !important;
+}
+
+.font-academy-heading {
+  font-family: 'Playfair Display', Georgia, serif !important;
+}
+.font-academy-body {
+  font-family: 'DM Sans', system-ui, -apple-system, sans-serif !important;
+}
+
+.font-scrapbook-heading {
+  font-family: 'Caveat', cursive, sans-serif !important;
+}
+.font-scrapbook-body {
+  font-family: 'DM Sans', system-ui, -apple-system, sans-serif !important;
+}
+
+.font-tech-heading {
+  font-family: 'Space Grotesk', system-ui, monospace !important;
+}
+.font-tech-body {
+  font-family: 'JetBrains Mono', monospace !important;
+}
+
+.font-handwriting {
+  font-family: 'Caveat', cursive !important;
+}
+
+/* =========================================================================
+   6 ATMOSPHERIC THEME TEXTURES & VISUAL SYSTEMS
+   ========================================================================= */
+
+/* 1. Midnight Cinema: 35mm Film Grain & Projector Vignette */
+.theme-texture-midnight {
+  background-color: #070913;
+  background-image: 
+    radial-gradient(circle at 50% 0%, rgba(212, 175, 55, 0.12) 0%, transparent 60%),
+    radial-gradient(circle at 10% 40%, rgba(30, 58, 138, 0.15) 0%, transparent 50%),
+    radial-gradient(circle at 90% 80%, rgba(217, 119, 6, 0.08) 0%, transparent 50%),
+    linear-gradient(to bottom, #070913, #0b1122 50%, #060810);
+  position: relative;
+}
+.theme-texture-midnight::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+}
+
+/* 2. Heritage Noir: Museum Archival Sepia, Charcoal & Gold Leaf */
+.theme-texture-heritage {
+  background-color: #100d0a;
+  background-image: 
+    radial-gradient(circle at 50% -10%, rgba(229, 193, 88, 0.14) 0%, transparent 55%),
+    radial-gradient(circle at 85% 30%, rgba(180, 83, 9, 0.1) 0%, transparent 50%),
+    radial-gradient(circle at 15% 70%, rgba(120, 53, 15, 0.08) 0%, transparent 60%),
+    linear-gradient(to bottom, #100d0a, #18130f 40%, #0d0a08);
+  position: relative;
+}
+.theme-texture-heritage::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+}
+
+/* 3. Aurora Liquid Glass: VisionOS Frosted Specular Refraction */
+.theme-texture-aurora {
+  background-color: #040714;
+  background-image: 
+    radial-gradient(circle at 20% 10%, rgba(56, 189, 248, 0.18) 0%, transparent 45%),
+    radial-gradient(circle at 80% 25%, rgba(168, 85, 247, 0.18) 0%, transparent 45%),
+    radial-gradient(circle at 50% 60%, rgba(52, 211, 153, 0.12) 0%, transparent 50%),
+    radial-gradient(circle at 15% 85%, rgba(99, 102, 241, 0.15) 0%, transparent 50%),
+    linear-gradient(180deg, #040714 0%, #080f24 50%, #030612 100%);
+  position: relative;
+}
+
+/* 4. Paper & Polaroids: Tactile Linen Cream Scrapbook */
+.theme-texture-paper {
+  background-color: #fbf8f1;
+  background-image: 
+    radial-gradient(circle at 50% 0%, rgba(217, 119, 6, 0.06) 0%, transparent 60%),
+    radial-gradient(circle at 100% 100%, rgba(194, 65, 12, 0.05) 0%, transparent 50%),
+    linear-gradient(to bottom, #fbf8f1, #f4eee2 50%, #ebe2d2);
+  position: relative;
+}
+.theme-texture-paper::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+}
+
+/* 5. Neon Afterglow: Cyberpunk Tokyo Grid & High-Voltage Bloom */
+.theme-texture-neon {
+  background-color: #06060a;
+  background-image: 
+    radial-gradient(circle at 20% 0%, rgba(0, 240, 255, 0.15) 0%, transparent 50%),
+    radial-gradient(circle at 80% 30%, rgba(255, 0, 127, 0.16) 0%, transparent 55%),
+    radial-gradient(circle at 50% 80%, rgba(168, 85, 247, 0.12) 0%, transparent 50%),
+    linear-gradient(to bottom, #06060a, #0d0d16 50%, #050508);
+  position: relative;
+}
+.theme-texture-neon::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.05;
+  background-size: 40px 40px;
+  background-image: 
+    linear-gradient(to right, rgba(0, 240, 255, 0.4) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 0, 127, 0.4) 1px, transparent 1px);
+}
+
+/* 6. Forest Chronicle: Pacific Northwest Evergreen Canopy & Copper Foil */
+.theme-texture-forest {
+  background-color: #05130b;
+  background-image: 
+    radial-gradient(circle at 50% -10%, rgba(16, 185, 129, 0.14) 0%, transparent 50%),
+    radial-gradient(circle at 10% 40%, rgba(217, 119, 6, 0.12) 0%, transparent 45%),
+    radial-gradient(circle at 85% 75%, rgba(5, 150, 105, 0.12) 0%, transparent 50%),
+    linear-gradient(to bottom, #05130b, #0c2417 40%, #06140c);
+  position: relative;
+}
+.theme-texture-forest::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+}
+
+/* Washi Tape Accent for Paper & Polaroids */
+.washi-tape-top {
+  position: relative;
+}
+.washi-tape-top::after {
+  content: "";
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%) rotate(-1deg);
+  width: 90px;
+  height: 24px;
+  background: rgba(235, 180, 140, 0.65);
+  backdrop-filter: blur(2px);
+  border-left: 2px dashed rgba(0, 0, 0, 0.15);
+  border-right: 2px dashed rgba(0, 0, 0, 0.15);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  pointer-events: none;
+  z-index: 20;
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
