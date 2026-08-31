@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient (Deep Midnight Navy) -->
+    <radialGradient id="spaceBg" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#0a1226" />
+      <stop offset="60%" stop-color="#050a17" />
+      <stop offset="100%" stop-color="#02050c" />
+    </radialGradient>
+
+    <!-- Golden Pin Gradient -->
+    <linearGradient id="goldPinGrad" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#ffe853" />
+      <stop offset="25%" stop-color="#ffca18" />
+      <stop offset="70%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#d97706" />
+    </linearGradient>
+
+    <!-- Soft Rim Highlight Gradient -->
+    <linearGradient id="rimGlow" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#fffbeb" stop-opacity="0.9" />
+      <stop offset="40%" stop-color="#fef08a" stop-opacity="0.4" />
+      <stop offset="100%" stop-color="#b45309" stop-opacity="0.1" />
+    </linearGradient>
+
+    <!-- Star Glow Radial -->
+    <radialGradient id="starAura" cx="50%" cy="40%" r="50%">
+      <stop offset="0%" stop-color="#fffbeb" stop-opacity="1" />
+      <stop offset="25%" stop-color="#fde047" stop-opacity="0.9" />
+      <stop offset="60%" stop-color="#f59e0b" stop-opacity="0.4" />
+      <stop offset="100%" stop-color="#050a17" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Center Star Beam Gradient -->
+    <linearGradient id="starBeamGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="30%" stop-color="#fff5a5" />
+      <stop offset="70%" stop-color="#fbbf24" />
+      <stop offset="100%" stop-color="#d97706" />
+    </linearGradient>
+
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    
+    <filter id="pinShadow" x="-10%" y="-5%" width="120%" height="115%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.6" />
+    </filter>
+  </defs>
+
+  <!-- Canvas Base (Optional rounded frame or transparent) -->
+  <rect width="512" height="512" rx="112" fill="url(#spaceBg)" />
+
+  <!-- Outer Map Pin Shadow and Shape -->
+  <g filter="url(#pinShadow)">
+    <!-- Main Location Pin Body -->
+    <path d="M 256 36
+             C 142 36, 52 126, 52 240
+             C 52 328, 148 418, 242 486
+             C 250 492, 262 492, 270 486
+             C 364 418, 460 328, 460 240
+             C 460 126, 370 36, 256 36 Z" 
+          fill="url(#goldPinGrad)" />
+
+    <!-- Inner Edge Bevel / Rim Contour Highlight -->
+    <path d="M 256 40
+             C 145 40, 56 128, 56 240
+             C 56 326, 150 414, 244 482
+             C 251 487, 261 487, 268 482
+             C 362 414, 456 326, 456 240
+             C 456 128, 367 40, 256 40 Z" 
+          fill="none" stroke="url(#rimGlow)" stroke-width="4" />
+
+    <!-- Circular Dark Inner Aperture Window -->
+    <circle cx="256" cy="226" r="140" fill="#060c1d" stroke="#d97706" stroke-width="2" />
+  </g>
+
+  <!-- Ambient Light Pulse Inside Circle -->
+  <circle cx="256" cy="226" r="120" fill="url(#starAura)" />
+
+  <!-- Central Radiant 4-Point Memory Star -->
+  <g filter="url(#softGlow)">
+    <!-- Radiant 4-Point Geometric Star -->
+    <path d="M 256 102
+             Q 256 226, 374 226
+             Q 256 226, 256 350
+             Q 256 226, 138 226
+             Q 256 226, 256 102 Z"
+          fill="url(#starBeamGrad)" />
+
+    <!-- Pure White Central Specular Core -->
+    <ellipse cx="256" cy="226" rx="14" ry="14" fill="#ffffff" />
+    <ellipse cx="256" cy="226" rx="6" ry="6" fill="#fffbeb" />
+  </g>
+</svg>
