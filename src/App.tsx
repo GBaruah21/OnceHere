@@ -14,6 +14,7 @@ import { DemoSelectorModal } from './components/common/DemoSelectorModal';
 import { KeyAccessModal } from './components/common/KeyAccessModal';
 import { ArchiveEditor } from './components/editor/ArchiveEditor';
 import { ArchivePublicView } from './components/archive/ArchivePublicView';
+import { OwnerTools } from './components/owner/OwnerTools';
 import { SessionStorage } from './lib/security';
 import { AlertCircle, Lock, ArrowLeft } from 'lucide-react';
 
@@ -27,6 +28,8 @@ export default function App() {
   // Platform data
   const [allArchives, setAllArchives] = useState<Archive[]>([]);
   const [loadingArchives, setLoadingArchives] = useState(true);
+  const [platformAdminKey, setPlatformAdminKey] = useState('');
+  const isPlatformAdminMode = new URLSearchParams(window.location.search).get('owner') === '1';
 
   // Active Loaded Archive & Sub-entities (for workspace or public view)
   const [activeArchiveData, setActiveArchiveData] = useState<{
@@ -71,6 +74,14 @@ export default function App() {
 
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+
+  // The admin page is intentionally unlinked. The key is never stored in the
+  // browser; it is kept only in memory for this one management session.
+  useEffect(() => {
+    if (!isPlatformAdminMode) return;
+    const key = window.prompt('Enter the private OnceHere owner key:');
+    if (key) setPlatformAdminKey(key);
+  }, [isPlatformAdminMode]);
 
   // Fetch all public archives for exploration
   const fetchArchives = async () => {
@@ -167,6 +178,24 @@ export default function App() {
   const handleOpenCreateWithTheme = (themeId: ThemeId) => {
     setCreationInitialTheme(themeId);
     setIsCreateModalOpen(true);
+  };
+
+  const handlePlatformArchiveDelete = async (archive: Archive) => {
+    if (!platformAdminKey) return;
+    const approved = window.confirm(`Delete "${archive.title}" permanently from the public platform? This cannot be undone.`);
+    if (!approved) return;
+
+    try {
+      const response = await fetch(`/api/admin/archives/${archive.id}`, {
+        method: 'DELETE',
+        headers: { 'x-platform-admin-key': platformAdminKey }
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to delete archive.');
+      await fetchArchives();
+    } catch (error: any) {
+      window.alert(error.message || 'Unable to delete archive.');
+    }
   };
 
   // 1. WORKSPACE STUDIO MODE
@@ -323,6 +352,13 @@ export default function App() {
   }
 
   // 3. MAIN ONCEHERE PLATFORM LANDING PAGE
+  if (isPlatformAdminMode) {
+    if (platformAdminKey) {
+      return <OwnerTools ownerKey={platformAdminKey} onClose={() => { window.location.href = '/'; }} />;
+    }
+    return <div className="min-h-screen bg-neutral-950 text-white flex items-center justify-center p-6 text-center"><div><h1 className="font-serif text-2xl font-bold">Owner access locked</h1><p className="text-sm text-neutral-400 mt-2">Reload this private page and enter the correct owner key.</p></div></div>;
+  }
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col justify-between selection:bg-amber-400 selection:text-neutral-950">
       
@@ -375,6 +411,8 @@ export default function App() {
             }
           }}
           onCreateClick={() => setIsCreateModalOpen(true)}
+          isPlatformAdmin={Boolean(platformAdminKey)}
+          onDeleteArchive={handlePlatformArchiveDelete}
         />
 
       </main>

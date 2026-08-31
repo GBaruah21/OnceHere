@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Search, Compass, ExternalLink, Users, Calendar, Sparkles } from 'lucide-react';
+import { Search, Compass, ExternalLink, Users, Calendar, Trash2 } from 'lucide-react';
 import { Archive, ArchiveType } from '../../types';
 import { THEMES } from '../../config/themes';
 
@@ -8,12 +8,16 @@ interface ExploreArchivesSectionProps {
   archives: Archive[];
   onSelectArchive: (archive: Archive) => void;
   onCreateClick: () => void;
+  onDeleteArchive?: (archive: Archive) => void;
+  isPlatformAdmin?: boolean;
 }
 
 export const ExploreArchivesSection: React.FC<ExploreArchivesSectionProps> = ({
   archives,
   onSelectArchive,
-  onCreateClick
+  onCreateClick,
+  onDeleteArchive,
+  isPlatformAdmin = false
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedType, setSelectedType] = useState<string>('all');
@@ -150,10 +154,25 @@ export const ExploreArchivesSection: React.FC<ExploreArchivesSectionProps> = ({
                       <span>{archive.membersCount ?? archive.approxPeopleCount ? `${archive.membersCount ?? archive.approxPeopleCount} Yearbook Members` : 'Class Archive'}</span>
                     </div>
 
-                    <span className="inline-flex items-center gap-1 font-semibold text-amber-400 group-hover:translate-x-1 transition-transform">
-                      <span>View Archive</span>
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </span>
+                    <div className="flex items-center gap-3">
+                      {isPlatformAdmin && onDeleteArchive && !archive.id.startsWith('demo-') && (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onDeleteArchive(archive);
+                          }}
+                          className="inline-flex items-center gap-1 text-rose-300 hover:text-rose-200 font-semibold"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Delete</span>
+                        </button>
+                      )}
+                      <span className="inline-flex items-center gap-1 font-semibold text-amber-400 group-hover:translate-x-1 transition-transform">
+                        <span>View Archive</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </span>
+                    </div>
                   </div>
                 </motion.div>
               );

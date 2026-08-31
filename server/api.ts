@@ -28,6 +28,11 @@ import { analyzeMemoryImage } from './ai';
 export const apiRouter = express.Router();
 apiRouter.use(express.json({ limit: '25mb' }));
 
+function hasPlatformAdminAccess(req: Request) {
+  const adminKey = process.env.PLATFORM_ADMIN_KEY;
+  return Boolean(adminKey && req.header('x-platform-admin-key') === adminKey);
+}
+
 // Supabase is loaded before a route reads state. Responses wait for their
 // snapshot to be saved, so a successful edit is durable before the browser is
 // told that it succeeded.
@@ -249,6 +254,27 @@ apiRouter.post('/archives', (req: Request, res: Response) => {
 apiRouter.get('/archives', (_req: Request, res: Response) => {
   const archives = db.listPublicArchives().map(sanitizeArchive);
   return res.json({ archives });
+});
+
+apiRouter.get('/platform-settings', (_req: Request, res: Response) => {
+  return res.json({ settings: db.getPlatformSettings() });
+});
+
+apiRouter.get('/admin/archives', (req: Request, res: Response) => {
+  if (!hasPlatformAdminAccess(req)) return res.status(403).json({ error: 'Platform owner access required.' });
+  const archives = Array.from(db.archives.values())
+    .filter((archive) => !archive.deletedAt)
+    .map(sanitizeArchive);
+  return res.json({ archives });
+});
+
+apiRouter.put('/admin/platform-settings', (req: Request, res: Response) => {
+  if (!hasPlatformAdminAccess(req)) return res.status(403).json({ error: 'Platform owner access required.' });
+  const { instagram, email, displayHandle } = req.body || {};
+  if (instagram !== undefined && (typeof instagram !== 'string' || instagram.length > 300)) return res.status(400).json({ error: 'Instagram link is invalid.' });
+  if (email !== undefined && (typeof email !== 'string' || email.length > 160)) return res.status(400).json({ error: 'Email is invalid.' });
+  if (displayHandle !== undefined && (typeof displayHandle !== 'string' || displayHandle.length > 80)) return res.status(400).json({ error: 'Display handle is invalid.' });
+  return res.json({ settings: db.updatePlatformSettings({ instagram, email, displayHandle }) });
 });
 
 // Lookup archive by public slug OR workspace slug
@@ -540,6 +566,28 @@ apiRouter.delete('/archives/:id', (req: Request, res: Response) => {
 
   const success = db.deleteArchive(id);
   return res.json({ success });
+});
+
+// Platform-owner deletion. This is intentionally separate from archive-owner
+// deletion: only the private Render environment variable can authorize it.
+apiRouter.delete('/admin/archives/:id', (req: Request, res: Response) => {
+  if (!process.env.PLATFORM_ADMIN_KEY) {
+    return res.status(503).json({ error: 'Platform admin access has not been configured.' });
+  }
+  if (!hasPlatformAdminAccess(req)) {
+    return res.status(403).json({ error: 'Platform owner access required.' });
+  }
+
+  const success = db.deleteArchive(req.params.id);
+  if (!success) return res.status(404).json({ error: 'Archive not found.' });
+  return res.json({ success: true });
+});
+
+apiRouter.post('/admin/archives/:id/unpublish', (req: Request, res: Response) => {
+  if (!hasPlatformAdminAccess(req)) return res.status(403).json({ error: 'Platform owner access required.' });
+  const archive = db.updateArchive(req.params.id, { deploymentStatus: 'unpublished' }, 'owner');
+  if (!archive) return res.status(404).json({ error: 'Archive not found.' });
+  return res.json({ success: true, archive: sanitizeArchive(archive) });
 });
 
 // ==========================================

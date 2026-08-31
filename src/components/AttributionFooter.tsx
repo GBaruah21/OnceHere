@@ -18,6 +18,13 @@ interface AttributionFooterProps {
 export const AttributionFooter: React.FC<AttributionFooterProps> = ({ themeId, className = '' }) => {
   const theme = getTheme(themeId);
   const [copiedEmail, setCopiedEmail] = useState(false);
+  const [contact, setContact] = useState({ instagram: PLATFORM_CONFIG.author.instagram, email: PLATFORM_CONFIG.author.email, displayHandle: PLATFORM_CONFIG.author.displayHandle });
+
+  React.useEffect(() => {
+    fetch('/api/platform-settings').then((response) => response.json()).then((data) => {
+      if (data.settings) setContact((current) => ({ ...current, ...data.settings }));
+    }).catch(() => {});
+  }, []);
 
   // Dynamic styling based on theme
   const isLight = themeId === 'paper-polaroids';
@@ -28,7 +35,7 @@ export const AttributionFooter: React.FC<AttributionFooterProps> = ({ themeId, c
 
   const handleEmailClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     // Copy email to clipboard to ensure 100% utility if mailto: is blocked by iframe sandboxes
-    const rawEmail = PLATFORM_CONFIG.author.email.replace('mailto:', '');
+    const rawEmail = contact.email.replace('mailto:', '');
     navigator.clipboard?.writeText(rawEmail).catch(() => {});
     setCopiedEmail(true);
     setTimeout(() => setCopiedEmail(false), 2500);
@@ -36,7 +43,7 @@ export const AttributionFooter: React.FC<AttributionFooterProps> = ({ themeId, c
 
   const handleInstagramClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
-    window.open(PLATFORM_CONFIG.author.instagram, '_blank', 'noopener,noreferrer');
+    window.open(contact.instagram, '_blank', 'noopener,noreferrer');
   };
 
   const handleCreateClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
@@ -62,14 +69,14 @@ export const AttributionFooter: React.FC<AttributionFooterProps> = ({ themeId, c
           <span>
             {PLATFORM_CONFIG.attribution.builtByText}{' '}
             <a
-              href={PLATFORM_CONFIG.author.instagram}
+              href={contact.instagram}
               onClick={handleInstagramClick}
               target="_blank"
               rel="noopener noreferrer"
               className={`underline underline-offset-4 font-semibold transition-colors cursor-pointer ${linkHoverClass}`}
               title="Visit @_g.baruah_ on Instagram"
             >
-              {PLATFORM_CONFIG.author.displayHandle}
+              {contact.displayHandle}
             </a>
           </span>
         </div>
@@ -87,7 +94,7 @@ export const AttributionFooter: React.FC<AttributionFooterProps> = ({ themeId, c
           <span className="opacity-40 select-none">·</span>
 
           <a
-            href={PLATFORM_CONFIG.author.instagram}
+            href={contact.instagram}
             onClick={handleInstagramClick}
             target="_blank"
             rel="noopener noreferrer"
@@ -106,7 +113,7 @@ export const AttributionFooter: React.FC<AttributionFooterProps> = ({ themeId, c
 
           <div className="relative inline-flex items-center">
             <a
-              href={PLATFORM_CONFIG.author.email}
+              href={contact.email.startsWith('mailto:') ? contact.email : `mailto:${contact.email}`}
               onClick={handleEmailClick}
               className={`inline-flex items-center gap-1.5 transition-colors underline-offset-2 hover:underline cursor-pointer ${linkHoverClass}`}
               title="Send email to workwithgitam@gmail.com (copies to clipboard)"

@@ -33,6 +33,7 @@ class MemoryDatabase {
   accessLogs: Map<string, AccessHistoryEntry[]> = new Map(); // archiveId -> access logs
   sessions: Map<string, UserSession> = new Map(); // token -> session
   rateLimits: Map<string, { attempts: number; firstAttemptAt: number; lockedUntil?: number }> = new Map();
+  platformSettings: { instagram?: string; email?: string; displayHandle?: string } = {};
   private loadedFromStorage = false;
   private loadingPromise?: Promise<void>;
   private writeQueue: Promise<void> = Promise.resolve();
@@ -60,7 +61,8 @@ class MemoryDatabase {
       revisions: Array.from(this.revisions.entries()),
       accessLogs: Array.from(this.accessLogs.entries()),
       sessions: Array.from(this.sessions.entries()),
-      rateLimits: Array.from(this.rateLimits.entries())
+      rateLimits: Array.from(this.rateLimits.entries()),
+      platformSettings: this.platformSettings
     };
   }
 
@@ -81,6 +83,18 @@ class MemoryDatabase {
     this.accessLogs = this.restoreMap<AccessHistoryEntry[]>(snapshot.accessLogs);
     this.sessions = this.restoreMap<UserSession>(snapshot.sessions);
     this.rateLimits = this.restoreMap<{ attempts: number; firstAttemptAt: number; lockedUntil?: number }>(snapshot.rateLimits);
+    this.platformSettings = snapshot.platformSettings && typeof snapshot.platformSettings === 'object'
+      ? snapshot.platformSettings as { instagram?: string; email?: string; displayHandle?: string }
+      : {};
+  }
+
+  getPlatformSettings() {
+    return { ...this.platformSettings };
+  }
+
+  updatePlatformSettings(settings: { instagram?: string; email?: string; displayHandle?: string }) {
+    this.platformSettings = { ...this.platformSettings, ...settings };
+    return this.getPlatformSettings();
   }
 
   /** Loads the durable state once per server start, before any API route runs. */
