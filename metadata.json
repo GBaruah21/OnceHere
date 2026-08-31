@@ -1,0 +1,8 @@
+{
+  "name": "OnceHere",
+  "description": "Create a ever lasting digital home for the people, moments and ordinary days that became unforgettable. Bring your photographs, stories, timelines and messages together in one beautiful archive—made to be shared, revisited and carried forward forever.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
