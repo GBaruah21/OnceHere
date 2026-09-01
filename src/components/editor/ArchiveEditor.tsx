@@ -83,6 +83,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
 
   // Modals
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false);
+  const [deployModalInitialTab, setDeployModalInitialTab] = useState<'configure' | 'preview'>('configure');
   const [isRevisionsModalOpen, setIsRevisionsModalOpen] = useState(false);
   const [isAccessHistoryModalOpen, setIsAccessHistoryModalOpen] = useState(false);
   const [isImageAnalyzerOpen, setIsImageAnalyzerOpen] = useState(false);
@@ -117,6 +118,26 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
     return () => clearTimeout(timer);
   }, [archive, ownerToken]);
 
+  const handleUpdateSections = async (updated: Section[]) => {
+    setSections(updated);
+    setSaveStatus('saving');
+
+    try {
+      const response = await fetch(`/api/archives/${archive.id}/sections`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken || ''}`
+        },
+        body: JSON.stringify({ sections: updated })
+      });
+
+      setSaveStatus(response.ok ? 'saved' : 'error');
+    } catch {
+      setSaveStatus('error');
+    }
+  };
+
   // Section operations
   const handleMoveSection = (index: number, direction: 'up' | 'down') => {
     const newIdx = direction === 'up' ? index - 1 : index + 1;
@@ -126,31 +147,12 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
     const [moved] = list.splice(index, 1);
     list.splice(newIdx, 0, moved);
     const updated = list.map((s, i) => ({ ...s, position: i }));
-    setSections(updated);
-
-    // Save sections to server
-    fetch(`/api/archives/${archive.id}/sections`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ownerToken || ''}`
-      },
-      body: JSON.stringify({ sections: updated })
-    });
+    void handleUpdateSections(updated);
   };
 
   const handleToggleSectionVisibility = (sectionId: string) => {
     const updated = sections.map((s) => (s.id === sectionId ? { ...s, isVisible: !s.isVisible } : s));
-    setSections(updated);
-
-    fetch(`/api/archives/${archive.id}/sections`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ownerToken || ''}`
-      },
-      body: JSON.stringify({ sections: updated })
-    });
+    void handleUpdateSections(updated);
   };
 
   // Sub-entity mutations
@@ -359,9 +361,25 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
             <span className="hidden md:inline">Revisions</span>
           </button>
 
+          <button
+            type="button"
+            onClick={() => {
+              setDeployModalInitialTab('preview');
+              setIsDeployModalOpen(true);
+            }}
+            className="p-2 rounded-xl text-amber-200 hover:text-white bg-amber-400/10 hover:bg-amber-400/20 border border-amber-400/30 text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+            title="Open Full Live Preview"
+          >
+            <Eye className="w-4 h-4 text-amber-400" />
+            <span className="hidden md:inline">Live Preview</span>
+          </button>
+
           {/* Primary Deployment Action */}
           <button
-            onClick={() => setIsDeployModalOpen(true)}
+            onClick={() => {
+              setDeployModalInitialTab('configure');
+              setIsDeployModalOpen(true);
+            }}
             id="open-deploy-modal-btn"
             className="px-3 sm:px-5 py-2 rounded-xl text-xs sm:text-sm font-semibold text-neutral-950 bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-300 hover:brightness-110 shadow-lg shadow-amber-500/20 active:scale-95 transition-all flex items-center gap-1.5 sm:gap-2 cursor-pointer"
           >
@@ -534,6 +552,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
         {/* CENTER: Live Interactive Preview Stage */}
         <main
           id="editor-preview-stage"
+          data-archive-preview-scroll
           className={`flex-1 bg-neutral-950 flex-col items-center justify-start overflow-y-auto p-2 sm:p-4 lg:p-6 custom-scrollbar scroll-smooth overscroll-contain ${
             mobileStudioTab === 'preview' ? 'flex' : 'hidden lg:flex'
           }`}
@@ -661,7 +680,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
             ownerToken={ownerToken}
             onOpenAccessHistory={() => setIsAccessHistoryModalOpen(true)}
             onUpdateArchive={(up) => setArchive({ ...archive, ...up })}
-            onUpdateSections={setSections}
+            onUpdateSections={(updated) => void handleUpdateSections(updated)}
             onAddTimelineEvent={handleAddTimelineEvent}
             onDeleteTimelineEvent={handleDeleteTimelineEvent}
             onAddMember={handleAddMember}
@@ -689,6 +708,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
       <DeployModal
         isOpen={isDeployModalOpen}
         onClose={() => setIsDeployModalOpen(false)}
+        initialTab={deployModalInitialTab}
         archive={archive}
         sections={sections}
         timeline={timeline}

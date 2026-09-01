@@ -231,7 +231,10 @@ class MemoryDatabase {
 
   listPublicArchives(): Archive[] {
     return Array.from(this.archives.values()).filter(
-      (a) => !a.deletedAt && (a.deploymentStatus === 'deployed' || a.id.startsWith('demo-')) && a.visibility === 'public'
+      (a) => !a.deletedAt
+        && !a.isHiddenFromExplore
+        && (a.deploymentStatus === 'deployed' || a.id.startsWith('demo-'))
+        && a.visibility === 'public'
     );
   }
 

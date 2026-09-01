@@ -89,6 +89,8 @@ interface ArchivePublicViewProps {
   onAddWallPost?: (post: WallPost) => void;
   onDeleteWallPost?: (postId: string) => void;
   onToggleHideWallPost?: (postId: string, isHidden: boolean) => void;
+  /** Platform-owner inspection mode. Navigation works, mutations do not. */
+  readOnly?: boolean;
 }
 
 interface HeroSectionProps {
@@ -303,9 +305,29 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   onUpdateArchive,
   onAddWallPost,
   onDeleteWallPost,
-  onToggleHideWallPost
+  onToggleHideWallPost,
+  readOnly = false
 }) => {
   const theme = THEMES[archive.themeId] || THEMES['midnight-cinema'];
+  const viewRootRef = useRef<HTMLDivElement>(null);
+
+  const findElementInView = (id: string) =>
+    viewRootRef.current?.querySelector<HTMLElement>(`#${id}`) || null;
+
+  const scrollViewToTop = () => {
+    const heroEl = findElementInView('section-hero');
+    if (heroEl) {
+      heroEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+
+    const previewScroller = viewRootRef.current?.closest<HTMLElement>('[data-archive-preview-scroll]');
+    if (previewScroller) {
+      previewScroller.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
 
   // 1. Scroll Progress Hook & Spring Physics
   const { scrollYProgress } = useScroll();
@@ -327,10 +349,10 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
     const targetSec = (sections || []).find((s) => s.id === focusedSectionId);
     const targetType = targetSec ? targetSec.stableType : focusedSectionId.replace('section-', '');
     const el =
-      document.getElementById(`section-${targetType}`) ||
-      document.getElementById(`section-${focusedSectionId}`) ||
-      document.getElementById(focusedSectionId) ||
-      document.getElementById(targetType);
+      findElementInView(`section-${targetType}`) ||
+      findElementInView(`section-${focusedSectionId}`) ||
+      findElementInView(focusedSectionId) ||
+      findElementInView(targetType);
 
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -352,8 +374,8 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
     (archive.slug && ['sistec-batch-2026', 'riverdale-tech-2026', 'marys-convent-2025', 'st-thomas-2024'].includes(archive.slug)) ||
     archive.slug?.startsWith('demo-')
   );
-  const isEditorOrCreator = Boolean(isPreviewMode || ownerToken || isDemoArchive);
-  const canChangeTypography = isDemoArchive || isEditorOrCreator;
+  const isEditorOrCreator = !readOnly && Boolean(isPreviewMode || ownerToken || isDemoArchive);
+  const canChangeTypography = !readOnly && (isDemoArchive || isEditorOrCreator);
 
   const [selectedFontPresetId, setSelectedFontPresetId] = useState<string>(() => {
     if (archive.settings?.fontPresetId) return archive.settings.fontPresetId;
@@ -376,6 +398,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   // Handler for creator/editor/demo font selection
   const handleSelectFontPreset = (presetId: string) => {
+    if (readOnly) return;
     setSelectedFontPresetId(presetId);
     setIsFontSelectorOpen(false);
 
@@ -436,6 +459,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   // Handle posting note to a media photograph with instant optimistic feedback
   const handlePostMediaNote = async (mediaId: string, e: React.FormEvent) => {
     e.preventDefault();
+    if (readOnly) return;
     if (!mediaNoteText.trim()) return;
 
     const author = mediaNoteAuthor.trim() || 'Classmate';
@@ -505,6 +529,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   // Handle deleting a note from a media photograph
   const handleDeleteMediaNote = async (mediaId: string, noteId: string) => {
+    if (readOnly) return;
     setCurrentMediaList((prev) =>
       prev.map((m) => {
         if (m.id === mediaId) {
@@ -630,7 +655,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
     const elements: HTMLElement[] = [];
 
     sectionIds.forEach((id) => {
-      const el = document.getElementById(`section-${id}`);
+      const el = findElementInView(`section-${id}`);
       if (el) elements.push(el);
     });
 
@@ -751,25 +776,19 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
     setActiveNavTab(tabId);
     setActiveScrollSection(tabId);
     if (viewMode === 'focus') {
-      const heroEl = document.getElementById('section-hero') || document.body;
-      heroEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      scrollViewToTop();
     } else {
       const targetType = sectionStableType || tabId;
       const el =
-        document.getElementById(`section-${targetType}`) ||
-        document.getElementById(`section-${tabId}`) ||
-        document.getElementById(targetType) ||
-        document.getElementById(tabId);
+        findElementInView(`section-${targetType}`) ||
+        findElementInView(`section-${tabId}`) ||
+        findElementInView(targetType) ||
+        findElementInView(tabId);
 
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       } else {
-        const previewStage = document.getElementById('editor-preview-stage');
-        if (previewStage) {
-          previewStage.scrollTo({ top: 0, behavior: 'smooth' });
-        } else {
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }
+        scrollViewToTop();
       }
     }
   };
@@ -807,6 +826,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   // Handle Like on Wall Post
   const handleLikePost = async (postId: string) => {
+    if (readOnly) return;
     if (likedPosts.has(postId)) return;
 
     // Optimistic update
@@ -826,6 +846,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   // Submit Note on Wall with immediate optimistic preview + local storage + server sync + smooth scroll to wall
   const handlePostNote = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (readOnly) return;
     if (!newNoteText.trim()) return;
 
     const author = newNoteAuthor.trim() || 'Classmate';
@@ -866,7 +887,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
     // 2. Smoothly scroll directly to the Memory Wall section
     setTimeout(() => {
-      const wallEl = document.getElementById('section-memory-wall');
+      const wallEl = findElementInView('section-memory-wall');
       if (wallEl) {
         wallEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
@@ -932,6 +953,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   // Creator & Editor Moderation: Delete Note Permanently
   const handleDeletePost = async (postId: string) => {
+    if (readOnly) return;
     setWallPosts((prev) => prev.filter((p) => p.id !== postId));
     setDeletingPostId(null);
 
@@ -970,6 +992,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   // Creator & Editor Moderation: Toggle Hide/Unhide Note
   const handleToggleHidePost = async (postId: string, currentHidden: boolean) => {
+    if (readOnly) return;
     const nextHidden = !currentHidden;
 
     setWallPosts((prev) =>
@@ -1100,7 +1123,8 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   return (
     <div
-      className={`min-h-screen w-full transition-colors duration-500 ${themeBg} ${activeFontPreset.bodyClass} relative selection:bg-amber-400 selection:text-neutral-950 overflow-x-hidden`}
+      ref={viewRootRef}
+      className={`min-h-screen w-full transition-colors duration-500 ${themeBg} ${activeFontPreset.bodyClass} relative selection:bg-amber-400 selection:text-neutral-950 overflow-x-hidden ${readOnly ? '[&_form]:hidden' : ''}`}
       style={{ fontFamily: activeFontPreset.bodyFamily }}
     >
       
@@ -1225,17 +1249,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
             href="#section-hero"
             onClick={(e) => {
               e.preventDefault();
-              const heroEl = document.getElementById('section-hero');
-              if (heroEl) {
-                heroEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              } else {
-                const previewStage = document.getElementById('editor-preview-stage');
-                if (previewStage) {
-                  previewStage.scrollTo({ top: 0, behavior: 'smooth' });
-                } else {
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }
-              }
+              scrollViewToTop();
             }}
             data-cursor="hover"
             data-cursor-text="TOP"
@@ -2213,17 +2227,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
               {/* 1. Scroll to Top / Move Up button */}
               <button
                 onClick={() => {
-                  const heroEl = document.getElementById('section-hero');
-                  if (heroEl) {
-                    heroEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                  } else {
-                    const previewStage = document.getElementById('editor-preview-stage');
-                    if (previewStage) {
-                      previewStage.scrollTo({ top: 0, behavior: 'smooth' });
-                    } else {
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }
-                  }
+                  scrollViewToTop();
                   setIsFloatingMenuOpen(false);
                 }}
                 className="w-full flex items-center justify-between gap-3 px-3 py-2 rounded-2xl bg-white/5 hover:bg-white/15 text-neutral-200 hover:text-white transition-all text-xs cursor-pointer group active:scale-98"
@@ -2791,4 +2795,3 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
     </div>
   );
 };
-

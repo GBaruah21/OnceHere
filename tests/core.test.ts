@@ -76,6 +76,19 @@ describe('Database Multi-Tenant Isolation', () => {
     expect(publicArchives.some(a => a.id === 'demo-marys-2025')).toBe(true);
   });
 
+  it('removes archives hidden from Explore without changing deployment status', () => {
+    const archiveId = 'demo-marys-2025';
+    const original = db.archives.get(archiveId)!;
+
+    try {
+      db.archives.set(archiveId, { ...original, isHiddenFromExplore: true });
+      expect(db.listPublicArchives().some((archive) => archive.id === archiveId)).toBe(false);
+      expect(db.archives.get(archiveId)?.deploymentStatus).toBe('deployed');
+    } finally {
+      db.archives.set(archiveId, original);
+    }
+  });
+
   it('maintains separated data stores per archive ID', () => {
     const marysMembers = db.getMembers('demo-marys-2025');
     const riverdaleMembers = db.getMembers('demo-riverdale-2026');
@@ -84,5 +97,21 @@ describe('Database Multi-Tenant Isolation', () => {
     expect(riverdaleMembers.length).toBeGreaterThan(0);
     expect(marysMembers.some(m => m.name === 'Ananya Deshmukh')).toBe(true);
     expect(riverdaleMembers.some(m => m.name === 'Arjun Nambiar')).toBe(true);
+  });
+
+  it('persists timeline layout choices without changing archive content', () => {
+    const archiveId = 'demo-marys-2025';
+    const originalSections = db.getSections(archiveId).map((section) => ({ ...section }));
+    const updatedSections = originalSections.map((section) =>
+      section.stableType === 'timeline' ? { ...section, layout: 'stacked-cards' } : section
+    );
+
+    try {
+      db.setSections(archiveId, updatedSections, 'owner');
+      const savedTimeline = db.getSections(archiveId).find((section) => section.stableType === 'timeline');
+      expect(savedTimeline?.layout).toBe('stacked-cards');
+    } finally {
+      db.setSections(archiveId, originalSections, 'owner');
+    }
   });
 });

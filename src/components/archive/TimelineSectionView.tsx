@@ -72,7 +72,9 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
     const container = sliderScrollRef.current;
     const cards = container.querySelectorAll('.timeline-slider-card');
     if (cards[idx]) {
-      (cards[idx] as HTMLElement).scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+      const card = cards[idx] as HTMLElement;
+      const centeredLeft = card.offsetLeft - (container.clientWidth - card.clientWidth) / 2;
+      container.scrollTo({ left: Math.max(0, centeredLeft), behavior: 'smooth' });
     }
   };
 
@@ -99,6 +101,7 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
     <motion.section
       key={section.id}
       id="section-timeline"
+      data-timeline-layout={layout}
       variants={sectionRevealVariants}
       initial="hidden"
       whileInView="visible"
@@ -470,9 +473,8 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
       {layout === 'stacked-cards' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-8">
           {timeline.map((event, idx) => (
-            <motion.div
+            <div
               key={event.id}
-              variants={staggerCardVariants}
               className={`p-6 sm:p-8 rounded-3xl border ${cardBg} shadow-2xl flex flex-col justify-between space-y-5 relative group hover:border-amber-400/40 transition-all`}
             >
               <div className="space-y-4">
@@ -535,7 +537,7 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
                 <span>Milestone {idx + 1}</span>
                 <span className="text-amber-400/90 font-medium">Archived Memory</span>
               </div>
-            </motion.div>
+            </div>
           ))}
         </div>
       )}

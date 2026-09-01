@@ -28,6 +28,7 @@ import { ArchivePublicView } from '../archive/ArchivePublicView';
 interface DeployModalProps {
   isOpen: boolean;
   onClose: () => void;
+  initialTab?: 'configure' | 'preview';
   archive: Archive;
   sections?: Section[];
   timeline?: TimelineEvent[];
@@ -42,6 +43,7 @@ interface DeployModalProps {
 export const DeployModal: React.FC<DeployModalProps> = ({
   isOpen,
   onClose,
+  initialTab = 'configure',
   archive,
   sections = [],
   timeline = [],
@@ -54,6 +56,10 @@ export const DeployModal: React.FC<DeployModalProps> = ({
 }) => {
   // Active View Tab in Deploy Modal: 'configure' | 'preview'
   const [modalTab, setModalTab] = useState<'configure' | 'preview'>('configure');
+
+  useEffect(() => {
+    if (isOpen) setModalTab(initialTab);
+  }, [isOpen, initialTab]);
 
   // Preview device simulation state
   const [previewViewport, setPreviewViewport] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
@@ -339,7 +345,7 @@ export const DeployModal: React.FC<DeployModalProps> = ({
             </div>
 
             {/* Scrollable Preview Frame Container */}
-            <div className="flex-1 overflow-y-auto p-3 sm:p-6 flex justify-center bg-neutral-950">
+            <div data-archive-preview-scroll className="flex-1 overflow-y-auto p-3 sm:p-6 flex justify-center bg-neutral-950">
               <div
                 className={`w-full transition-all duration-300 rounded-2xl overflow-hidden shadow-2xl border border-white/20 bg-neutral-950 ${
                   previewViewport === 'mobile'
@@ -362,6 +368,7 @@ export const DeployModal: React.FC<DeployModalProps> = ({
                   albums={albums}
                   ownerToken={ownerToken}
                   isPreviewMode={true}
+                  onBackToPlatform={() => setModalTab('configure')}
                 />
               </div>
             </div>

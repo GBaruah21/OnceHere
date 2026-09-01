@@ -93,6 +93,8 @@ export interface Archive {
   viewerPinHash?: string;
   recoveryKeyHash: string;
   deploymentStatus: DeploymentStatus;
+  /** Platform-owner control that removes a public archive from Explore without unpublishing it. */
+  isHiddenFromExplore?: boolean;
   settings: ArchiveSettings;
   publishedAt?: string;
   createdAt: string;

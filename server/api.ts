@@ -268,6 +268,31 @@ apiRouter.get('/admin/archives', (req: Request, res: Response) => {
   return res.json({ archives });
 });
 
+// Read-only platform-owner preview for every archive, including drafts and
+// private/unlisted pages. This never returns owner tokens, PIN hashes,
+// recovery keys, or session credentials.
+apiRouter.get('/admin/archives/:id/preview', (req: Request, res: Response) => {
+  if (!hasPlatformAdminAccess(req)) {
+    return res.status(403).json({ error: 'Platform owner access required.' });
+  }
+
+  const archive = db.findById(req.params.id);
+  if (!archive || archive.deletedAt) {
+    return res.status(404).json({ error: 'Archive not found.' });
+  }
+
+  return res.json({
+    archive: sanitizeArchive(archive),
+    sections: db.getSections(archive.id),
+    timeline: db.getTimelineEvents(archive.id),
+    members: db.getMembers(archive.id),
+    media: db.getMediaItems(archive.id),
+    wall: db.getWallPosts(archive.id),
+    albums: db.getAlbums(archive.id),
+    readOnly: true
+  });
+});
+
 apiRouter.put('/admin/platform-settings', (req: Request, res: Response) => {
   if (!hasPlatformAdminAccess(req)) return res.status(403).json({ error: 'Platform owner access required.' });
   const { instagram, email, displayHandle } = req.body || {};
@@ -588,6 +613,40 @@ apiRouter.post('/admin/archives/:id/unpublish', (req: Request, res: Response) =>
   const archive = db.updateArchive(req.params.id, { deploymentStatus: 'unpublished' }, 'owner');
   if (!archive) return res.status(404).json({ error: 'Archive not found.' });
   return res.json({ success: true, archive: sanitizeArchive(archive) });
+});
+
+// Hide or restore an archive in Explore without changing its public URL or
+// publication state. Unhiding also repairs archives hidden by the legacy
+// owner-tool action, which used to mark them as unpublished.
+apiRouter.post('/admin/archives/:id/explore-visibility', (req: Request, res: Response) => {
+  if (!process.env.PLATFORM_ADMIN_KEY) {
+    return res.status(503).json({ error: 'Platform admin access has not been configured.' });
+  }
+  if (!hasPlatformAdminAccess(req)) {
+    return res.status(403).json({ error: 'Platform owner access required.' });
+  }
+
+  const existing = db.findById(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Archive not found.' });
+  if (existing.id.startsWith('demo-')) {
+    return res.status(403).json({ error: 'Demo archives are protected.' });
+  }
+
+  const parsed = z.object({ isHiddenFromExplore: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Explore visibility value is invalid.' });
+  }
+
+  const updates: Partial<Archive> = {
+    isHiddenFromExplore: parsed.data.isHiddenFromExplore
+  };
+
+  if (!parsed.data.isHiddenFromExplore && existing.deploymentStatus === 'unpublished') {
+    updates.deploymentStatus = 'deployed';
+  }
+
+  const archive = db.updateArchive(req.params.id, updates, 'owner');
+  return res.json({ success: true, archive: sanitizeArchive(archive!) });
 });
 
 // ==========================================
