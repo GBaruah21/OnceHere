@@ -20,7 +20,9 @@ export const PLATFORM_CONFIG = {
     prefix: 'Created with',
     builtByText: 'Built by',
     instagramText: 'Follow on Instagram',
-    emailText: 'Email'
+    emailText: 'Email',
+    shareCredit: 'Created with OnceHere · @_g.baruah_',
+    shareRequest: 'A tag or mention to the creator, @_g.baruah_, would be genuinely appreciated. I’d also love to hear about your experience—feedback is always welcome in DMs.'
   },
   urls: {
     baseDomain: typeof window !== 'undefined' ? window.location.host : 'localhost:3000',

@@ -20,6 +20,8 @@ import confetti from 'canvas-confetti';
 import { Archive, MediaItem } from '../../types';
 import { THEMES } from '../../config/themes';
 import { InstagramStoryModal } from './InstagramStoryModal';
+import { PLATFORM_CONFIG } from '../../config/platform';
+import { recordArchiveShare } from '../../lib/share';
 
 interface PreConfiguredShareBarProps {
   archive: Archive;
@@ -54,10 +56,10 @@ export const PreConfiguredShareBar: React.FC<PreConfiguredShareBarProps> = ({
   const cleanSubtitle = archive.subtitle || 'Every laughter, inside joke, and memory etched in stone.';
   
   // WhatsApp Chat prefilled text
-  const whatsappChatMessage = `✨ *${cleanTitle}* (${batchYearText})\n_${cleanSubtitle}_\n\n📸 Explore our batch timeline, photo vault & leave your note on the memory wall here:\n👉 ${shareUrl}\n\n_Preserved forever on OnceHere._`;
+  const whatsappChatMessage = `✨ *${cleanTitle}* (${batchYearText})\n_${cleanSubtitle}_\n\n📸 Explore our batch timeline, photo vault & leave your note on the memory wall here:\n👉 ${shareUrl}\n\n_${PLATFORM_CONFIG.attribution.shareCredit}_`;
 
   // WhatsApp Status text
-  const whatsappStatusText = `🎓 ${cleanTitle} (${batchYearText})\n"${cleanSubtitle}"\n\nLink to explore our memories & sign the wall:\n${shareUrl}`;
+  const whatsappStatusText = `🎓 ${cleanTitle} (${batchYearText})\n"${cleanSubtitle}"\n\nLink to explore our memories & sign the wall:\n${shareUrl}\n\n${PLATFORM_CONFIG.attribution.shareCredit}`;
 
   // Twitter / X text
   const tweetText = `Preserving our golden memories from ${archive.organizationName} (${batchYearText}) ✨\n\n"${cleanSubtitle}"\n\nExplore the interactive archive & photo vault:\n${shareUrl}\n\n#ClassOf${archive.endYear} #AlumniArchive #OnceHere`;
@@ -79,6 +81,7 @@ export const PreConfiguredShareBar: React.FC<PreConfiguredShareBarProps> = ({
       }
 
       setCopied(true);
+      recordArchiveShare(archive.id, 'copy_link', 'copied');
       confetti({
         particleCount: 35,
         spread: 60,
@@ -92,6 +95,7 @@ export const PreConfiguredShareBar: React.FC<PreConfiguredShareBarProps> = ({
 
   // WhatsApp Chat Trigger
   const handleShareWhatsAppChat = () => {
+    recordArchiveShare(archive.id, 'whatsapp', 'opened');
     const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(whatsappChatMessage)}`;
     window.open(url, '_blank', 'noopener,noreferrer');
   };
@@ -103,6 +107,7 @@ export const PreConfiguredShareBar: React.FC<PreConfiguredShareBarProps> = ({
         await navigator.clipboard.writeText(whatsappStatusText);
       }
       setCopiedStatus(true);
+      recordArchiveShare(archive.id, 'whatsapp_status', 'copied');
       confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 } });
       setTimeout(() => setCopiedStatus(false), 2500);
 
@@ -141,6 +146,7 @@ export const PreConfiguredShareBar: React.FC<PreConfiguredShareBarProps> = ({
 
   // Open Instagram Modal with specific mode
   const openInstagramStudio = (m: 'story' | 'post') => {
+    recordArchiveShare(archive.id, m === 'story' ? 'instagram_story' : 'instagram_post', 'opened');
     setInstagramMode(m);
     setIsInstagramModalOpen(true);
   };

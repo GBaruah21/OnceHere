@@ -249,3 +249,11 @@ export interface AnalyticsEvent {
   timestamp: string;
   metadata?: Record<string, string | number | boolean>;
 }
+
+export interface ShareActivity {
+  id: string;
+  archiveId: string;
+  channel: 'instagram_story' | 'instagram_post' | 'whatsapp' | 'whatsapp_status' | 'native' | 'copy_link' | 'other';
+  action: 'opened' | 'copied' | 'downloaded' | 'shared';
+  timestamp: string;
+}

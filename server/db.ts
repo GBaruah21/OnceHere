@@ -11,7 +11,8 @@ import {
   Revision,
   UserSession,
   DomainStatus,
-  AccessHistoryEntry
+  AccessHistoryEntry,
+  ShareActivity
 } from '../src/types';
 import { PLATFORM_CONFIG } from '../src/config/platform';
 
@@ -31,6 +32,7 @@ class MemoryDatabase {
   wallPosts: Map<string, WallPost[]> = new Map(); // archiveId -> posts
   revisions: Map<string, Revision[]> = new Map(); // archiveId -> revisions
   accessLogs: Map<string, AccessHistoryEntry[]> = new Map(); // archiveId -> access logs
+  shareActivity: Map<string, ShareActivity[]> = new Map(); // archiveId -> privacy-safe share actions
   sessions: Map<string, UserSession> = new Map(); // token -> session
   rateLimits: Map<string, { attempts: number; firstAttemptAt: number; lockedUntil?: number }> = new Map();
   platformSettings: { instagram?: string; email?: string; displayHandle?: string } = {};
@@ -60,6 +62,7 @@ class MemoryDatabase {
       wallPosts: Array.from(this.wallPosts.entries()),
       revisions: Array.from(this.revisions.entries()),
       accessLogs: Array.from(this.accessLogs.entries()),
+      shareActivity: Array.from(this.shareActivity.entries()),
       sessions: Array.from(this.sessions.entries()),
       rateLimits: Array.from(this.rateLimits.entries()),
       platformSettings: this.platformSettings
@@ -81,6 +84,7 @@ class MemoryDatabase {
     this.wallPosts = this.restoreMap<WallPost[]>(snapshot.wallPosts);
     this.revisions = this.restoreMap<Revision[]>(snapshot.revisions);
     this.accessLogs = this.restoreMap<AccessHistoryEntry[]>(snapshot.accessLogs);
+    this.shareActivity = this.restoreMap<ShareActivity[]>(snapshot.shareActivity);
     this.sessions = this.restoreMap<UserSession>(snapshot.sessions);
     this.rateLimits = this.restoreMap<{ attempts: number; firstAttemptAt: number; lockedUntil?: number }>(snapshot.rateLimits);
     this.platformSettings = snapshot.platformSettings && typeof snapshot.platformSettings === 'object'
@@ -195,6 +199,7 @@ class MemoryDatabase {
     this.wallPosts.set(archive.id, []);
     this.revisions.set(archive.id, []);
     this.accessLogs.set(archive.id, []);
+    this.shareActivity.set(archive.id, []);
 
     // Create initial revision & access log
     this.addRevision(archive.id, 'archive', 'Archive workspace initialized', 'owner', archive);
@@ -544,6 +549,35 @@ class MemoryDatabase {
     if (list.length > 30) list.pop();
     this.accessLogs.set(archiveId, list);
     return log;
+  }
+
+  // --- Privacy-safe Share Activity ---
+  getShareActivity(archiveId?: string, limit: number = 50): ShareActivity[] {
+    const entries = archiveId
+      ? (this.shareActivity.get(archiveId) || [])
+      : Array.from(this.shareActivity.values()).flat();
+    return [...entries]
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .slice(0, limit);
+  }
+
+  addShareActivity(
+    archiveId: string,
+    channel: ShareActivity['channel'],
+    action: ShareActivity['action']
+  ): ShareActivity {
+    const list = this.shareActivity.get(archiveId) || [];
+    const entry: ShareActivity = {
+      id: `share-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      archiveId,
+      channel,
+      action,
+      timestamp: new Date().toISOString()
+    };
+    list.unshift(entry);
+    if (list.length > 200) list.length = 200;
+    this.shareActivity.set(archiveId, list);
+    return entry;
   }
 
   // --- Seed Rich Demo Archives (Section 13A - Indian Student Batches) ---

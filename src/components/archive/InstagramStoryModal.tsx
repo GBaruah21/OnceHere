@@ -19,6 +19,8 @@ import {
 import confetti from 'canvas-confetti';
 import { Archive, MediaItem } from '../../types';
 import { THEMES } from '../../config/themes';
+import { PLATFORM_CONFIG } from '../../config/platform';
+import { recordArchiveShare } from '../../lib/share';
 
 interface InstagramStoryModalProps {
   isOpen: boolean;
@@ -37,6 +39,7 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
 }) => {
   const [mode, setMode] = useState<'story' | 'post'>(defaultMode);
   const [copiedCaption, setCopiedCaption] = useState(false);
+  const [copiedHandle, setCopiedHandle] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRenderingCanvas, setIsRenderingCanvas] = useState(false);
@@ -71,7 +74,7 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
   const uniquePhotos = Array.from(new Set(availablePhotos));
   const currentPhotoUrl = uniquePhotos[selectedPhotoIndex] || uniquePhotos[0];
 
-  const instagramCaption = `✨ ${archive.title} (${batchYearText})\n\n"${archive.subtitle || 'Every laughter, inside joke, and memory etched in stone.'}"\n\n🔗 View our full interactive timeline, photo vault & sign our memory wall:\n${shareUrl}\n\n#ClassOf${archive.endYear} #AlumniArchive #OnceHere #Yearbook #BatchOf${archive.endYear} #SchoolMemories #Farewell`;
+  const instagramCaption = `✨ ${archive.title} (${batchYearText})\n\n"${archive.subtitle || 'Every laughter, inside joke, and memory etched in stone.'}"\n\n🔗 View our full interactive timeline, photo vault & sign our memory wall:\n${shareUrl}\n\n${PLATFORM_CONFIG.attribution.shareCredit}\n\n#ClassOf${archive.endYear} #AlumniArchive #OnceHere #Yearbook #BatchOf${archive.endYear} #SchoolMemories #Farewell`;
 
   // Draw card onto canvas with bulletproof layout & typography
   const renderCardCanvas = useCallback(() => {
@@ -242,6 +245,22 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
       const quote = `"${archive.subtitle || 'Every laughter, inside joke, and memory etched in stone.'}"`;
       drawWrappedText(quote, width / 2, quoteStartY, 900, 44, 2);
 
+      // Small, readable creator credit. It stays visible without competing
+      // with the archive title, photograph, or call to action.
+      const drawCreatorCredit = (centerY: number) => {
+        const pillW = 500;
+        const pillH = 54;
+        ctx.fillStyle = isVintage ? 'rgba(255, 255, 255, 0.88)' : 'rgba(15, 23, 42, 0.82)';
+        drawRoundedRect(width / 2 - pillW / 2, centerY - pillH / 2, pillW, pillH, pillH / 2);
+        ctx.fill();
+        ctx.strokeStyle = isVintage ? 'rgba(120, 113, 108, 0.24)' : 'rgba(255, 255, 255, 0.2)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.font = '600 24px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        ctx.fillStyle = isVintage ? '#57534e' : '#f8fafc';
+        ctx.fillText(`OnceHere · ${PLATFORM_CONFIG.author.displayHandle}`, width / 2, centerY + 8);
+      };
+
       // Bottom CTA Banner (Link in Bio / Link Sticker)
       if (isStory) {
         const linkPillY = height - 200;
@@ -266,15 +285,9 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
         ctx.fillStyle = '#ffffff';
         ctx.fillText('🔗 TAP LINK TO EXPLORE ARCHIVE', width / 2, linkPillY + 48);
 
-        // Watermark / Sub-footer
-        ctx.font = '22px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        ctx.fillStyle = isVintage ? '#a8a29e' : '#64748b';
-        ctx.fillText(`Batch of ${archive.endYear} · Preserved on OnceHere`, width / 2, height - 70);
+        drawCreatorCredit(height - 70);
       } else {
-        // Feed post bottom indicator
-        ctx.font = 'bold 26px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        ctx.fillStyle = '#f59e0b';
-        ctx.fillText(`✨ Link in bio to sign the memory wall & view photo vault`, width / 2, height - 60);
+        drawCreatorCredit(height - 60);
       }
 
       setIsRenderingCanvas(false);
@@ -371,6 +384,7 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
       link.download = `${archive.slug || 'archive'}-instagram-${mode}.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
+      recordArchiveShare(archive.id, mode === 'story' ? 'instagram_story' : 'instagram_post', 'downloaded');
 
       confetti({
         particleCount: 50,
@@ -406,6 +420,7 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
             title: archive.title,
             text: instagramCaption
           });
+          recordArchiveShare(archive.id, mode === 'story' ? 'instagram_story' : 'instagram_post', 'shared');
         } else {
           // Fallback to regular download + copy
           handleDownloadCard();
@@ -425,9 +440,20 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
       if (navigator.clipboard) {
         await navigator.clipboard.writeText(instagramCaption);
       }
+      recordArchiveShare(archive.id, mode === 'story' ? 'instagram_story' : 'instagram_post', 'copied');
       setCopiedCaption(true);
       confetti({ particleCount: 30, spread: 50, origin: { y: 0.8 } });
       setTimeout(() => setCopiedCaption(false), 2500);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleCopyHandle = async () => {
+    try {
+      await navigator.clipboard.writeText(PLATFORM_CONFIG.author.displayHandle);
+      setCopiedHandle(true);
+      setTimeout(() => setCopiedHandle(false), 2200);
     } catch (err) {
       console.error(err);
     }
@@ -696,6 +722,45 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
                 <div className="p-3 rounded-2xl bg-neutral-950 border border-white/10 text-xs font-mono text-neutral-300 max-h-24 overflow-y-auto leading-relaxed select-all">
                   {instagramCaption}
                 </div>
+                <div className="rounded-2xl border border-pink-500/20 bg-gradient-to-r from-pink-500/10 via-purple-500/10 to-amber-500/10 p-3 space-y-2.5">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-pink-300">
+                    <Instagram className="w-3.5 h-3.5" />
+                    <span>A small creator note</span>
+                  </div>
+                  <p className="text-[11px] sm:text-xs text-neutral-300 leading-relaxed">
+                    {PLATFORM_CONFIG.attribution.shareRequest.split(PLATFORM_CONFIG.author.displayHandle)[0]}
+                    <a
+                      href={PLATFORM_CONFIG.author.instagram}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-semibold text-amber-300 underline decoration-amber-300/50 underline-offset-2 transition-colors hover:text-amber-200"
+                    >
+                      {PLATFORM_CONFIG.author.displayHandle}
+                    </a>
+                    {PLATFORM_CONFIG.attribution.shareRequest.split(PLATFORM_CONFIG.author.displayHandle)[1]}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCopyHandle}
+                      className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-[11px] font-semibold text-white inline-flex items-center gap-1.5"
+                    >
+                      {copiedHandle ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      {copiedHandle ? 'Tag copied' : `Copy ${PLATFORM_CONFIG.author.displayHandle}`}
+                    </button>
+                    <a
+                      href={PLATFORM_CONFIG.author.instagram}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1.5 rounded-lg bg-pink-500/15 hover:bg-pink-500/25 text-[11px] font-semibold text-pink-300 inline-flex items-center gap-1.5"
+                    >
+                      <Instagram className="w-3 h-3" />Follow or send a note
+                    </a>
+                  </div>
+                </div>
+                <p className="text-[10px] text-neutral-600 leading-relaxed">
+                  Instagram controls the final editor. Add its Mention sticker to guarantee a tag notification.
+                </p>
               </div>
 
               {/* 4. Complete Action Controls */}
@@ -746,4 +811,3 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
     </div>
   );
 };
-

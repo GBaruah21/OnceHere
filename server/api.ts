@@ -268,6 +268,19 @@ apiRouter.get('/admin/archives', (req: Request, res: Response) => {
   return res.json({ archives });
 });
 
+apiRouter.get('/admin/share-activity', (req: Request, res: Response) => {
+  if (!hasPlatformAdminAccess(req)) return res.status(403).json({ error: 'Platform owner access required.' });
+  const activity = db.getShareActivity(undefined, 100).map((entry) => {
+    const archive = db.findById(entry.archiveId);
+    return {
+      ...entry,
+      archiveTitle: archive?.title || 'Deleted archive',
+      archiveSlug: archive?.slug || archive?.workspaceSlug || ''
+    };
+  });
+  return res.json({ activity });
+});
+
 // Read-only platform-owner preview for every archive, including drafts and
 // private/unlisted pages. This never returns owner tokens, PIN hashes,
 // recovery keys, or session credentials.
@@ -1293,7 +1306,18 @@ apiRouter.get('/archives/:id/export', (req: Request, res: Response) => {
 // ==========================================
 
 apiRouter.post('/analytics', (req: Request, res: Response) => {
-  const { eventName, archiveId } = req.body;
+  const { eventName, archiveId, metadata } = req.body || {};
+  if (eventName === 'archive_share_action') {
+    const channels = ['instagram_story', 'instagram_post', 'whatsapp', 'whatsapp_status', 'native', 'copy_link', 'other'] as const;
+    const actions = ['opened', 'copied', 'downloaded', 'shared'] as const;
+    if (typeof archiveId !== 'string' || !db.findById(archiveId)) {
+      return res.status(400).json({ error: 'Valid archive is required.' });
+    }
+    if (!channels.includes(metadata?.channel) || !actions.includes(metadata?.action)) {
+      return res.status(400).json({ error: 'Invalid share activity.' });
+    }
+    db.addShareActivity(archiveId, metadata.channel, metadata.action);
+  }
   // Privacy safe logging - no sensitive strings recorded
   console.log(`[Analytics] Event: ${eventName} | Archive: ${archiveId || 'platform'} | Time: ${new Date().toISOString()}`);
   return res.json({ recorded: true });

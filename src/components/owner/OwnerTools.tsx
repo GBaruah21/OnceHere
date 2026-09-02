@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Album, Archive, MediaItem, Member, Section, TimelineEvent, WallPost } from '../../types';
+import { Album, Archive, MediaItem, Member, Section, ShareActivity, TimelineEvent, WallPost } from '../../types';
 import { ArchivePublicView } from '../archive/ArchivePublicView';
 import {
   ArrowLeft, CalendarDays, ExternalLink, Eye, EyeOff, FileText,
-  Save, Search, ShieldCheck, Trash2, X
+  Save, Search, Share2, ShieldCheck, Trash2, X
 } from 'lucide-react';
 
 type Settings = { instagram?: string; email?: string; displayHandle?: string };
@@ -18,6 +18,7 @@ type AdminPreview = {
   albums: Album[];
   readOnly: true;
 };
+type AdminShareActivity = ShareActivity & { archiveTitle: string; archiveSlug: string };
 
 const formatDate = (value?: string) => {
   if (!value) return 'Unknown date';
@@ -35,6 +36,7 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
   const [filter, setFilter] = useState<ArchiveFilter>('all');
   const [preview, setPreview] = useState<AdminPreview | null>(null);
   const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
+  const [shareActivity, setShareActivity] = useState<AdminShareActivity[]>([]);
 
   const request = async (path: string, options: RequestInit = {}) => {
     const response = await fetch(path, {
@@ -48,12 +50,14 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
 
   const load = async () => {
     try {
-      const [archiveData, settingsData] = await Promise.all([
+      const [archiveData, settingsData, shareData] = await Promise.all([
         request('/api/admin/archives'),
-        fetch('/api/platform-settings').then((response) => response.json())
+        fetch('/api/platform-settings').then((response) => response.json()),
+        request('/api/admin/share-activity')
       ]);
       setArchives(archiveData.archives || []);
       setSettings(settingsData.settings || {});
+      setShareActivity(shareData.activity || []);
     } catch (error: any) {
       setNotice(error.message || 'Unable to open Owner Tools.');
     }
@@ -154,6 +158,34 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
           <button onClick={() => void saveSettings()} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-400 text-neutral-950 text-sm font-bold">
             <Save className="w-4 h-4" />Save links
           </button>
+        </section>
+
+        <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 sm:p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <Share2 className="w-5 h-5 text-amber-400" />
+            <h2 className="text-lg font-bold">Recent archive share activity</h2>
+          </div>
+          <p className="text-xs text-neutral-500">
+            This records use of OnceHere share controls. Instagram and WhatsApp do not tell a website whether the person finally published the story or post.
+          </p>
+          {shareActivity.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-white/10 p-5 text-sm text-neutral-500">No share activity recorded yet.</div>
+          ) : (
+            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+              {shareActivity.slice(0, 50).map((entry) => (
+                <div key={entry.id} className="rounded-xl bg-neutral-900 border border-white/10 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold truncate">{entry.archiveTitle}</div>
+                    <div className="text-[11px] text-neutral-500 font-mono truncate">{entry.archiveSlug || entry.archiveId}</div>
+                  </div>
+                  <div className="text-xs text-neutral-400 sm:text-right shrink-0">
+                    <div className="capitalize">{entry.channel.replaceAll('_', ' ')} · {entry.action}</div>
+                    <div className="text-neutral-600 mt-0.5">{new Date(entry.timestamp).toLocaleString()}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="space-y-4">

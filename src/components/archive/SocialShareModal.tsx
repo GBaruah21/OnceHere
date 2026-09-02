@@ -22,6 +22,8 @@ import confetti from 'canvas-confetti';
 import { Archive, MediaItem } from '../../types';
 import { THEMES } from '../../config/themes';
 import { InstagramStoryModal } from './InstagramStoryModal';
+import { PLATFORM_CONFIG } from '../../config/platform';
+import { recordArchiveShare } from '../../lib/share';
 
 interface SocialShareModalProps {
   isOpen: boolean;
@@ -59,7 +61,7 @@ export const SocialShareModal: React.FC<SocialShareModalProps> = ({
   if (!isOpen) return null;
 
   const batchLabel = archive.batchLabel || `${archive.startYear}–${archive.endYear}`;
-  const shareText = `Explore "${archive.title}" (${batchLabel}) — Our memories, timeline, and stories on OnceHere!`;
+  const shareText = `Explore "${archive.title}" (${batchLabel}) — Our memories, timeline, and stories on OnceHere!\n\n${PLATFORM_CONFIG.attribution.shareCredit}`;
 
   // Copy to clipboard with visual feedback & confetti
   const handleCopyLink = async () => {
@@ -79,6 +81,7 @@ export const SocialShareModal: React.FC<SocialShareModalProps> = ({
       }
 
       setCopied(true);
+      recordArchiveShare(archive.id, 'copy_link', 'copied');
       confetti({
         particleCount: 40,
         spread: 60,
@@ -103,12 +106,13 @@ export const SocialShareModal: React.FC<SocialShareModalProps> = ({
 
   // WhatsApp Status copy
   const handleCopyWhatsAppStatus = async () => {
-    const statusText = `🎓 ${archive.title} (${batchLabel})\n"${archive.subtitle || 'Every memory etched in stone.'}"\n\nExplore our batch memories & sign the wall:\n${shareUrl}`;
+    const statusText = `🎓 ${archive.title} (${batchLabel})\n"${archive.subtitle || 'Every memory etched in stone.'}"\n\nExplore our batch memories & sign the wall:\n${shareUrl}\n\n${PLATFORM_CONFIG.attribution.shareCredit}`;
     try {
       if (navigator.clipboard) {
         await navigator.clipboard.writeText(statusText);
       }
       setCopiedStatus(true);
+      recordArchiveShare(archive.id, 'whatsapp_status', 'copied');
       confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 } });
       setTimeout(() => setCopiedStatus(false), 2500);
 
@@ -129,6 +133,7 @@ export const SocialShareModal: React.FC<SocialShareModalProps> = ({
           text: shareText,
           url: shareUrl
         });
+        recordArchiveShare(archive.id, 'native', 'shared');
       } catch (err) {
         // User cancelled or share failed
       }
@@ -145,8 +150,9 @@ export const SocialShareModal: React.FC<SocialShareModalProps> = ({
       color: '#25D366',
       bgColor: 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
       action: () => {
+        recordArchiveShare(archive.id, 'whatsapp', 'opened');
         const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(
-          `✨ *${archive.title}* (${batchLabel})\n_${archive.subtitle || 'Every laughter, milestone, inside joke, and shared memory.'}_\n\n📸 Explore our timeline, photo vault & leave your note on the wall:\n👉 ${shareUrl}`
+          `✨ *${archive.title}* (${batchLabel})\n_${archive.subtitle || 'Every laughter, milestone, inside joke, and shared memory.'}_\n\n📸 Explore our timeline, photo vault & leave your note on the wall:\n👉 ${shareUrl}\n\n_${PLATFORM_CONFIG.attribution.shareCredit}_`
         )}`;
         window.open(url, '_blank', 'noopener,noreferrer');
       }
@@ -309,6 +315,7 @@ export const SocialShareModal: React.FC<SocialShareModalProps> = ({
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       onClick={() => {
+                        recordArchiveShare(archive.id, 'instagram_story', 'opened');
                         setInstagramMode('story');
                         setIsInstagramModalOpen(true);
                       }}
@@ -318,6 +325,7 @@ export const SocialShareModal: React.FC<SocialShareModalProps> = ({
                     </button>
                     <button
                       onClick={() => {
+                        recordArchiveShare(archive.id, 'instagram_post', 'opened');
                         setInstagramMode('post');
                         setIsInstagramModalOpen(true);
                       }}
@@ -515,4 +523,3 @@ export const SocialShareModal: React.FC<SocialShareModalProps> = ({
     </>
   );
 };
-

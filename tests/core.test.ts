@@ -114,4 +114,14 @@ describe('Database Multi-Tenant Isolation', () => {
       db.setSections(archiveId, originalSections, 'owner');
     }
   });
+
+  it('records privacy-safe share activity without changing archive content', () => {
+    const archiveId = 'demo-marys-2025';
+    const before = db.findById(archiveId);
+    const event = db.addShareActivity(archiveId, 'instagram_story', 'opened');
+    expect(event.archiveId).toBe(archiveId);
+    expect(event.channel).toBe('instagram_story');
+    expect(db.getShareActivity(archiveId, 1)[0]?.id).toBe(event.id);
+    expect(db.findById(archiveId)).toEqual(before);
+  });
 });
