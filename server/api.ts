@@ -6,6 +6,7 @@ import {
   createSignedToken,
   verifySignedToken,
   verifyArchivePin,
+  verifyViewerPin,
   verifyOwnerRecoveryKey,
   findArchiveAndVerifyKey
 } from './auth';
@@ -21,6 +22,7 @@ import {
   ArchiveSettings
 } from '../src/types';
 import { sanitizeSlug, validateSlug } from '../src/lib/tenant';
+import { evaluatePin } from '../src/lib/security';
 import { PLATFORM_CONFIG } from '../src/config/platform';
 
 import { analyzeMemoryImage } from './ai';
@@ -68,24 +70,6 @@ function getAuthContext(req: Request): { archiveId?: string; role: 'owner' | 'co
   } else if (req.cookies && typeof req.cookies === 'object') {
     const cookieToken = req.cookies.mc_owner_token || req.cookies.mc_editor_token;
     if (cookieToken) token = cookieToken;
-  }
-
-  // Also allow validation via x-workspace-slug header for direct active workspace owner requests
-  const workspaceHeader = req.headers['x-workspace-slug'] as string;
-  if (workspaceHeader) {
-    const archive = db.findBySlug(workspaceHeader);
-    if (archive) {
-      return { archiveId: archive.id, role: 'owner' };
-    }
-  }
-
-  // Also check x-archive-id header
-  const archiveIdHeader = req.headers['x-archive-id'] as string;
-  if (archiveIdHeader) {
-    const archive = db.archives.get(archiveIdHeader);
-    if (archive) {
-      return { archiveId: archive.id, role: 'owner' };
-    }
   }
 
   if (!token) return { role: 'none' };
@@ -159,6 +143,7 @@ apiRouter.post('/archives', (req: Request, res: Response) => {
       visibility: z.enum(['public', 'unlisted', 'private']),
       contributionMode: z.enum(['owner-only', 'pin-protected', 'open']),
       editorPin: z.string().optional(),
+      viewerPin: z.string().optional(),
       recoveryKey: z.string().min(10)
     });
 
@@ -168,6 +153,13 @@ apiRouter.post('/archives', (req: Request, res: Response) => {
     }
 
     const data = parsed.data;
+
+    if (data.visibility === 'private' && (!data.viewerPin || !/^\d{4}$|^\d{6}$/.test(data.viewerPin.trim()))) {
+      return res.status(400).json({ error: 'Private archives require a separate 4 or 6 digit viewer PIN.' });
+    }
+    if (data.editorPin && !evaluatePin(data.editorPin).isAllowed) return res.status(400).json({ error: evaluatePin(data.editorPin).message });
+    if (data.viewerPin && !evaluatePin(data.viewerPin).isAllowed) return res.status(400).json({ error: evaluatePin(data.viewerPin).message });
+    if (data.editorPin && data.viewerPin && data.editorPin.trim() === data.viewerPin.trim()) return res.status(400).json({ error: 'Viewer and contributor PINs must be different.' });
 
     // Generate unique internal workspace identifier
     const archiveId = `arc-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -179,6 +171,9 @@ apiRouter.post('/archives', (req: Request, res: Response) => {
     if (data.contributionMode === 'pin-protected' && data.editorPin) {
       editorPinHash = bcrypt.hashSync(data.editorPin.trim(), 10);
     }
+    const viewerPinHash = data.visibility === 'private' && data.viewerPin
+      ? bcrypt.hashSync(data.viewerPin.trim(), 10)
+      : undefined;
 
     // Hash Recovery Key
     const recoveryKeyHash = bcrypt.hashSync(data.recoveryKey.trim(), 10);
@@ -214,6 +209,7 @@ apiRouter.post('/archives', (req: Request, res: Response) => {
       visibility: data.visibility,
       contributionMode: data.contributionMode,
       editorPinHash,
+      viewerPinHash,
       recoveryKeyHash,
       deploymentStatus: 'draft', // Created in draft workspace first!
       settings: defaultSettings,
@@ -323,6 +319,12 @@ apiRouter.get('/archives/by-slug/:slug', (req: Request, res: Response) => {
     return res.status(404).json({ error: 'Memory archive not found.' });
   }
 
+  const auth = getAuthContext(req);
+  const canViewPrivate = auth.archiveId === archive.id && ['owner', 'contributor', 'viewer'].includes(auth.role);
+  if (archive.visibility === 'private' && !canViewPrivate) {
+    return res.json({ archive: sanitizeArchive(archive), locked: true });
+  }
+
   // Load all associated tenant data
   const sections = db.getSections(archive.id);
   const timeline = db.getTimelineEvents(archive.id);
@@ -350,15 +352,17 @@ apiRouter.get('/archives/by-workspace/:workspaceSlug', (req: Request, res: Respo
     return res.status(404).json({ error: 'Workspace memory archive not found.' });
   }
 
+  const auth = getAuthContext(req);
+  if (auth.archiveId !== archive.id || (auth.role !== 'owner' && auth.role !== 'contributor')) {
+    return res.status(401).json({ error: 'Unlock this workspace with its owner recovery key or use Contribute with the editor PIN.' });
+  }
+
   const sections = db.getSections(archive.id);
   const timeline = db.getTimelineEvents(archive.id);
   const members = db.getMembers(archive.id);
   const media = db.getMediaItems(archive.id);
   const wall = db.getWallPosts(archive.id);
   const albums = db.getAlbums(archive.id);
-
-  // Generate private owner authorization token for this workspace session
-  const ownerToken = createSignedToken(archive.id, 'owner', 24 * 30);
 
   return res.json({
     archive: sanitizeArchive(archive),
@@ -368,7 +372,7 @@ apiRouter.get('/archives/by-workspace/:workspaceSlug', (req: Request, res: Respo
     media,
     wall,
     albums,
-    ownerToken
+    accessRole: auth.role
   });
 });
 
@@ -395,6 +399,11 @@ apiRouter.get('/archives/:id', (req: Request, res: Response) => {
   if (!archive) {
     return res.status(404).json({ error: 'Archive not found.' });
   }
+  const auth = getAuthContext(req);
+  const authorized = auth.archiveId === archive.id && ['owner', 'contributor', 'viewer'].includes(auth.role);
+  if ((archive.visibility === 'private' || archive.deploymentStatus !== 'deployed') && !authorized) {
+    return res.status(403).json({ error: 'Archive access required.' });
+  }
 
   const sections = db.getSections(archive.id);
   const timeline = db.getTimelineEvents(archive.id);
@@ -419,8 +428,8 @@ apiRouter.patch('/archives/:id', (req: Request, res: Response) => {
   const { id } = req.params;
   const auth = getAuthContext(req);
 
-  if (auth.archiveId !== id || (auth.role !== 'owner' && auth.role !== 'contributor')) {
-    return res.status(403).json({ error: 'Permission denied. Please verify your access.' });
+  if (auth.archiveId !== id || auth.role !== 'owner') {
+    return res.status(403).json({ error: 'Only the owner can change archive-wide settings.' });
   }
 
   const updates: Partial<Archive> = {};
@@ -439,7 +448,12 @@ apiRouter.patch('/archives/:id', (req: Request, res: Response) => {
     if (body.visibility) updates.visibility = body.visibility;
     if (body.contributionMode) updates.contributionMode = body.contributionMode;
     if (body.editorPin) {
+      if (!evaluatePin(body.editorPin).isAllowed) return res.status(400).json({ error: evaluatePin(body.editorPin).message });
       updates.editorPinHash = bcrypt.hashSync(body.editorPin.trim(), 10);
+    }
+    if (body.viewerPin) {
+      if (!evaluatePin(body.viewerPin).isAllowed) return res.status(400).json({ error: evaluatePin(body.viewerPin).message });
+      updates.viewerPinHash = bcrypt.hashSync(body.viewerPin.trim(), 10);
     }
   }
 
@@ -704,6 +718,18 @@ apiRouter.post('/archives/:id/auth/pin', (req: Request, res: Response) => {
   return res.json({ success: true, token: result.token });
 });
 
+// Verify the separate private-viewer PIN. This never grants editing rights.
+apiRouter.post('/archives/:id/auth/viewer-pin', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { pin } = req.body;
+  if (!pin || typeof pin !== 'string' || !/^\d{4}$|^\d{6}$/.test(pin.trim())) {
+    return res.status(400).json({ error: 'Enter the 4 or 6 digit viewer PIN.' });
+  }
+  const result = verifyViewerPin(id, pin, req.ip || req.socket.remoteAddress || 'client');
+  if (!result.success) return res.status(401).json({ error: result.error, lockedUntil: result.lockedUntil });
+  return res.json({ success: true, token: result.token });
+});
+
 // Verify owner recovery key (by specific ID)
 apiRouter.post('/archives/:id/auth/recovery', (req: Request, res: Response) => {
   const { id } = req.params;
@@ -731,12 +757,28 @@ apiRouter.post('/archives/:id/auth/recovery', (req: Request, res: Response) => {
   return res.json({ success: true, token: result.token });
 });
 
+// Rotate the owner recovery key. The raw replacement is returned exactly once.
+apiRouter.post('/archives/:id/auth/recovery/regenerate', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const auth = getAuthContext(req);
+  if (auth.archiveId !== id || auth.role !== 'owner') return res.status(403).json({ error: 'Owner access required.' });
+  const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const bytes = require('crypto').randomBytes(24);
+  let recoveryKey = 'mc_rec_';
+  for (let i = 0; i < bytes.length; i += 1) {
+    recoveryKey += alphabet[bytes[i] % alphabet.length];
+    if (i % 6 === 5 && i !== bytes.length - 1) recoveryKey += '-';
+  }
+  db.updateArchive(id, { recoveryKeyHash: bcrypt.hashSync(recoveryKey, 10) }, 'owner');
+  return res.json({ success: true, recoveryKey });
+});
+
 // Universal Archive Key Access (Direct Owner Login)
 apiRouter.post('/archives/auth/key-access', (req: Request, res: Response) => {
   const { key, identifier } = req.body;
 
   if (!key || typeof key !== 'string') {
-    return res.status(400).json({ error: 'Please enter your Recovery Key or PIN.' });
+    return res.status(400).json({ error: 'Please enter your owner recovery key.' });
   }
 
   const result = findArchiveAndVerifyKey(key, identifier);
@@ -744,17 +786,16 @@ apiRouter.post('/archives/auth/key-access', (req: Request, res: Response) => {
   if (!result.success || !result.archive) {
     return res.status(401).json({
       success: false,
-      error: result.error || 'Invalid Key or PIN. Please check your code and try again.'
+      error: result.error || 'Invalid recovery key. Please check the complete key and try again.'
     });
   }
 
   // Log access in archive's access history
   const clientInfo = extractClientInfo(req);
-  const isPin = /^\d{4,8}$/.test((key || '').trim());
   db.addAccessLog(result.archive.id, {
-    action: isPin ? 'pin_entry' : 'recovery_key_unlock',
+    action: 'recovery_key_unlock',
     actorRole: 'owner',
-    summary: isPin ? 'Scoped Archive PIN Verified' : 'Master Recovery Key Login',
+    summary: 'Owner Recovery Key Login',
     ipHint: clientInfo.ipHint,
     deviceInfo: clientInfo.device
   });
@@ -881,7 +922,11 @@ apiRouter.patch('/archives/:id/timeline/:eventId', (req: Request, res: Response)
     return res.status(403).json({ error: 'Permission denied.' });
   }
 
-  const updated = db.updateTimelineEvent(id, eventId, req.body);
+  const { title, description, yearLabel, eventDate, icon, location, mediaUrl, tags, position, isDraft } = req.body;
+  const updates = Object.fromEntries(Object.entries({
+    title, description, yearLabel, eventDate, icon, location, mediaUrl, tags, position, isDraft
+  }).filter(([, value]) => value !== undefined));
+  const updated = db.updateTimelineEvent(id, eventId, updates);
   if (!updated) return res.status(404).json({ error: 'Event not found.' });
   return res.json({ success: true, event: updated });
 });
@@ -970,7 +1015,11 @@ apiRouter.patch('/archives/:id/members/:memberId', (req: Request, res: Response)
     return res.status(403).json({ error: 'Permission denied.' });
   }
 
-  const updated = db.updateMember(id, memberId, req.body);
+  const { name, nickname, imageUrl, groupLabel, quote, memory, tags, socialLinks, position } = req.body;
+  const updates = Object.fromEntries(Object.entries({
+    name, nickname, imageUrl, groupLabel, quote, memory, tags, socialLinks, position
+  }).filter(([, value]) => value !== undefined));
+  const updated = db.updateMember(id, memberId, updates);
   if (!updated) return res.status(404).json({ error: 'Member not found.' });
   return res.json({ success: true, member: updated });
 });
@@ -1037,7 +1086,7 @@ apiRouter.post('/archives/:id/media', (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Permission denied.' });
   }
 
-  const { url, type, caption, altText, tags, albumId, notes } = req.body;
+  const { url, type, caption, altText, tags, albumId, notes, eventDate, isFeatured, position } = req.body;
   if (!url) return res.status(400).json({ error: 'Media URL or payload required.' });
 
   const item: MediaItem = {
@@ -1051,6 +1100,9 @@ apiRouter.post('/archives/:id/media', (req: Request, res: Response) => {
     tags: Array.isArray(tags) ? tags : [],
     notes: Array.isArray(notes) ? notes : [],
     albumId,
+    eventDate,
+    isFeatured: Boolean(isFeatured),
+    position: typeof position === 'number' ? position : db.getMediaItems(id).length,
     createdAt: new Date().toISOString()
   };
 
@@ -1077,7 +1129,11 @@ apiRouter.patch('/archives/:id/media/:mediaId', (req: Request, res: Response) =>
     return res.status(403).json({ error: 'Permission denied.' });
   }
 
-  const updated = db.updateMediaItem(id, mediaId, req.body);
+  const { caption, altText, tags, albumId, eventDate, isFeatured, position } = req.body;
+  const updates = Object.fromEntries(Object.entries({
+    caption, altText, tags, albumId, eventDate, isFeatured, position
+  }).filter(([, value]) => value !== undefined));
+  const updated = db.updateMediaItem(id, mediaId, updates);
   if (!updated) return res.status(404).json({ error: 'Media item not found.' });
   return res.json({ success: true, item: updated });
 });

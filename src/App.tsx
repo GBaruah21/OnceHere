@@ -120,8 +120,12 @@ export default function App() {
 
         if (tenantContext.type === 'workspace') {
           endpoint = `/api/archives/by-workspace/${tenantContext.workspaceSlug}`;
+          const workspaceToken = SessionStorage.getWorkspaceToken(tenantContext.workspaceSlug);
+          if (workspaceToken) headers.Authorization = `Bearer ${workspaceToken}`;
         } else if (tenantContext.type === 'archive') {
           endpoint = `/api/archives/by-slug/${tenantContext.slug}`;
+          const viewerToken = SessionStorage.getViewerToken(tenantContext.slug);
+          if (viewerToken) headers.Authorization = `Bearer ${viewerToken}`;
         }
 
         const res = await fetch(endpoint, { headers });
@@ -129,10 +133,6 @@ export default function App() {
 
         if (!res.ok) {
           throw new Error(data.error || 'Archive not found or unavailable.');
-        }
-
-        if (data.ownerToken) {
-          SessionStorage.setOwnerToken(data.archive.id, data.ownerToken);
         }
 
         setActiveArchiveData({
@@ -164,6 +164,10 @@ export default function App() {
 
   // Handler when an archive is created from wizard
   const handleArchiveCreated = (archive: Archive, workspaceSlug: string, ownerToken: string) => {
+    if (ownerToken) {
+      SessionStorage.setOwnerToken(archive.id, ownerToken);
+      SessionStorage.setWorkspaceToken(workspaceSlug, ownerToken);
+    }
     setIsCreateModalOpen(false);
     fetchArchives(); // Refresh platform archives list
     navigateTo(`/workspace/${workspaceSlug}`);
@@ -227,7 +231,9 @@ export default function App() {
       );
     }
 
-    const ownerToken = SessionStorage.getOwnerToken(activeArchiveData.archive.id) || undefined;
+    const ownerToken = SessionStorage.getOwnerToken(activeArchiveData.archive.id)
+      || SessionStorage.getWorkspaceToken(tenantContext.workspaceSlug)
+      || undefined;
 
     return (
       <ArchiveEditor
@@ -277,8 +283,8 @@ export default function App() {
     // Check if private archive requires PIN
     if (activeArchiveData.archive.visibility === 'private' && !isViewerUnlocked) {
       return (
-        <div className="h-screen w-full bg-neutral-950 flex flex-col items-center justify-center p-6 text-center space-y-6">
-          <div className="w-full max-w-sm p-8 rounded-3xl bg-neutral-900 border border-white/15 shadow-2xl space-y-4">
+        <div className="min-h-[100dvh] w-full bg-neutral-950 flex flex-col items-center justify-center p-4 sm:p-6 text-center space-y-6">
+          <div className="w-full max-w-sm p-5 sm:p-8 rounded-3xl bg-neutral-900 border border-white/15 shadow-2xl space-y-4">
             <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto">
               <Lock className="w-6 h-6" />
             </div>
@@ -288,13 +294,40 @@ export default function App() {
             </div>
 
             <form
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
-                // Simple PIN verify check for private archive
-                if (viewerPin.length >= 4) {
+                const cleanPin = viewerPin.replace(/\D/g, '');
+                if (cleanPin.length !== 4 && cleanPin.length !== 6) {
+                  setViewerPinError('Enter the 4 or 6 digit viewer PIN.');
+                  return;
+                }
+                try {
+                  setViewerPinError(null);
+                  const unlockResponse = await fetch(`/api/archives/${activeArchiveData.archive.id}/auth/viewer-pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pin: cleanPin })
+                  });
+                  const unlockData = await unlockResponse.json();
+                  if (!unlockResponse.ok || !unlockData.token) throw new Error(unlockData.error || 'Unable to unlock archive.');
+                  SessionStorage.setViewerToken(tenantContext.slug, unlockData.token);
+                  const archiveResponse = await fetch(`/api/archives/by-slug/${tenantContext.slug}`, {
+                    headers: { Authorization: `Bearer ${unlockData.token}` }
+                  });
+                  const archiveData = await archiveResponse.json();
+                  if (!archiveResponse.ok || archiveData.locked) throw new Error(archiveData.error || 'Unable to open archive.');
+                  setActiveArchiveData({
+                    archive: archiveData.archive,
+                    sections: archiveData.sections || [],
+                    timeline: archiveData.timeline || [],
+                    members: archiveData.members || [],
+                    media: archiveData.media || [],
+                    wall: archiveData.wall || [],
+                    albums: archiveData.albums || []
+                  });
                   setIsViewerUnlocked(true);
-                } else {
-                  setViewerPinError('Please enter a valid PIN.');
+                } catch (error: any) {
+                  setViewerPinError(error.message || 'That viewer PIN could not be verified.');
                 }
               }}
               className="space-y-3"
@@ -302,17 +335,20 @@ export default function App() {
               <input
                 type="password"
                 value={viewerPin}
-                onChange={(e) => setViewerPin(e.target.value)}
+                onChange={(e) => setViewerPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 placeholder="Enter PIN"
                 maxLength={6}
-                className="w-full px-4 py-2.5 rounded-xl bg-neutral-950 border border-white/15 text-center text-sm font-mono tracking-widest text-white focus:outline-none focus:border-amber-400"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="one-time-code"
+                className="w-full min-h-12 px-4 py-2.5 rounded-xl bg-neutral-950 border border-white/15 text-center text-base font-mono tracking-widest text-white focus:outline-none focus:border-amber-400"
               />
 
               {viewerPinError && <p className="text-xs text-rose-400">{viewerPinError}</p>}
 
               <button
                 type="submit"
-                className="w-full py-2.5 rounded-xl bg-amber-400 text-neutral-950 text-xs font-semibold hover:brightness-110 shadow-md"
+                className="w-full min-h-12 py-2.5 rounded-xl bg-amber-400 text-neutral-950 text-sm font-semibold hover:brightness-110 shadow-md"
               >
                 Unlock Archive
               </button>
@@ -445,6 +481,7 @@ export default function App() {
         onSuccess={(archive, workspaceSlug, token) => {
           if (archive && token) {
             SessionStorage.setOwnerToken(archive.id, token);
+            SessionStorage.setWorkspaceToken(workspaceSlug, token);
           }
           navigateTo(`/workspace/${workspaceSlug}`);
         }}

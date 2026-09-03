@@ -68,6 +68,8 @@ export interface ArchiveSettings {
   groupLogoUrl?: string;
   fontPreset?: string;
   fontPresetId?: string;
+  /** Number of memories shown before the visitor chooses "Show more". */
+  mediaInitialDisplayCount?: number;
 }
 
 export interface Archive {
@@ -176,6 +178,10 @@ export interface MediaItem {
   eventDate?: string;
   albumId?: string;
   tags: string[];
+  /** Explicit creator-selected highlight, instead of guessing from caption length. */
+  isFeatured?: boolean;
+  /** Optional creator ordering used inside the editor and highlight views. */
+  position?: number;
   notes?: MediaNote[];
   width?: number;
   height?: number;

@@ -64,6 +64,8 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
   const [pin, setPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [showPin, setShowPin] = useState(false);
+  const [viewerPin, setViewerPin] = useState('');
+  const [confirmViewerPin, setConfirmViewerPin] = useState('');
 
   // Image Analyzer Modal State
   const [isImageAnalyzerOpen, setIsImageAnalyzerOpen] = useState(false);
@@ -78,6 +80,8 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
   // PIN validation
   const pinEvaluation = evaluatePin(pin);
   const isPinMatching = pin === confirmPin;
+  const viewerPinEvaluation = evaluatePin(viewerPin);
+  const isViewerPinMatching = viewerPin === confirmViewerPin;
 
   // Auto-fill batch label helper
   const handleEndYearChange = (year: number) => {
@@ -105,8 +109,10 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
   // Step navigation validations
   const canProceedStep2 = title.trim().length >= 2 && organizationName.trim().length >= 2 && startYear <= endYear;
   const canProceedStep4 =
-    contributionMode !== 'pin-protected' ||
-    (pinEvaluation.isAllowed && isPinMatching && confirmPin.length > 0);
+    (contributionMode !== 'pin-protected' ||
+      (pinEvaluation.isAllowed && isPinMatching && confirmPin.length > 0)) &&
+    (visibility !== 'private' ||
+      (viewerPinEvaluation.isAllowed && isViewerPinMatching && confirmViewerPin.length > 0 && viewerPin !== pin));
 
   // Final Step 5 Submission: Create Workspace on Server
   const handleCreateWorkspace = async () => {
@@ -127,6 +133,7 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
         visibility,
         contributionMode,
         editorPin: contributionMode === 'pin-protected' ? pin.trim() : undefined,
+        viewerPin: visibility === 'private' ? viewerPin.trim() : undefined,
         recoveryKey: recoveryKey.trim()
       };
 
@@ -153,6 +160,7 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
       if (data.archive?.id) {
         if (data.ownerToken) {
           SessionStorage.setOwnerToken(data.archive.id, data.ownerToken);
+          SessionStorage.setWorkspaceToken(data.workspaceSlug, data.ownerToken);
         }
         if (recoveryKey.trim()) {
           SessionStorage.setRecoveryKey(data.archive.id, recoveryKey.trim());
@@ -172,9 +180,9 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
 
   return (
     <>
-      <div className="fixed inset-0 z-50 overflow-y-auto p-2 sm:p-4 md:p-6 bg-black/85 backdrop-blur-md flex min-h-full items-center justify-center animate-in fade-in duration-200">
+      <div className="fixed inset-0 z-50 overflow-y-auto p-0 sm:p-4 md:p-6 bg-black/85 backdrop-blur-md flex min-h-full items-end sm:items-center justify-center animate-in fade-in duration-200">
         <div
-          className="w-full max-w-3xl border rounded-2xl sm:rounded-3xl shadow-2xl shadow-black/90 overflow-hidden my-auto max-h-[94vh] flex flex-col transition-colors duration-300"
+          className="w-full max-w-3xl border rounded-t-3xl rounded-b-none sm:rounded-3xl shadow-2xl shadow-black/90 overflow-hidden sm:my-auto max-h-[100dvh] sm:max-h-[94vh] flex flex-col transition-colors duration-300"
           style={{
             backgroundColor: step === 3 && themeId === 'paper-polaroids' ? '#1c1917' : '#11131a',
             borderColor: activeTheme.palette.border || 'rgba(255, 255, 255, 0.15)'
@@ -787,6 +795,8 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
                           onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
                           placeholder="e.g. 202626"
                           maxLength={6}
+                          inputMode="numeric"
+                          pattern="[0-9]*"
                           className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-900 border border-white/15 text-sm text-white font-mono tracking-widest text-center"
                         />
                       </div>
@@ -799,6 +809,8 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
                           onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
                           placeholder="Confirm PIN"
                           maxLength={6}
+                          inputMode="numeric"
+                          pattern="[0-9]*"
                           className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-900 border border-white/15 text-sm text-white font-mono tracking-widest text-center"
                         />
                       </div>
@@ -808,7 +820,7 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
                     <div className="flex items-center gap-2 text-xs pt-1">
                       <span className="text-[10px] text-neutral-400">Quick PIN presets:</span>
                       <div className="flex flex-wrap gap-1.5">
-                        {['2026', '202626', '1234', '8888', '7777'].map((suggestedPin) => (
+                        {['2026', '202625', '250826'].map((suggestedPin) => (
                           <button
                             key={suggestedPin}
                             type="button"
@@ -836,6 +848,42 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
                           </span>
                         )}
                       </div>
+                    )}
+                  </div>
+                )}
+
+                {visibility === 'private' && (
+                  <div className="p-4 sm:p-5 rounded-2xl bg-sky-500/5 border border-sky-400/20 space-y-4">
+                    <div className="flex items-start gap-2 text-xs text-neutral-300">
+                      <Lock className="w-4 h-4 text-sky-300 shrink-0 mt-0.5" />
+                      <span><strong className="text-white">Set a separate viewer PIN.</strong> This only opens the private archive and can never edit it.</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <input
+                        type={showPin ? 'text' : 'password'}
+                        value={viewerPin}
+                        onChange={(e) => setViewerPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        placeholder="Viewer PIN"
+                        maxLength={6}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        className="w-full min-h-12 px-3.5 py-2.5 rounded-xl bg-neutral-900 border border-white/15 text-base text-white font-mono tracking-widest text-center"
+                      />
+                      <input
+                        type={showPin ? 'text' : 'password'}
+                        value={confirmViewerPin}
+                        onChange={(e) => setConfirmViewerPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        placeholder="Confirm viewer PIN"
+                        maxLength={6}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        className="w-full min-h-12 px-3.5 py-2.5 rounded-xl bg-neutral-900 border border-white/15 text-base text-white font-mono tracking-widest text-center"
+                      />
+                    </div>
+                    {viewerPin.length > 0 && (
+                      <p className={`text-xs ${viewerPinEvaluation.isAllowed && isViewerPinMatching && viewerPin !== pin ? 'text-emerald-400' : 'text-amber-300'}`}>
+                        {viewerPin === pin && pin ? 'Viewer PIN must be different from the contributor PIN.' : !isViewerPinMatching && confirmViewerPin ? 'Viewer PINs do not match.' : viewerPinEvaluation.message}
+                      </p>
                     )}
                   </div>
                 )}
@@ -1007,4 +1055,3 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
     </>
   );
 };
-

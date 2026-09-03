@@ -2,16 +2,50 @@
 
 /* Native Mobile App Touch & Scroll Engine */
 html {
+  min-width: 320px;
+  min-height: 100%;
   scroll-behavior: smooth;
   -webkit-overflow-scrolling: touch;
   -webkit-tap-highlight-color: transparent;
 }
 
 body {
+  min-width: 320px;
+  min-height: 100%;
+  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   -webkit-tap-highlight-color: transparent;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-width: 320px;
+  min-height: 100%;
+}
+
+button, a, input, select, textarea {
+  touch-action: manipulation;
+}
+
+@media (max-width: 767px) {
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+  button, [role="button"] {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Momentum scroll support for all scrollable containers & dialogs */
@@ -243,4 +277,3 @@ body {
     transform: translateX(100%);
   }
 }
-

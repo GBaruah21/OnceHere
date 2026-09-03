@@ -79,7 +79,9 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
   const [mobileStudioTab, setMobileStudioTab] = useState<'preview' | 'inspector' | 'sections'>('preview');
 
   // Viewport mode
-  const [viewport, setViewport] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
+  const [viewport, setViewport] = useState<'desktop' | 'tablet' | 'mobile'>(() =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches ? 'mobile' : 'desktop'
+  );
 
   // Modals
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false);
@@ -167,7 +169,50 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
     });
     const data = await res.json();
     if (data.success && data.event) {
-      setTimeline([...timeline, data.event]);
+      setTimeline((current) => [...current, data.event]);
+    }
+  };
+
+  const handleUpdateTimelineEvent = async (id: string, updates: Partial<TimelineEvent>) => {
+    const previous = timeline;
+    setTimeline((current) => current.map((event) => (event.id === id ? { ...event, ...updates } : event)));
+    const res = await fetch(`/api/archives/${archive.id}/timeline/${id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ownerToken || ''}`
+      },
+      body: JSON.stringify(updates)
+    });
+    if (!res.ok) {
+      setTimeline(previous);
+      setSaveStatus('error');
+      return;
+    }
+    const data = await res.json();
+    if (data.event) setTimeline((current) => current.map((event) => (event.id === id ? data.event : event)));
+    setSaveStatus('saved');
+  };
+
+  const handleReorderTimeline = async (ordered: TimelineEvent[]) => {
+    const previous = timeline;
+    const normalized = ordered.map((event, position) => ({ ...event, position }));
+    setTimeline(normalized);
+    setSaveStatus('saving');
+    try {
+      const responses = await Promise.all(normalized.map((event) => fetch(`/api/archives/${archive.id}/timeline/${event.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken || ''}`
+        },
+        body: JSON.stringify({ position: event.position })
+      })));
+      if (responses.some((response) => !response.ok)) throw new Error('Could not save milestone order.');
+      setSaveStatus('saved');
+    } catch {
+      setTimeline(previous);
+      setSaveStatus('error');
     }
   };
 
@@ -190,8 +235,29 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
     });
     const data = await res.json();
     if (data.success && data.member) {
-      setMembers([...members, data.member]);
+      setMembers((current) => [...current, data.member]);
     }
+  };
+
+  const handleUpdateMember = async (id: string, updates: Partial<Member>) => {
+    const previous = members;
+    setMembers((current) => current.map((member) => (member.id === id ? { ...member, ...updates } : member)));
+    const res = await fetch(`/api/archives/${archive.id}/members/${id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ownerToken || ''}`
+      },
+      body: JSON.stringify(updates)
+    });
+    if (!res.ok) {
+      setMembers(previous);
+      setSaveStatus('error');
+      return;
+    }
+    const data = await res.json();
+    if (data.member) setMembers((current) => current.map((member) => (member.id === id ? data.member : member)));
+    setSaveStatus('saved');
   };
 
   const handleDeleteMember = async (id: string) => {
@@ -213,8 +279,29 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
     });
     const data = await res.json();
     if (data.success && data.item) {
-      setMedia([data.item, ...media]);
+      setMedia((current) => [data.item, ...current]);
     }
+  };
+
+  const handleUpdateMedia = async (id: string, updates: Partial<MediaItem>) => {
+    const previous = media;
+    setMedia((current) => current.map((item) => (item.id === id ? { ...item, ...updates } : item)));
+    const res = await fetch(`/api/archives/${archive.id}/media/${id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ownerToken || ''}`
+      },
+      body: JSON.stringify(updates)
+    });
+    if (!res.ok) {
+      setMedia(previous);
+      setSaveStatus('error');
+      return;
+    }
+    const data = await res.json();
+    if (data.item) setMedia((current) => current.map((item) => (item.id === id ? data.item : item)));
+    setSaveStatus('saved');
   };
 
   const handleDeleteMedia = async (id: string) => {
@@ -260,8 +347,21 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
     setWall(wall.map((w) => (w.id === id ? { ...w, isHidden } : w)));
   };
 
+  const updateAccessPin = async (field: 'editorPin' | 'viewerPin', pin: string) => {
+    const response = await fetch(`/api/archives/${archive.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ownerToken || ''}`
+      },
+      body: JSON.stringify({ [field]: pin })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not update PIN.');
+  };
+
   return (
-    <div className="h-screen w-full flex flex-col bg-neutral-950 text-neutral-100 overflow-hidden">
+    <div className="archive-editor h-[100dvh] w-full flex flex-col bg-neutral-950 text-neutral-100 overflow-hidden">
       
       {/* Top Studio Bar */}
       <header className="h-16 bg-neutral-900/90 border-b border-white/10 px-3 sm:px-6 flex items-center justify-between z-30 flex-shrink-0">
@@ -336,7 +436,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
           <button
             type="button"
             onClick={() => setIsImageAnalyzerOpen(true)}
-            className="p-2 rounded-xl text-purple-200 hover:text-white bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/40 text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-sm transition-all"
+            className="hidden lg:flex p-2 rounded-xl text-purple-200 hover:text-white bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/40 text-xs font-semibold items-center gap-1.5 cursor-pointer shadow-sm transition-all"
             title="AI Multimodal Photo & Note Analyzer"
           >
             <Camera className="w-4 h-4 text-purple-400" />
@@ -345,7 +445,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
 
           <button
             onClick={() => setIsAccessHistoryModalOpen(true)}
-            className="p-2 rounded-xl text-emerald-300 hover:text-white bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-xs font-medium flex items-center gap-1.5 cursor-pointer shadow-sm transition-all"
+            className="hidden lg:flex p-2 rounded-xl text-emerald-300 hover:text-white bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-xs font-medium items-center gap-1.5 cursor-pointer shadow-sm transition-all"
             title="View Security & Access History (Last 5 PIN/Edit Events)"
           >
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
@@ -354,7 +454,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
 
           <button
             onClick={() => setIsRevisionsModalOpen(true)}
-            className="p-2 rounded-xl text-neutral-300 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+            className="hidden lg:flex p-2 rounded-xl text-neutral-300 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-medium items-center gap-1.5 cursor-pointer"
             title="View Revision Snapshots"
           >
             <History className="w-4 h-4 text-amber-400" />
@@ -367,7 +467,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
               setDeployModalInitialTab('preview');
               setIsDeployModalOpen(true);
             }}
-            className="p-2 rounded-xl text-amber-200 hover:text-white bg-amber-400/10 hover:bg-amber-400/20 border border-amber-400/30 text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+            className="hidden lg:flex p-2 rounded-xl text-amber-200 hover:text-white bg-amber-400/10 hover:bg-amber-400/20 border border-amber-400/30 text-xs font-medium items-center gap-1.5 cursor-pointer"
             title="Open Full Live Preview"
           >
             <Eye className="w-4 h-4 text-amber-400" />
@@ -392,40 +492,40 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
       </header>
 
       {/* Mobile / Tablet Studio Navigation Switcher Tab Bar */}
-      <div className="lg:hidden flex items-center justify-around bg-neutral-900/95 border-b border-white/10 px-2 py-2 z-20 flex-shrink-0">
+      <nav aria-label="Mobile editor" className="lg:hidden fixed inset-x-0 bottom-0 flex items-center justify-around bg-neutral-900/95 border-t border-white/10 px-2 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] z-50 backdrop-blur-xl shadow-[0_-12px_30px_rgba(0,0,0,.45)]">
         <button
           onClick={() => setMobileStudioTab('preview')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+          className={`min-h-12 flex-1 max-w-28 flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded-xl text-[11px] font-semibold transition-all cursor-pointer ${
             mobileStudioTab === 'preview' ? 'bg-amber-400 text-neutral-950 shadow-md' : 'text-neutral-400 hover:text-white bg-white/5'
           }`}
         >
           <Eye className="w-3.5 h-3.5" />
-          <span>Canvas View</span>
+          <span>Preview</span>
         </button>
 
         <button
           onClick={() => setMobileStudioTab('inspector')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+          className={`min-h-12 flex-1 max-w-28 flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded-xl text-[11px] font-semibold transition-all cursor-pointer ${
             mobileStudioTab === 'inspector' ? 'bg-amber-400 text-neutral-950 shadow-md' : 'text-neutral-400 hover:text-white bg-white/5'
           }`}
         >
           <SlidersHorizontal className="w-3.5 h-3.5" />
-          <span>Editor & Tools</span>
+          <span>Edit</span>
         </button>
 
         <button
           onClick={() => setMobileStudioTab('sections')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+          className={`min-h-12 flex-1 max-w-28 flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded-xl text-[11px] font-semibold transition-all cursor-pointer ${
             mobileStudioTab === 'sections' ? 'bg-amber-400 text-neutral-950 shadow-md' : 'text-neutral-400 hover:text-white bg-white/5'
           }`}
         >
           <Layout className="w-3.5 h-3.5" />
-          <span>Sections ({sections.length})</span>
+          <span>Sections</span>
         </button>
-      </div>
+      </nav>
 
       {/* Main Studio Workspace */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden pb-[calc(4rem+env(safe-area-inset-bottom))] lg:pb-0">
         
         {/* LEFT SIDEBAR: Sections List & Global Settings */}
         <aside className={`w-full lg:w-64 bg-neutral-900/90 lg:bg-neutral-900/60 border-r border-white/10 flex-col justify-between flex-shrink-0 ${
@@ -543,7 +643,12 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
           </div>
 
           {/* Footer of left sidebar */}
-          <div className="p-4 border-t border-white/10 bg-neutral-950/60 text-[11px] text-neutral-400">
+          <div className="p-4 pb-6 border-t border-white/10 bg-neutral-950/60 text-[11px] text-neutral-400 space-y-3">
+            <div className="grid grid-cols-3 gap-2 lg:hidden">
+              <button type="button" onClick={() => setIsImageAnalyzerOpen(true)} className="min-h-11 rounded-xl bg-purple-500/15 border border-purple-400/30 text-purple-200 flex flex-col items-center justify-center gap-1"><Camera className="w-4 h-4" /><span>AI</span></button>
+              <button type="button" onClick={() => setIsAccessHistoryModalOpen(true)} className="min-h-11 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-200 flex flex-col items-center justify-center gap-1"><ShieldCheck className="w-4 h-4" /><span>Access</span></button>
+              <button type="button" onClick={() => setIsRevisionsModalOpen(true)} className="min-h-11 rounded-xl bg-white/5 border border-white/10 text-neutral-200 flex flex-col items-center justify-center gap-1"><History className="w-4 h-4" /><span>History</span></button>
+            </div>
             <div>Owner Studio Active</div>
             <div className="text-amber-400/80 font-mono mt-0.5 truncate">/workspace/{archive.workspaceSlug}</div>
           </div>
@@ -679,13 +784,19 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
             wall={wall}
             ownerToken={ownerToken}
             onOpenAccessHistory={() => setIsAccessHistoryModalOpen(true)}
+            onChangeEditorPin={(pin) => updateAccessPin('editorPin', pin)}
+            onChangeViewerPin={(pin) => updateAccessPin('viewerPin', pin)}
             onUpdateArchive={(up) => setArchive({ ...archive, ...up })}
             onUpdateSections={(updated) => void handleUpdateSections(updated)}
             onAddTimelineEvent={handleAddTimelineEvent}
+            onUpdateTimelineEvent={handleUpdateTimelineEvent}
+            onReorderTimeline={handleReorderTimeline}
             onDeleteTimelineEvent={handleDeleteTimelineEvent}
             onAddMember={handleAddMember}
+            onUpdateMember={handleUpdateMember}
             onDeleteMember={handleDeleteMember}
             onAddMedia={handleAddMedia}
+            onUpdateMedia={handleUpdateMedia}
             onDeleteMedia={handleDeleteMedia}
             onAddWallPost={handleAddWallPost}
             onDeleteWallPost={handleDeleteWallPost}
@@ -756,7 +867,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
             });
             setIsImageAnalyzerOpen(false);
           }}
-          onApplyToMember={(url, role, quote) => {
+          onApplyToMember={(quote, role, url) => {
             handleAddMember({
               name: 'Classmate',
               imageUrl: url,
@@ -765,13 +876,13 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
             });
             setIsImageAnalyzerOpen(false);
           }}
-          onApplyToTimeline={(title, year, desc, url) => {
+          onApplyToTimeline={(title, desc, url, icon) => {
             handleAddTimelineEvent({
               title,
-              yearLabel: year || '2024',
+              yearLabel: String(new Date().getFullYear()),
               description: desc,
               mediaUrl: url || undefined,
-              icon: '📸'
+              icon: icon || '📸'
             });
             setIsImageAnalyzerOpen(false);
           }}

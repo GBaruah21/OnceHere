@@ -33,6 +33,24 @@ export interface ImageAnalysisResult {
  */
 function getSmartFallbackAnalysis(promptHint?: string, archiveType?: string): ImageAnalysisResult {
   const hints = `${promptHint || ''} ${archiveType || ''}`.toLowerCase();
+
+  if (hints.includes('teacher') || hints.includes('teachers day') || hints.includes("teacher's day")) {
+    return {
+      caption: 'A Teachers’ Day celebration filled with handmade notes, grateful smiles, and the people who made every lesson matter.',
+      detectedMood: 'Gratitude & Celebration',
+      memoryNote: 'The timetable paused for a while, and the classroom became a small celebration of every teacher who guided us. The photographs kept the decorations, laughter, and thank-you messages together in one place.',
+      suggestedNotes: [
+        { authorName: 'Class Representative', text: 'Thank you for believing in us, even on the days we forgot the homework.' },
+        { authorName: 'Batchmate', text: 'The cards were handmade, the rehearsal was last-minute, and the smiles were completely real.' },
+        { authorName: 'Class Scribe', text: 'One day dedicated to the teachers behind so many of our everyday memories.' }
+      ],
+      quote: '“Some of the lessons we remember most were never written on the board.”',
+      suggestedMilestoneTitle: 'Teachers’ Day Together',
+      suggestedRole: 'Class Representative',
+      tags: ['Teachers Day', 'Classroom', 'Gratitude', 'Celebration'],
+      altText: 'Students and teachers smiling together during a Teachers’ Day classroom celebration'
+    };
+  }
   
   if (hints.includes('canteen') || hints.includes('chai') || hints.includes('food') || hints.includes('samosa') || hints.includes('coffee') || hints.includes('tea') || hints.includes('cafe')) {
     return {
@@ -283,7 +301,9 @@ export async function analyzeMemoryImage(
     const systemPrompt = `You are the lead memory curator, archivist, and yearbook editor for OnceHere—a premium digital memory archive platform for school batches, college classes, teams, and reunions.
 Analyze the provided photograph or video highlight with deep emotional resonance, nostalgic warmth, authenticity, and observant detail.
 Generate engaging memory artifacts suitable for media vaults, captions, suggested classmate notes, and timeline milestones.
-${contextHint ? `Contextual clue: ${contextHint}` : ''}
+Treat the creator's contextual clue, draft caption, and requested changes as authoritative. Use visual analysis to enrich those details, not contradict them. If a previous suggestion and a change request are supplied, produce a genuinely different revision that follows the requested tone, length, and event.
+Never invent a different occasion when the creator identifies one. Keep captions natural, specific, and suitable for a student memory archive.
+${contextHint ? `Creator context and instructions: ${contextHint}` : ''}
 ${archiveType ? `Archive category: ${archiveType}` : ''}`;
 
     const promptText = `Please analyze this memory photo/video and output a structured JSON analysis containing:

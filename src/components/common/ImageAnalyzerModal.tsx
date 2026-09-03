@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Sparkles,
   Upload,
@@ -35,7 +35,9 @@ interface ImageAnalyzerModalProps {
   isOpen: boolean;
   onClose: () => void;
   archiveType?: ArchiveType;
+  themeId?: ThemeId;
   initialImageUrl?: string;
+  initialContextHint?: string;
   onApplyToVault?: (url: string, caption: string, tags?: string[]) => void;
   onApplyToWall?: (text: string, authorName?: string, mediaUrl?: string) => void;
   onApplyToTimeline?: (title: string, desc: string, mediaUrl?: string, icon?: string) => void;
@@ -70,6 +72,7 @@ export const ImageAnalyzerModal: React.FC<ImageAnalyzerModalProps> = ({
   onClose,
   archiveType = 'college',
   initialImageUrl = '',
+  initialContextHint = '',
   onApplyToVault,
   onApplyToWall,
   onApplyToTimeline,
@@ -78,12 +81,22 @@ export const ImageAnalyzerModal: React.FC<ImageAnalyzerModalProps> = ({
   const [imageUrl, setImageUrl] = useState(initialImageUrl);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewDataUrl, setPreviewDataUrl] = useState<string>(initialImageUrl);
-  const [contextHint, setContextHint] = useState('');
+  const [contextHint, setContextHint] = useState(initialContextHint);
+  const [revisionInstruction, setRevisionInstruction] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<ImageAnalysisData | null>(null);
   const [appliedAction, setAppliedAction] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setImageUrl(initialImageUrl);
+    setPreviewDataUrl(initialImageUrl);
+    setContextHint(initialContextHint);
+    setRevisionInstruction('');
+    setAnalysis(null);
+    setErrorMsg(null);
+  }, [initialImageUrl, initialContextHint, isOpen]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -168,11 +181,21 @@ export const ImageAnalyzerModal: React.FC<ImageAnalyzerModalProps> = ({
 
   const activeImg = previewDataUrl || imageUrl;
 
+  const generateAnotherVersion = () => {
+    const previousSuggestion = analysis
+      ? `Previous suggestion: "${analysis.caption}". Create a clearly different version without losing the real event details.`
+      : '';
+    const refinement = revisionInstruction.trim()
+      ? `Creator's requested change: ${revisionInstruction.trim()}`
+      : 'Create a fresh alternative caption with a different wording and emotional angle.';
+    triggerAnalysis(activeImg, [contextHint.trim(), previousSuggestion, refinement].filter(Boolean).join('\n'));
+  };
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/85 backdrop-blur-md overflow-y-auto animate-in fade-in duration-200">
-      <div className="w-full max-w-3xl bg-neutral-900 border border-white/15 rounded-3xl shadow-2xl shadow-black/90 overflow-hidden my-6">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6 bg-black/85 backdrop-blur-md overflow-y-auto animate-in fade-in duration-200">
+      <div className="w-full max-w-3xl bg-neutral-900 border border-white/15 rounded-t-3xl rounded-b-none sm:rounded-3xl shadow-2xl shadow-black/90 overflow-hidden sm:my-6 max-h-[100dvh] flex flex-col">
         
         {/* Header */}
         <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-neutral-950/80">
@@ -197,7 +220,7 @@ export const ImageAnalyzerModal: React.FC<ImageAnalyzerModalProps> = ({
         </div>
 
         {/* Content grid */}
-        <div className="p-5 sm:p-6 grid grid-cols-1 md:grid-cols-12 gap-6 max-h-[75vh] overflow-y-auto">
+        <div className="p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] grid grid-cols-1 md:grid-cols-12 gap-5 sm:gap-6 flex-1 min-h-0 overflow-y-auto">
           
           {/* Left Column: Image input & Preview */}
           <div className="md:col-span-5 space-y-4">
@@ -281,16 +304,17 @@ export const ImageAnalyzerModal: React.FC<ImageAnalyzerModalProps> = ({
               </div>
             </div>
 
-            {/* Context clue input */}
+            {/* Creator context clue input */}
             <div className="space-y-1.5">
-              <label className="text-[11px] font-semibold text-neutral-300">Context Clue (Optional)</label>
-              <input
-                type="text"
+              <label className="text-[11px] font-semibold text-neutral-300">Tell AI what this photo is</label>
+              <textarea
                 value={contextHint}
                 onChange={(e) => setContextHint(e.target.value)}
-                placeholder="e.g. 2nd year trip, canteen adda, hostel roof"
+                rows={2}
+                placeholder="e.g. Teachers’ Day celebration, farewell group photo, first college trip"
                 className="w-full px-3 py-1.5 rounded-xl bg-neutral-950 border border-white/15 text-xs text-white placeholder:text-neutral-600 focus:outline-none focus:border-amber-400"
               />
+              <p className="text-[10px] text-neutral-500">AI uses this clue together with the photograph instead of guessing the occasion alone.</p>
             </div>
 
             {/* Sample presets */}
@@ -364,11 +388,30 @@ export const ImageAnalyzerModal: React.FC<ImageAnalyzerModalProps> = ({
                   </div>
                   <button
                     type="button"
-                    onClick={() => triggerAnalysis(activeImg, contextHint)}
+                    onClick={generateAnotherVersion}
                     className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white transition-colors cursor-pointer text-xs flex items-center gap-1"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Re-Analyze</span>
+                    <span>New Version</span>
+                  </button>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-purple-500/10 border border-purple-400/25 space-y-2">
+                  <label className="text-[11px] font-semibold text-purple-200">What should AI change?</label>
+                  <textarea
+                    value={revisionInstruction}
+                    onChange={(e) => setRevisionInstruction(e.target.value)}
+                    rows={2}
+                    placeholder="e.g. make it shorter, more emotional, funnier, or mention Teachers’ Day"
+                    className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-purple-400/25 text-xs text-white placeholder:text-neutral-600 focus:outline-none focus:border-purple-400"
+                  />
+                  <button
+                    type="button"
+                    onClick={generateAnotherVersion}
+                    disabled={!activeImg || isAnalyzing}
+                    className="w-full py-2 rounded-xl bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/30 text-purple-100 text-xs font-semibold flex items-center justify-center gap-1.5 disabled:opacity-40"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> Generate another version
                   </button>
                 </div>
 

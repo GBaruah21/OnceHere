@@ -37,10 +37,17 @@ import {
   Lock,
   ExternalLink,
   Copy,
-  Check
+  Check,
+  ChevronUp,
+  ChevronDown,
+  GripVertical,
+  Save,
+  X,
+  Star,
+  Hash
 } from 'lucide-react';
 import { THEMES, FONT_PRESETS } from '../../config/themes';
-import { downloadRecoveryKeyFile, SessionStorage, generateRecoveryKey } from '../../lib/security';
+import { downloadRecoveryKeyFile, SessionStorage, evaluatePin } from '../../lib/security';
 import {
   ARCHIVE_SUGGESTIONS,
   MILESTONE_SUGGESTIONS,
@@ -64,13 +71,19 @@ interface SectionSettingsPanelProps {
   wall: WallPost[];
   ownerToken?: string;
   onOpenAccessHistory?: () => void;
+  onChangeEditorPin?: (pin: string) => Promise<void>;
+  onChangeViewerPin?: (pin: string) => Promise<void>;
   onUpdateArchive: (updates: Partial<Archive>) => void;
   onUpdateSections: (sections: Section[]) => void;
   onAddTimelineEvent: (event: Partial<TimelineEvent>) => void;
+  onUpdateTimelineEvent: (id: string, updates: Partial<TimelineEvent>) => void;
+  onReorderTimeline: (events: TimelineEvent[]) => void;
   onDeleteTimelineEvent: (id: string) => void;
   onAddMember: (member: Partial<Member>) => void;
+  onUpdateMember: (id: string, updates: Partial<Member>) => void;
   onDeleteMember: (id: string) => void;
   onAddMedia: (media: Partial<MediaItem>) => void;
+  onUpdateMedia: (id: string, updates: Partial<MediaItem>) => void;
   onDeleteMedia: (id: string) => void;
   onAddWallPost?: (post: Partial<WallPost>) => void;
   onDeleteWallPost: (id: string) => void;
@@ -87,13 +100,19 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   wall,
   ownerToken,
   onOpenAccessHistory,
+  onChangeEditorPin,
+  onChangeViewerPin,
   onUpdateArchive,
   onUpdateSections,
   onAddTimelineEvent,
+  onUpdateTimelineEvent,
+  onReorderTimeline,
   onDeleteTimelineEvent,
   onAddMember,
+  onUpdateMember,
   onDeleteMember,
   onAddMedia,
+  onUpdateMedia,
   onDeleteMedia,
   onAddWallPost,
   onDeleteWallPost,
@@ -103,14 +122,25 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   const [accessLogs, setAccessLogs] = useState<AccessHistoryEntry[]>([]);
   const [loadingAccessLogs, setLoadingAccessLogs] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
+  const [newEditorPin, setNewEditorPin] = useState('');
+  const [newViewerPin, setNewViewerPin] = useState('');
+  const [pinMessage, setPinMessage] = useState<string | null>(null);
+  const [, setRecoveryKeyVersion] = useState(0);
 
   const getOrInitRecoveryKey = (): string => {
-    let key = SessionStorage.getRecoveryKey(archive.id);
-    if (!key) {
-      key = archive.id.startsWith('demo-') ? 'mc_rec_sample_key_123' : generateRecoveryKey();
-      SessionStorage.setRecoveryKey(archive.id, key);
-    }
-    return key;
+    return SessionStorage.getRecoveryKey(archive.id) || (archive.id.startsWith('demo-') ? 'mc_rec_sample_key_123' : '');
+  };
+
+  const rotateRecoveryKey = async () => {
+    const response = await fetch(`/api/archives/${archive.id}/auth/recovery/regenerate`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerToken || ''}` }
+    });
+    const data = await response.json();
+    if (!response.ok || !data.recoveryKey) throw new Error(data.error || 'Could not replace the recovery key.');
+    SessionStorage.setRecoveryKey(archive.id, data.recoveryKey);
+    setRecoveryKeyVersion((value) => value + 1);
+    setPinMessage('New recovery key created. Download it now; the old key no longer works.');
   };
 
   useEffect(() => {
@@ -140,21 +170,33 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   const [newEventDesc, setNewEventDesc] = useState('');
   const [newEventIcon, setNewEventIcon] = useState('📍');
   const [newEventImg, setNewEventImg] = useState('');
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  const [draggedEventId, setDraggedEventId] = useState<string | null>(null);
 
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberRole, setNewMemberRole] = useState('');
   const [newMemberQuote, setNewMemberQuote] = useState('');
   const [newMemberImg, setNewMemberImg] = useState('');
+  const [newMemberTags, setNewMemberTags] = useState('');
+  const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
 
   const [newMediaUrl, setNewMediaUrl] = useState('');
   const [newMediaCaption, setNewMediaCaption] = useState('');
   const [newMediaType, setNewMediaType] = useState<'image' | 'video'>('image');
+  const [newMediaHint, setNewMediaHint] = useState('');
+  const [newMediaTags, setNewMediaTags] = useState('');
   const [autoAiOnUpload, setAutoAiOnUpload] = useState(true);
   const [isAiAnalyzingMedia, setIsAiAnalyzingMedia] = useState(false);
   const [aiSuggestedNotes, setAiSuggestedNotes] = useState<Array<{ id: string; authorName: string; text: string; selected: boolean }>>([]);
   const [aiDetectedMood, setAiDetectedMood] = useState<string | null>(null);
   const [aiTags, setAiTags] = useState<string[]>([]);
   const [aiAnalysisError, setAiAnalysisError] = useState<string | null>(null);
+  const [editingMediaId, setEditingMediaId] = useState<string | null>(null);
+  const [editMediaCaption, setEditMediaCaption] = useState('');
+  const [editMediaTags, setEditMediaTags] = useState('');
+  const [editMediaAltText, setEditMediaAltText] = useState('');
+  const [editMediaDate, setEditMediaDate] = useState('');
+  const [editMediaFeatured, setEditMediaFeatured] = useState(false);
 
   // Memory Wall local creation state
   const [newWallAuthor, setNewWallAuthor] = useState('');
@@ -165,6 +207,49 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   // Image Analyzer Modal State & Target
   const [isAnalyzerOpen, setIsAnalyzerOpen] = useState(false);
   const [analyzerTarget, setAnalyzerTarget] = useState<'media' | 'member' | 'timeline' | 'wall'>('media');
+  const [analyzerEditingMediaId, setAnalyzerEditingMediaId] = useState<string | null>(null);
+
+  const parseTags = (value: string) => Array.from(new Set(
+    value.split(',').map((tag) => tag.trim().replace(/^#/, '')).filter(Boolean)
+  ));
+
+  const resetEventForm = () => {
+    setEditingEventId(null);
+    setNewEventTitle('');
+    setNewEventDesc('');
+    setNewEventImg('');
+    setNewEventIcon('📍');
+  };
+
+  const startEditingEvent = (event: TimelineEvent) => {
+    setEditingEventId(event.id);
+    setNewEventTitle(event.title);
+    setNewEventYear(event.yearLabel);
+    setNewEventDesc(event.description);
+    setNewEventIcon(event.icon || '📍');
+    setNewEventImg(event.mediaUrl || '');
+  };
+
+  const moveTimelineEvent = (sourceId: string, targetId: string) => {
+    if (sourceId === targetId) return;
+    const ordered = [...timeline].sort((a, b) => a.position - b.position);
+    const sourceIndex = ordered.findIndex((event) => event.id === sourceId);
+    const targetIndex = ordered.findIndex((event) => event.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    const [moved] = ordered.splice(sourceIndex, 1);
+    ordered.splice(targetIndex, 0, moved);
+    onReorderTimeline(ordered);
+  };
+
+  const moveTimelineBy = (eventId: string, direction: -1 | 1) => {
+    const ordered = [...timeline].sort((a, b) => a.position - b.position);
+    const index = ordered.findIndex((event) => event.id === eventId);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= ordered.length) return;
+    const [moved] = ordered.splice(index, 1);
+    ordered.splice(target, 0, moved);
+    onReorderTimeline(ordered);
+  };
 
   // Automatic Gemini AI analysis for media uploads
   const handleAnalyzeMediaItem = async (mediaSource: string, customHint?: string) => {
@@ -254,7 +339,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   };
 
   return (
-    <div className="h-full overflow-y-auto p-5 sm:p-6 space-y-6 text-neutral-200">
+    <div className="h-full overflow-y-auto p-4 sm:p-6 pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-6 space-y-6 text-neutral-200">
       
       {/* 1. Global Theme & Typography Switcher */}
       {activeTab === 'theme' && (
@@ -380,20 +465,68 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             <div className="p-4 rounded-2xl bg-neutral-950 border border-white/10 space-y-2">
               <label className="text-xs font-semibold text-neutral-300">Change Contributor PIN</label>
               <input
-                type="text"
+                type="password"
+                value={newEditorPin}
                 maxLength={6}
+                inputMode="numeric"
+                pattern="[0-9]*"
                 placeholder="Enter new 4 or 6 digit numeric PIN"
-                onChange={(e) => {
-                  const val = e.target.value.replace(/\D/g, '');
-                  if (val.length === 4 || val.length === 6) {
-                    onUpdateArchive({ editorPinHash: val } as any);
+                onChange={(e) => setNewEditorPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                className="w-full min-h-12 px-3.5 py-2 rounded-xl bg-neutral-900 border border-white/15 text-base text-white font-mono"
+              />
+              <button
+                type="button"
+                disabled={!evaluatePin(newEditorPin).isAllowed || !onChangeEditorPin}
+                onClick={async () => {
+                  try {
+                    await onChangeEditorPin?.(newEditorPin);
+                    setNewEditorPin('');
+                    setPinMessage('Contributor PIN updated.');
+                  } catch (error: any) {
+                    setPinMessage(error.message || 'Could not update PIN.');
                   }
                 }}
-                className="w-full px-3.5 py-2 rounded-xl bg-neutral-900 border border-white/15 text-xs text-white font-mono"
-              />
-              <p className="text-[11px] text-neutral-500">Must be 4 or 6 numbers.</p>
+                className="w-full min-h-11 rounded-xl bg-amber-400 text-neutral-950 text-sm font-semibold disabled:opacity-40"
+              >
+                Save Contributor PIN
+              </button>
+              <p className="text-[11px] text-neutral-500">{newEditorPin ? evaluatePin(newEditorPin).message : 'Must be 4 or 6 numbers.'}</p>
             </div>
           )}
+
+          {archive.visibility === 'private' && (
+            <div className="p-4 rounded-2xl bg-neutral-950 border border-white/10 space-y-2">
+              <label className="text-xs font-semibold text-neutral-300">Change Private Viewer PIN</label>
+              <input
+                type="password"
+                value={newViewerPin}
+                maxLength={6}
+                inputMode="numeric"
+                pattern="[0-9]*"
+                placeholder="New viewer PIN"
+                onChange={(e) => setNewViewerPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                className="w-full min-h-12 px-3.5 py-2 rounded-xl bg-neutral-900 border border-white/15 text-base text-white font-mono"
+              />
+              <button
+                type="button"
+                disabled={!evaluatePin(newViewerPin).isAllowed || !onChangeViewerPin}
+                onClick={async () => {
+                  try {
+                    await onChangeViewerPin?.(newViewerPin);
+                    setNewViewerPin('');
+                    setPinMessage('Viewer PIN updated.');
+                  } catch (error: any) {
+                    setPinMessage(error.message || 'Could not update PIN.');
+                  }
+                }}
+                className="w-full min-h-11 rounded-xl bg-sky-300 text-neutral-950 text-sm font-semibold disabled:opacity-40"
+              >
+                Save Viewer PIN
+              </button>
+              <p className="text-[11px] text-neutral-500">This PIN grants viewing only. Keep it separate from the contributor PIN.</p>
+            </div>
+          )}
+          {pinMessage && <p role="status" className="text-xs text-amber-300">{pinMessage}</p>}
 
           <div className="pt-4 border-t border-white/10 space-y-3">
             <div>
@@ -409,33 +542,36 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             <div className="p-3 rounded-2xl bg-neutral-900 border border-white/10 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-mono text-amber-300 select-all break-all">
-                  {getOrInitRecoveryKey()}
+                  {getOrInitRecoveryKey() || 'Hidden for security — replace it to receive a new key'}
                 </span>
                 <button
                   type="button"
                   onClick={() => {
                     const k = getOrInitRecoveryKey();
+                    if (!k) return;
                     navigator.clipboard?.writeText(k);
                     setCopiedKey(true);
                     setTimeout(() => setCopiedKey(false), 2000);
                   }}
-                  className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-xs text-white flex items-center gap-1 shrink-0 cursor-pointer"
+                  disabled={!getOrInitRecoveryKey()}
+                  className="min-h-11 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-xs text-white flex items-center gap-1 shrink-0 cursor-pointer disabled:opacity-40"
                 >
                   {copiedKey ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-neutral-300" />}
                   <span>{copiedKey ? 'Copied' : 'Copy'}</span>
                 </button>
               </div>
 
-              <div className="flex items-center justify-between pt-2 border-t border-white/5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-white/5">
                 <button
                   type="button"
                   onClick={() => downloadRecoveryKeyFile(archive.title, getOrInitRecoveryKey())}
-                  className="text-[11px] text-amber-400 hover:text-amber-300 font-medium flex items-center gap-1.5 cursor-pointer"
+                  disabled={!getOrInitRecoveryKey()}
+                  className="min-h-11 text-xs text-amber-400 hover:text-amber-300 font-medium flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
                 >
                   <Download className="w-3.5 h-3.5" />
                   <span>Download .txt Key File</span>
                 </button>
-                <span className="text-[10px] text-neutral-500 font-mono">256-bit cryptographic key</span>
+                <button type="button" onClick={async () => { try { await rotateRecoveryKey(); } catch (error: any) { setPinMessage(error.message || 'Could not replace key.'); } }} className="min-h-11 px-3 rounded-xl border border-rose-400/30 bg-rose-500/10 text-xs text-rose-200">Replace recovery key</button>
               </div>
             </div>
           </div>
@@ -713,8 +849,8 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
           <div className="p-4 rounded-2xl bg-neutral-950 border border-white/10 space-y-3">
             <div className="flex items-center justify-between">
               <div className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add New Milestone</span>
+                {editingEventId ? <Edit2 className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                <span>{editingEventId ? 'Edit Milestone' : 'Add New Milestone'}</span>
               </div>
               <button
                 type="button"
@@ -808,36 +944,54 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               placeholder="Paste photo/video URL or upload local file..."
             />
 
-            <button
-              type="button"
-              onClick={() => {
-                if (!newEventTitle.trim()) return;
-                onAddTimelineEvent({
-                  title: newEventTitle.trim(),
-                  yearLabel: newEventYear.trim(),
-                  description: newEventDesc.trim(),
-                  icon: newEventIcon.trim() || '📍',
-                  mediaUrl: newEventImg.trim() || undefined
-                });
-                setNewEventTitle('');
-                setNewEventDesc('');
-                setNewEventImg('');
-              }}
-              className="w-full py-2 rounded-xl text-xs font-semibold bg-amber-400 text-neutral-950 hover:brightness-110 shadow-sm transition-all cursor-pointer"
-            >
-              Add Milestone to Journey
-            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!newEventTitle.trim()) return;
+                  const values = {
+                    title: newEventTitle.trim(),
+                    yearLabel: newEventYear.trim(),
+                    description: newEventDesc.trim(),
+                    icon: newEventIcon.trim() || '📍',
+                    mediaUrl: newEventImg.trim() || undefined
+                  };
+                  if (editingEventId) onUpdateTimelineEvent(editingEventId, values);
+                  else onAddTimelineEvent(values);
+                  resetEventForm();
+                }}
+                className="flex-1 py-2 rounded-xl text-xs font-semibold bg-amber-400 text-neutral-950 hover:brightness-110 shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                {editingEventId && <Save className="w-3.5 h-3.5" />}
+                {editingEventId ? 'Save Milestone Changes' : 'Add Milestone to Journey'}
+              </button>
+              {editingEventId && (
+                <button type="button" onClick={resetEventForm} className="px-3 rounded-xl border border-white/15 bg-white/5 text-neutral-300 hover:text-white" title="Cancel editing">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
 
           {/* List existing milestones */}
           <div className="space-y-2">
             <div className="text-xs font-semibold text-neutral-400">Current Milestones ({timeline.length})</div>
-            {timeline.map((event) => (
+            {[...timeline].sort((a, b) => a.position - b.position).map((event, index) => (
               <div
                 key={event.id}
-                className="p-3 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between gap-3 text-xs"
+                draggable
+                onDragStart={() => setDraggedEventId(event.id)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => {
+                  if (draggedEventId) moveTimelineEvent(draggedEventId, event.id);
+                  setDraggedEventId(null);
+                }}
+                onDragEnd={() => setDraggedEventId(null)}
+                className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs transition-all ${draggedEventId === event.id ? 'bg-amber-500/15 border-amber-400/50 opacity-70' : 'bg-white/5 border-white/10'}`}
               >
-                <div className="truncate">
+                <div className="w-full sm:w-auto flex items-center gap-2 min-w-0">
+                <GripVertical className="hidden sm:block w-4 h-4 text-neutral-500 cursor-grab active:cursor-grabbing shrink-0" aria-label="Drag to reorder" />
+                <div className="truncate flex-1 min-w-0">
                   <div className="font-bold text-white flex items-center gap-1.5">
                     <span>{event.icon}</span>
                     <span className="font-mono text-amber-400">[{event.yearLabel}]</span>
@@ -845,14 +999,22 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                   </div>
                   <div className="text-[11px] text-neutral-400 truncate mt-0.5">{event.description}</div>
                 </div>
+                </div>
 
-                <button
-                  type="button"
-                  onClick={() => onDeleteTimelineEvent(event.id)}
-                  className="p-1.5 rounded-lg text-neutral-400 hover:text-rose-400 bg-white/5 hover:bg-rose-500/10 transition-colors cursor-pointer"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                <div className="grid grid-cols-4 gap-2 shrink-0 w-full sm:w-auto">
+                  <button type="button" onClick={() => moveTimelineBy(event.id, -1)} disabled={index === 0} className="min-h-11 min-w-11 p-2 rounded-lg bg-white/5 text-neutral-400 hover:text-white disabled:opacity-20 flex items-center justify-center" title="Move earlier">
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  </button>
+                  <button type="button" onClick={() => moveTimelineBy(event.id, 1)} disabled={index === timeline.length - 1} className="min-h-11 min-w-11 p-2 rounded-lg bg-white/5 text-neutral-400 hover:text-white disabled:opacity-20 flex items-center justify-center" title="Move later">
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+                  <button type="button" onClick={() => startEditingEvent(event)} className="min-h-11 min-w-11 p-2 rounded-lg text-sky-300 hover:text-white bg-sky-500/10 hover:bg-sky-500/20 flex items-center justify-center" title="Edit milestone">
+                    <Edit2 className="w-3.5 h-3.5" />
+                  </button>
+                  <button type="button" onClick={() => onDeleteTimelineEvent(event.id)} className="min-h-11 min-w-11 p-2 rounded-lg text-neutral-400 hover:text-rose-400 bg-white/5 hover:bg-rose-500/10 flex items-center justify-center" title="Delete milestone">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -871,8 +1033,8 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
           <div className="p-4 rounded-2xl bg-neutral-950 border border-white/10 space-y-3">
             <div className="flex items-center justify-between">
               <div className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add Classmate / Member</span>
+                {editingMemberId ? <Edit2 className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                <span>{editingMemberId ? 'Edit Member' : 'Add Classmate / Member'}</span>
               </div>
               <button
                 type="button"
@@ -972,25 +1134,51 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               }}
             />
 
-            <button
-              type="button"
-              onClick={() => {
-                if (!newMemberName.trim()) return;
-                onAddMember({
-                  name: newMemberName.trim(),
-                  groupLabel: newMemberRole.trim() || undefined,
-                  quote: newMemberQuote.trim() || undefined,
-                  imageUrl: newMemberImg.trim() || undefined
-                });
-                setNewMemberName('');
-                setNewMemberRole('');
-                setNewMemberQuote('');
-                setNewMemberImg('');
-              }}
-              className="w-full py-2 rounded-xl text-xs font-semibold bg-amber-400 text-neutral-950 hover:brightness-110 shadow-sm transition-all cursor-pointer"
-            >
-              Add Member to Yearbook
-            </button>
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-neutral-300">Profile tags</label>
+              <input
+                type="text"
+                value={newMemberTags}
+                onChange={(e) => setNewMemberTags(e.target.value)}
+                placeholder="e.g. CSE, Student Council, Backbench Club"
+                className="w-full px-3 py-1.5 rounded-lg bg-neutral-900 border border-white/10 text-xs text-white"
+              />
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!newMemberName.trim()) return;
+                  const values = {
+                    name: newMemberName.trim(),
+                    groupLabel: newMemberRole.trim() || undefined,
+                    quote: newMemberQuote.trim() || undefined,
+                    imageUrl: newMemberImg.trim() || undefined,
+                    tags: parseTags(newMemberTags)
+                  };
+                  if (editingMemberId) onUpdateMember(editingMemberId, values);
+                  else onAddMember(values);
+                  setEditingMemberId(null);
+                  setNewMemberName('');
+                  setNewMemberRole('');
+                  setNewMemberQuote('');
+                  setNewMemberImg('');
+                  setNewMemberTags('');
+                }}
+                className="flex-1 py-2 rounded-xl text-xs font-semibold bg-amber-400 text-neutral-950 hover:brightness-110 shadow-sm transition-all cursor-pointer"
+              >
+                {editingMemberId ? 'Save Member Changes' : 'Add Member to Yearbook'}
+              </button>
+              {editingMemberId && (
+                <button type="button" onClick={() => {
+                  setEditingMemberId(null);
+                  setNewMemberName(''); setNewMemberRole(''); setNewMemberQuote(''); setNewMemberImg(''); setNewMemberTags('');
+                }} className="px-3 rounded-xl border border-white/15 bg-white/5 text-neutral-300" title="Cancel editing">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
 
           {/* List members */}
@@ -1011,13 +1199,21 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => onDeleteMember(member.id)}
-                  className="p-1.5 rounded-lg text-neutral-400 hover:text-rose-400 bg-white/5 hover:bg-rose-500/10 transition-colors cursor-pointer"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button type="button" onClick={() => {
+                    setEditingMemberId(member.id);
+                    setNewMemberName(member.name);
+                    setNewMemberRole(member.groupLabel || '');
+                    setNewMemberQuote(member.quote || '');
+                    setNewMemberImg(member.imageUrl || '');
+                    setNewMemberTags((member.tags || []).join(', '));
+                  }} className="min-w-11 min-h-11 p-2 rounded-lg text-sky-300 bg-sky-500/10 hover:bg-sky-500/20 flex items-center justify-center" title="Edit member">
+                    <Edit2 className="w-3.5 h-3.5" />
+                  </button>
+                  <button type="button" onClick={() => onDeleteMember(member.id)} className="min-w-11 min-h-11 p-2 rounded-lg text-neutral-400 hover:text-rose-400 bg-white/5 hover:bg-rose-500/10 flex items-center justify-center" title="Delete member">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -1030,6 +1226,20 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
           <div className="border-b border-white/10 pb-3">
             <h3 className="text-base font-bold font-serif text-white">Media Vault</h3>
             <p className="text-xs text-neutral-400">High-resolution photo dumps, video highlights, and AI-generated nostalgic captions & notes.</p>
+          </div>
+
+          <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-1.5">
+            <label className="text-xs font-semibold text-neutral-300">Memories visible before “Show more”</label>
+            <select
+              value={archive.settings?.mediaInitialDisplayCount || 12}
+              onChange={(e) => onUpdateArchive({
+                settings: { ...archive.settings, mediaInitialDisplayCount: Number(e.target.value) }
+              })}
+              className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-white/15 text-xs text-white"
+            >
+              {[4, 8, 12, 16, 24, 40].map((count) => <option key={count} value={count}>{count} memories</option>)}
+            </select>
+            <p className="text-[10px] text-neutral-500">Visitors can still filter categories or open the remaining memories.</p>
           </div>
 
           {/* Add media with Gemini AI integration */}
@@ -1053,6 +1263,20 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               </label>
             </div>
 
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-neutral-300 flex items-center gap-1.5">
+                <Lightbulb className="w-3.5 h-3.5 text-purple-400" /> Tell AI what this memory is
+              </label>
+              <input
+                type="text"
+                value={newMediaHint}
+                onChange={(e) => setNewMediaHint(e.target.value)}
+                placeholder="e.g. Teachers’ Day celebration, farewell group photo, first college trip"
+                className="w-full px-3 py-2 rounded-xl bg-neutral-900 border border-purple-400/25 text-xs text-white focus:outline-none focus:border-purple-400"
+              />
+              <p className="text-[10px] text-neutral-500">This clue is combined with the image and anything you type in the caption.</p>
+            </div>
+
             <MediaUploader
               acceptMode="image-video"
               value={newMediaUrl}
@@ -1060,7 +1284,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 setNewMediaUrl(url);
                 if (type) setNewMediaType(type);
                 if (url && type !== 'video' && autoAiOnUpload) {
-                  handleAnalyzeMediaItem(url);
+                  handleAnalyzeMediaItem(url, newMediaHint);
                 }
               }}
               label="Select Media File or Link"
@@ -1076,7 +1300,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               <div className="flex items-center justify-between gap-2 pt-0.5">
                 <button
                   type="button"
-                  onClick={() => handleAnalyzeMediaItem(newMediaUrl)}
+                  onClick={() => handleAnalyzeMediaItem(newMediaUrl, [newMediaHint, newMediaCaption && `Creator draft: ${newMediaCaption}`].filter(Boolean).join('. '))}
                   disabled={isAiAnalyzingMedia}
                   className="w-full py-1.5 px-3 rounded-xl bg-gradient-to-r from-purple-500/20 via-pink-500/15 to-amber-500/20 hover:from-purple-500/30 hover:to-amber-500/30 border border-purple-400/30 text-purple-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-50"
                 >
@@ -1118,6 +1342,28 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 placeholder="Caption (e.g. Late night canteen memories and chai debates)"
                 className="w-full px-3 py-2 rounded-xl bg-neutral-900 border border-white/10 text-xs text-white focus:outline-none focus:border-amber-400"
               />
+              {newMediaUrl && newMediaType !== 'video' && newMediaCaption.trim() && (
+                <button
+                  type="button"
+                  onClick={() => handleAnalyzeMediaItem(newMediaUrl, [newMediaHint, `Keep the creator's meaning and improve this draft caption: ${newMediaCaption}`].filter(Boolean).join('. '))}
+                  disabled={isAiAnalyzingMedia}
+                  className="w-full mt-1.5 py-1.5 rounded-lg bg-purple-500/10 border border-purple-400/25 text-[11px] text-purple-200 hover:bg-purple-500/20 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  <RefreshCw className="w-3 h-3" /> Improve using my words
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-neutral-300 flex items-center gap-1.5"><Hash className="w-3 h-3" /> Categories / hashtags</label>
+              <input
+                type="text"
+                value={newMediaTags}
+                onChange={(e) => setNewMediaTags(e.target.value)}
+                placeholder="Teachers Day, Farewell, Classroom, Friends"
+                className="w-full px-3 py-2 rounded-xl bg-neutral-900 border border-white/10 text-xs text-white"
+              />
+              <p className="text-[10px] text-neutral-500">Separate tags with commas. Each tag becomes a visitor filter.</p>
             </div>
 
             {/* Suggested Classmate Notes & Scribbles */}
@@ -1191,7 +1437,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                   url: newMediaUrl.trim(),
                   caption: newMediaCaption.trim() || undefined,
                   type: newMediaType,
-                  tags: aiTags.length > 0 ? aiTags : ['Memories'],
+                  tags: parseTags(newMediaTags).length > 0 ? parseTags(newMediaTags) : (aiTags.length > 0 ? aiTags : ['Memories']),
                   notes: attachedNotes
                 });
 
@@ -1201,12 +1447,54 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 setAiSuggestedNotes([]);
                 setAiDetectedMood(null);
                 setAiTags([]);
+                setNewMediaHint('');
+                setNewMediaTags('');
               }}
               className="w-full py-2.5 rounded-xl text-xs font-bold bg-amber-400 text-neutral-950 hover:brightness-110 shadow-md transition-all cursor-pointer"
             >
               Upload to Memory Vault
             </button>
           </div>
+
+          {editingMediaId && (
+            <div className="p-4 rounded-2xl bg-sky-500/10 border border-sky-400/30 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-bold text-sky-200 flex items-center gap-1.5"><Edit2 className="w-3.5 h-3.5" /> Edit saved memory</div>
+                <button type="button" onClick={() => setEditingMediaId(null)} className="p-1 rounded-lg text-neutral-400 hover:text-white" title="Cancel editing"><X className="w-4 h-4" /></button>
+              </div>
+              <input value={editMediaCaption} onChange={(e) => setEditMediaCaption(e.target.value)} placeholder="Caption" className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-white/15 text-xs text-white" />
+              <input value={editMediaTags} onChange={(e) => setEditMediaTags(e.target.value)} placeholder="Categories / hashtags, separated by commas" className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-white/15 text-xs text-white" />
+              <input value={editMediaAltText} onChange={(e) => setEditMediaAltText(e.target.value)} placeholder="Image description for accessibility" className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-white/15 text-xs text-white" />
+              <input type="date" value={editMediaDate} onChange={(e) => setEditMediaDate(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-white/15 text-xs text-white" />
+              <label className="flex items-center gap-2 text-xs text-neutral-200">
+                <input type="checkbox" checked={editMediaFeatured} onChange={(e) => setEditMediaFeatured(e.target.checked)} className="rounded border-white/20" />
+                <Star className="w-3.5 h-3.5 text-amber-400" /> Feature this memory in Highlights
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => {
+                  const item = media.find((entry) => entry.id === editingMediaId);
+                  if (!item || item.type === 'video') return;
+                  setAnalyzerTarget('media');
+                  setAnalyzerEditingMediaId(item.id);
+                  setIsAnalyzerOpen(true);
+                }} className="py-2 rounded-xl bg-purple-500/15 border border-purple-400/30 text-purple-200 text-xs font-semibold flex items-center justify-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5" /> Improve with AI
+                </button>
+                <button type="button" onClick={() => {
+                  onUpdateMedia(editingMediaId, {
+                    caption: editMediaCaption.trim() || undefined,
+                    tags: parseTags(editMediaTags),
+                    altText: editMediaAltText.trim() || undefined,
+                    eventDate: editMediaDate || undefined,
+                    isFeatured: editMediaFeatured
+                  });
+                  setEditingMediaId(null);
+                }} className="py-2 rounded-xl bg-sky-400 text-neutral-950 text-xs font-bold flex items-center justify-center gap-1.5">
+                  <Save className="w-3.5 h-3.5" /> Save changes
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Gallery items list */}
           <div className="space-y-2">
@@ -1221,39 +1509,37 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                   )}
                   
                   {/* Overlay caption & note count */}
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-2 flex flex-col justify-between">
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent opacity-100 transition-opacity p-2 flex flex-col justify-between">
                     <div className="flex justify-end gap-1">
                       <button
                         type="button"
-                        onClick={async () => {
-                          // Quick AI note generation for existing item
-                          try {
-                            const res = await fetch('/api/ai/analyze-image', {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({
-                                image: item.url,
-                                contextHint: `${archive.title} · ${item.caption || ''}`,
-                                archiveType: archive.archiveType
-                              })
-                            });
-                            const d = await res.json();
-                            if (d.analysis?.memoryNote) {
-                              await fetch(`/api/archives/${archive.id}/media/${item.id}/notes`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                  authorName: 'AI Reflection',
-                                  text: d.analysis.memoryNote
-                                })
-                              });
-                              alert('✨ Added AI memory note to this photo!');
-                            }
-                          } catch (e) {
-                            console.error(e);
-                          }
+                        onClick={() => {
+                          setEditingMediaId(item.id);
+                          setEditMediaCaption(item.caption || '');
+                          setEditMediaTags((item.tags || []).join(', '));
+                          setEditMediaAltText(item.altText || '');
+                          setEditMediaDate(item.eventDate || '');
+                          setEditMediaFeatured(Boolean(item.isFeatured));
                         }}
-                        title="Add AI Memory Note"
+                        title="Edit memory"
+                        className="p-1 rounded-md bg-sky-500/80 text-white hover:bg-sky-500"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingMediaId(item.id);
+                          setEditMediaCaption(item.caption || '');
+                          setEditMediaTags((item.tags || []).join(', '));
+                          setEditMediaAltText(item.altText || '');
+                          setEditMediaDate(item.eventDate || '');
+                          setEditMediaFeatured(Boolean(item.isFeatured));
+                          setAnalyzerTarget('media');
+                          setAnalyzerEditingMediaId(item.id);
+                          setIsAnalyzerOpen(true);
+                        }}
+                        title="Analyze or rewrite with AI"
                         className="p-1 rounded-md bg-purple-500/80 text-white hover:bg-purple-500 transition-colors cursor-pointer"
                       >
                         <Sparkles className="w-3.5 h-3.5" />
@@ -1343,6 +1629,10 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               onChange={(url) => setNewWallImg(url)}
               label="Attach Photo to Scribble (Optional)"
               placeholder="Paste image link or upload photo from device..."
+              onOpenAnalyzer={() => {
+                setAnalyzerTarget('wall');
+                setIsAnalyzerOpen(true);
+              }}
             />
 
             <button
@@ -1541,37 +1831,55 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
       {isAnalyzerOpen && (
         <ImageAnalyzerModal
           isOpen={isAnalyzerOpen}
-          onClose={() => setIsAnalyzerOpen(false)}
+          onClose={() => {
+            setIsAnalyzerOpen(false);
+            setAnalyzerEditingMediaId(null);
+          }}
           archiveType={archive.archiveType}
           themeId={archive.themeId}
+          initialImageUrl={analyzerEditingMediaId ? (media.find((item) => item.id === analyzerEditingMediaId)?.url || '') : (
+            analyzerTarget === 'media' ? newMediaUrl : analyzerTarget === 'member' ? newMemberImg : analyzerTarget === 'timeline' ? newEventImg : newWallImg
+          )}
+          initialContextHint={analyzerEditingMediaId
+            ? [editMediaTags, editMediaCaption].filter(Boolean).join('. ')
+            : analyzerTarget === 'media'
+              ? [newMediaHint, newMediaCaption].filter(Boolean).join('. ')
+              : analyzerTarget === 'member'
+                ? [newMemberRole, newMemberQuote].filter(Boolean).join('. ')
+                : analyzerTarget === 'timeline'
+                  ? [newEventYear, newEventTitle, newEventDesc].filter(Boolean).join('. ')
+                  : newWallText}
           onApplyToVault={(url, caption, tags) => {
-            onAddMedia({
-              url,
-              caption: caption || undefined,
-              tags: tags || undefined
-            });
+            if (analyzerEditingMediaId) {
+              onUpdateMedia(analyzerEditingMediaId, { caption: caption || undefined, tags: tags || undefined });
+              setEditMediaCaption(caption || '');
+              setEditMediaTags((tags || []).join(', '));
+              setEditingMediaId(analyzerEditingMediaId);
+              setAnalyzerEditingMediaId(null);
+            } else {
+              setNewMediaUrl(url);
+              setNewMediaCaption(caption || '');
+              setNewMediaTags((tags || []).join(', '));
+            }
             setIsAnalyzerOpen(false);
           }}
-          onApplyToMember={(url, role, quote) => {
-            onAddMember({
-              name: 'Classmate',
-              imageUrl: url,
-              groupLabel: role || undefined,
-              quote: quote || undefined
-            });
+          onApplyToMember={(quote, role, url) => {
+            setNewMemberImg(url || newMemberImg);
+            setNewMemberRole(role || '');
+            setNewMemberQuote(quote || '');
             setIsAnalyzerOpen(false);
           }}
-          onApplyToTimeline={(title, year, desc, url) => {
-            onAddTimelineEvent({
-              title,
-              yearLabel: year || '2024',
-              description: desc,
-              mediaUrl: url || undefined,
-              icon: '📸'
-            });
+          onApplyToTimeline={(title, desc, url, icon) => {
+            setNewEventTitle(title);
+            setNewEventDesc(desc);
+            setNewEventImg(url || newEventImg);
+            setNewEventIcon(icon || '📸');
             setIsAnalyzerOpen(false);
           }}
-          onApplyToWall={(text) => {
+          onApplyToWall={(text, authorName, url) => {
+            setNewWallText(text);
+            if (authorName) setNewWallAuthor(authorName);
+            if (url) setNewWallImg(url);
             setIsAnalyzerOpen(false);
           }}
         />

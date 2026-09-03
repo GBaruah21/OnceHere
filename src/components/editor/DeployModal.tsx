@@ -210,9 +210,9 @@ export const DeployModal: React.FC<DeployModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-black/90 backdrop-blur-md overflow-y-auto animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 md:p-6 bg-black/90 backdrop-blur-md overflow-y-auto animate-in fade-in duration-200">
       <div
-        className={`w-full transition-all duration-300 bg-neutral-900 border border-white/15 rounded-3xl shadow-2xl shadow-black/90 overflow-hidden my-auto ${
+        className={`w-full transition-all duration-300 bg-neutral-900 border border-white/15 rounded-t-3xl rounded-b-none sm:rounded-3xl shadow-2xl shadow-black/90 overflow-hidden sm:my-auto max-h-[100dvh] ${
           modalTab === 'preview' ? 'max-w-6xl h-[92vh] flex flex-col' : 'max-w-2xl'
         }`}
       >

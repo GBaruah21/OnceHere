@@ -80,8 +80,8 @@ export const RevisionsModal: React.FC<RevisionsModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
-      <div className="w-full max-w-xl bg-neutral-900 border border-white/15 rounded-3xl shadow-2xl overflow-hidden my-8">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
+      <div className="w-full max-w-xl bg-neutral-900 border border-white/15 rounded-t-3xl rounded-b-none sm:rounded-3xl shadow-2xl overflow-hidden sm:my-8 max-h-[100dvh] flex flex-col">
         
         {/* Header */}
         <div className="px-6 py-5 border-b border-white/10 flex items-center justify-between bg-neutral-950/60">
@@ -101,7 +101,7 @@ export const RevisionsModal: React.FC<RevisionsModalProps> = ({
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
+        <div className="p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] space-y-4 flex-1 min-h-0 overflow-y-auto">
           {errorMsg && (
             <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4" />

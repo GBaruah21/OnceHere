@@ -96,7 +96,7 @@ export const PlatformNavbar: React.FC<PlatformNavbarProps> = ({
             <button
               onClick={onKeyAccessClick}
               className="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-medium text-neutral-300 hover:text-amber-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-all flex items-center gap-1.5 cursor-pointer"
-              title="Unlock your archive using your Owner Recovery Key or PIN"
+              title="Recover owner access using your Owner Recovery Key"
             >
               <KeyRound className="w-3.5 h-3.5 text-amber-400" />
               <span>Key Access</span>

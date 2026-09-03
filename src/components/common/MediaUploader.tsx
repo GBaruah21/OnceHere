@@ -143,7 +143,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
                 if (fileInputRef.current) fileInputRef.current.click();
               }}
               title="Change media"
-              className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white transition-colors cursor-pointer"
+              className="min-w-11 min-h-11 p-2 rounded-lg bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white transition-colors cursor-pointer flex items-center justify-center"
             >
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
@@ -151,7 +151,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
               type="button"
               onClick={handleClear}
               title="Remove media"
-              className="p-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 transition-colors cursor-pointer"
+              className="min-w-11 min-h-11 p-2 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 transition-colors cursor-pointer flex items-center justify-center"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -161,11 +161,11 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         /* Empty state: Tabs for Direct File Upload & URL Input */
         <div className="space-y-2">
           {/* Mode Switcher Tabs */}
-          <div className="flex items-center gap-1 p-0.5 rounded-lg bg-neutral-900 border border-white/10 w-fit">
+          <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-neutral-900 border border-white/10 w-full sm:w-fit">
             <button
               type="button"
               onClick={() => setActiveTab('upload')}
-              className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
+              className={`min-h-11 px-3 py-2 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                 activeTab === 'upload' ? 'bg-amber-400 text-neutral-950 font-bold shadow-sm' : 'text-neutral-400 hover:text-white'
               }`}
             >
@@ -175,7 +175,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
             <button
               type="button"
               onClick={() => setActiveTab('url')}
-              className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
+              className={`min-h-11 px-3 py-2 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                 activeTab === 'url' ? 'bg-amber-400 text-neutral-950 font-bold shadow-sm' : 'text-neutral-400 hover:text-white'
               }`}
             >
@@ -194,7 +194,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
                 onDragLeave={() => setIsDragging(false)}
                 onDrop={handleDrop}
                 onClick={() => fileInputRef.current?.click()}
-                className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-all ${
+                className={`min-h-36 border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all flex items-center justify-center ${
                   isDragging
                     ? 'border-amber-400 bg-amber-400/10 text-amber-200'
                     : 'border-white/15 hover:border-white/30 bg-neutral-900/60 hover:bg-neutral-900 text-neutral-400 hover:text-neutral-200'
@@ -214,7 +214,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
               </div>
             </div>
           ) : (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
               <input
                 type="text"
                 value={urlInput}
@@ -226,13 +226,13 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
                   }
                 }}
                 placeholder={placeholder}
-                className="flex-1 px-3 py-2 rounded-xl bg-neutral-900 border border-white/10 text-xs text-white placeholder-neutral-500 font-mono focus:outline-none focus:border-amber-400"
+                className="flex-1 min-h-12 px-3 py-2 rounded-xl bg-neutral-900 border border-white/10 text-base sm:text-xs text-white placeholder-neutral-500 font-mono focus:outline-none focus:border-amber-400"
               />
               <button
                 type="button"
                 onClick={handleUrlSubmit}
                 disabled={!urlInput.trim()}
-                className="px-3 py-2 rounded-xl bg-amber-400 text-neutral-950 font-semibold text-xs disabled:opacity-40 hover:brightness-110 cursor-pointer transition-all"
+                className="min-h-12 px-4 py-2 rounded-xl bg-amber-400 text-neutral-950 font-semibold text-sm disabled:opacity-40 hover:brightness-110 cursor-pointer transition-all"
               >
                 Attach
               </button>

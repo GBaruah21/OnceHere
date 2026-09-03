@@ -124,7 +124,11 @@ IMPORTANT SECURITY NOTICE:
 - If you switch browsers, clear your browser cookies, or lose access, this key
   is the ONLY way to regain administrative owner rights to your archive.
 - Never share this key with other contributors or in public chat channels.
-- Use your 4 or 6 digit PIN for regular collaborator access.
+- Contributor and private-viewer PINs are intentionally NOT included in this file.
+  Keeping every access secret together would make a stolen file much more harmful.
+- To restore access: open OnceHere, choose "Recover Archive", paste this key,
+  then open Access & Privacy to set a new contributor or viewer PIN if needed.
+- Share only the appropriate 4 or 6 digit PIN with collaborators or viewers.
 
 ================================================================================
 `;
@@ -147,24 +151,42 @@ IMPORTANT SECURITY NOTICE:
 export const SessionStorage = {
   getOwnerToken(archiveId: string): string | null {
     if (typeof window === 'undefined') return null;
-    return localStorage.getItem(`mc_owner_${archiveId}`);
+    return sessionStorage.getItem(`mc_owner_${archiveId}`);
   },
   setOwnerToken(archiveId: string, token: string) {
     if (typeof window === 'undefined') return;
-    localStorage.setItem(`mc_owner_${archiveId}`, token);
+    sessionStorage.setItem(`mc_owner_${archiveId}`, token);
   },
   clearOwnerToken(archiveId: string) {
     if (typeof window === 'undefined') return;
-    localStorage.removeItem(`mc_owner_${archiveId}`);
+    sessionStorage.removeItem(`mc_owner_${archiveId}`);
+  },
+
+  getWorkspaceToken(workspaceSlug: string): string | null {
+    if (typeof window === 'undefined') return null;
+    return sessionStorage.getItem(`mc_workspace_${workspaceSlug}`);
+  },
+  setWorkspaceToken(workspaceSlug: string, token: string) {
+    if (typeof window === 'undefined') return;
+    sessionStorage.setItem(`mc_workspace_${workspaceSlug}`, token);
+  },
+
+  getViewerToken(slug: string): string | null {
+    if (typeof window === 'undefined') return null;
+    return sessionStorage.getItem(`mc_viewer_${slug}`);
+  },
+  setViewerToken(slug: string, token: string) {
+    if (typeof window === 'undefined') return;
+    sessionStorage.setItem(`mc_viewer_${slug}`, token);
   },
 
   getRecoveryKey(archiveId: string): string | null {
     if (typeof window === 'undefined') return null;
-    return localStorage.getItem(`mc_key_${archiveId}`);
+    return sessionStorage.getItem(`mc_key_${archiveId}`);
   },
   setRecoveryKey(archiveId: string, key: string) {
     if (typeof window === 'undefined') return;
-    localStorage.setItem(`mc_key_${archiveId}`, key);
+    sessionStorage.setItem(`mc_key_${archiveId}`, key);
   },
 
   getEditorSession(archiveId: string): { token: string; expiresAt: number } | null {

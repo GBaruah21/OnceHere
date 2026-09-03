@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeSlug, validateSlug, resolveTenant } from '../src/lib/tenant';
-import { evaluatePin, generateRecoveryKey } from '../src/lib/security';
-import { createSignedToken, verifySignedToken, findArchiveAndVerifyKey } from '../server/auth';
-import { db } from '../server/db';
+import { sanitizeSlug, validateSlug, resolveTenant } from './src/lib/tenant';
+import { evaluatePin, generateRecoveryKey } from './src/lib/security';
+import { createSignedToken, verifySignedToken, findArchiveAndVerifyKey } from './server/auth';
+import { db } from './server/db';
 
 describe('Tenant & Slug Utilities', () => {
   it('sanitizes titles into valid web slugs', () => {
@@ -57,15 +57,14 @@ describe('Security & Authentication', () => {
     expect(fakeVerification.valid).toBe(false);
   });
 
-  it('universally verifies recovery keys and PINs', () => {
-    // Test Mary's sample archive
+  it('uses recovery keys for owner access and never upgrades a PIN to owner', () => {
     const pinResult = findArchiveAndVerifyKey('202525', 'marys-convent-2025');
-    expect(pinResult.success).toBe(true);
-    expect(pinResult.archive?.id).toBe('demo-marys-2025');
+    expect(pinResult.success).toBe(false);
 
     const recoveryResult = findArchiveAndVerifyKey('mc_rec_sample_key_123');
     expect(recoveryResult.success).toBe(true);
     expect(recoveryResult.token).toBeDefined();
+    expect(verifySignedToken(recoveryResult.token!).role).toBe('owner');
   });
 });
 

@@ -68,7 +68,8 @@ import {
   MessageCircle,
   FileText,
   Trash2,
-  ArrowLeft
+  ArrowLeft,
+  Star
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -556,6 +557,8 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   const [mediaCategory, setMediaCategory] = useState<string>('all');
   const [mediaLayout, setMediaLayout] = useState<'grid' | 'masonry' | 'polaroid'>('grid');
   const [mediaSearch, setMediaSearch] = useState<string>('');
+  const defaultMediaDisplayCount = archive.settings?.mediaInitialDisplayCount || 12;
+  const [visibleMediaCount, setVisibleMediaCount] = useState(defaultMediaDisplayCount);
 
   // Social sharing modal & quick copy toast
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
@@ -762,7 +765,10 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
         return timeA - timeB;
       });
     } else if (mediaSort === 'highlights') {
-      list.sort((a, b) => (b.caption?.length || 0) - (a.caption?.length || 0));
+      list.sort((a, b) =>
+        Number(Boolean(b.isFeatured)) - Number(Boolean(a.isFeatured)) ||
+        (b.caption?.length || 0) - (a.caption?.length || 0)
+      );
     } else if (mediaSort === 'random') {
       // Deterministic pseudo-random shuffle
       list.sort((a, b) => (a.id > b.id ? 1 : -1));
@@ -770,6 +776,12 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
     return list;
   }, [currentMediaList, mediaSort, mediaCategory, mediaSearch]);
+
+  useEffect(() => {
+    setVisibleMediaCount(defaultMediaDisplayCount);
+  }, [defaultMediaDisplayCount, mediaSort, mediaCategory, mediaSearch]);
+
+  const displayedMedia = sortedAndFilteredMedia.slice(0, visibleMediaCount);
 
   // Tab navigation handler: Smooth scroll or section focus (works in window and nested editor preview containers)
   const handleSelectTab = (tabId: string, sectionStableType?: string) => {
@@ -1124,7 +1136,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   return (
     <div
       ref={viewRootRef}
-      className={`min-h-screen w-full transition-colors duration-500 ${themeBg} ${activeFontPreset.bodyClass} relative selection:bg-amber-400 selection:text-neutral-950 overflow-x-hidden ${readOnly ? '[&_form]:hidden' : ''}`}
+      className={`min-h-[100dvh] w-full transition-colors duration-500 ${themeBg} ${activeFontPreset.bodyClass} relative selection:bg-amber-400 selection:text-neutral-950 overflow-x-hidden ${readOnly ? '[&_form]:hidden' : ''}`}
       style={{ fontFamily: activeFontPreset.bodyFamily }}
     >
       
@@ -1764,7 +1776,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                             : 'bg-white/5 text-neutral-400 hover:text-white'
                         }`}
                       >
-                        All Photos ({media.length})
+                        All Photos ({currentMediaList.length})
                       </button>
                       {mediaCategories.map((cat) => (
                         <button
@@ -1790,9 +1802,9 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                   variants={staggerGridVariants}
                   initial="hidden"
                   animate="visible"
-                  className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6"
+                  className="grid grid-cols-1 min-[360px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6"
                 >
-                  {sortedAndFilteredMedia.map((item, idx) => (
+                  {displayedMedia.map((item, idx) => (
                     <motion.div
                       key={item.id}
                       variants={staggerCardVariants}
@@ -1819,7 +1831,13 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                           </div>
                         ) : <div />}
 
-                        <div className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-black/60 text-white/80 backdrop-blur-md opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+                        {item.isFeatured && (
+                          <div className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400 text-neutral-950 flex items-center gap-1 shadow-md">
+                            <Star className="w-3 h-3 fill-current" /> Highlight
+                          </div>
+                        )}
+
+                        <div className="hidden sm:flex px-2 py-0.5 rounded-full text-[10px] font-mono bg-black/60 text-white/80 backdrop-blur-md opacity-0 group-hover:opacity-100 transition-opacity items-center gap-1">
                           <ZoomIn className="w-2.5 h-2.5 text-amber-400" />
                           <span>Touch to Zoom</span>
                         </div>
@@ -1842,6 +1860,28 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                     </motion.div>
                   ))}
                 </motion.div>
+
+                {sortedAndFilteredMedia.length > defaultMediaDisplayCount && (
+                  <div className="mt-7 flex justify-center gap-2">
+                    {visibleMediaCount < sortedAndFilteredMedia.length ? (
+                      <button
+                        type="button"
+                        onClick={() => setVisibleMediaCount((count) => Math.min(count + defaultMediaDisplayCount, sortedAndFilteredMedia.length))}
+                        className="px-5 py-2.5 rounded-full bg-amber-400 text-neutral-950 text-xs font-bold hover:brightness-110"
+                      >
+                        Show more memories ({sortedAndFilteredMedia.length - visibleMediaCount})
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setVisibleMediaCount(defaultMediaDisplayCount)}
+                        className="px-5 py-2.5 rounded-full bg-white/10 border border-white/15 text-white text-xs font-semibold hover:bg-white/15"
+                      >
+                        Show fewer memories
+                      </button>
+                    )}
+                  </div>
+                )}
 
                 {sortedAndFilteredMedia.length === 0 && (
                   <div className="text-center py-12 text-neutral-400 text-xs">
@@ -2179,7 +2219,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
       </main>
 
       {/* 3. ANIMATED EXPANDABLE FLOATING ACTION DOCK */}
-      <div className="fixed bottom-5 right-4 sm:right-6 z-40 flex flex-col items-end">
+      <div className={`${isPreviewMode ? 'absolute bottom-20 left-3 z-20 items-start' : 'fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-3 sm:right-6 z-40 items-end'} flex flex-col max-w-[calc(100vw-1.5rem)]`}>
         {/* Backdrop dismiss when floating menu is open */}
         {isFloatingMenuOpen && (
           <div
@@ -2196,7 +2236,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.85, y: 20 }}
               transition={{ type: 'spring', damping: 22, stiffness: 320 }}
-              className="relative z-40 mb-3 flex flex-col items-end gap-2.5 p-3 rounded-3xl bg-neutral-950/95 text-white backdrop-blur-2xl border border-white/20 shadow-2xl shadow-black/80 max-w-[280px] sm:max-w-xs"
+              className={`relative z-40 mb-3 flex flex-col ${isPreviewMode ? 'items-start' : 'items-end'} gap-2.5 p-3 rounded-3xl bg-neutral-950/95 text-white backdrop-blur-2xl border border-white/20 shadow-2xl shadow-black/80 max-w-[280px] sm:max-w-xs`}
             >
               <div className="text-[10px] font-mono uppercase tracking-widest text-neutral-400 px-2 pt-1 pb-0.5 w-full flex items-center justify-between border-b border-white/10">
                 <span>Quick Actions</span>
@@ -2335,8 +2375,8 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
           whileHover={{ scale: 1.06 }}
           whileTap={{ scale: 0.94 }}
           onClick={() => setIsFloatingMenuOpen(!isFloatingMenuOpen)}
-          title={isFloatingMenuOpen ? 'Close Menu' : 'Open Quick Actions Menu'}
-          className={`relative z-40 p-3.5 sm:p-4 rounded-full shadow-2xl backdrop-blur-xl border transition-all duration-300 flex items-center justify-center cursor-pointer ${
+          title={isFloatingMenuOpen ? 'Close Menu' : isPreviewMode ? 'Preview actions' : 'Open Quick Actions Menu'}
+          className={`relative z-40 ${isPreviewMode ? 'p-2.5' : 'p-3.5 sm:p-4'} rounded-full shadow-2xl backdrop-blur-xl border transition-all duration-300 flex items-center justify-center cursor-pointer ${
             isFloatingMenuOpen
               ? 'bg-neutral-900 text-white border-white/30 rotate-90 shadow-amber-500/20'
               : 'bg-gradient-to-tr from-neutral-900 via-neutral-950 to-neutral-900 text-amber-400 border-amber-500/40 hover:border-amber-400 shadow-amber-500/25 ring-2 ring-amber-400/20'
@@ -2347,9 +2387,11 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
           ) : (
             <div className="flex items-center gap-2">
               <Sparkles className="w-5 h-5 text-amber-400 animate-pulse" />
-              <span className="hidden sm:inline text-xs font-bold font-serif text-white tracking-wide pr-1">
-                Explore & Share
-              </span>
+              {!isPreviewMode && (
+                <span className="hidden sm:inline text-xs font-bold font-serif text-white tracking-wide pr-1">
+                  Explore & Share
+                </span>
+              )}
             </div>
           )}
         </motion.button>

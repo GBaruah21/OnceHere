@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { sanitizeSlug, validateSlug, resolveTenant } from '../src/lib/tenant';
 import { evaluatePin, generateRecoveryKey } from '../src/lib/security';
-import { createSignedToken, verifySignedToken, findArchiveAndVerifyKey } from '../server/auth';
+import { createSignedToken, verifySignedToken, findArchiveAndVerifyKey, verifyArchivePin, verifyViewerPin } from '../server/auth';
 import { db } from '../server/db';
 
 describe('Tenant & Slug Utilities', () => {
@@ -57,15 +57,34 @@ describe('Security & Authentication', () => {
     expect(fakeVerification.valid).toBe(false);
   });
 
-  it('universally verifies recovery keys and PINs', () => {
-    // Test Mary's sample archive
+  it('uses recovery keys for owner access and never upgrades a PIN to owner', () => {
     const pinResult = findArchiveAndVerifyKey('202525', 'marys-convent-2025');
-    expect(pinResult.success).toBe(true);
-    expect(pinResult.archive?.id).toBe('demo-marys-2025');
+    expect(pinResult.success).toBe(false);
 
     const recoveryResult = findArchiveAndVerifyKey('mc_rec_sample_key_123');
     expect(recoveryResult.success).toBe(true);
     expect(recoveryResult.token).toBeDefined();
+    expect(verifySignedToken(recoveryResult.token!).role).toBe('owner');
+  });
+
+  it('keeps contributor and private-viewer sessions least-privileged', () => {
+    const contributor = verifyArchivePin('demo-marys-2025', '202525', 'test-contributor');
+    expect(contributor.success).toBe(true);
+    expect(verifySignedToken(contributor.token!).role).toBe('contributor');
+
+    const archive = db.archives.get('demo-marys-2025')!;
+    const originalHash = archive.viewerPinHash;
+    const originalVisibility = archive.visibility;
+    archive.viewerPinHash = archive.editorPinHash;
+    archive.visibility = 'private';
+    try {
+      const viewer = verifyViewerPin('demo-marys-2025', '202525', 'test-viewer');
+      expect(viewer.success).toBe(true);
+      expect(verifySignedToken(viewer.token!).role).toBe('viewer');
+    } finally {
+      archive.viewerPinHash = originalHash;
+      archive.visibility = originalVisibility;
+    }
   });
 });
 

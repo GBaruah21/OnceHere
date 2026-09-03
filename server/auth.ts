@@ -15,7 +15,7 @@ export interface AuthContext {
 /**
  * Creates a cryptographically signed token: `${archiveId}.${role}.${expiresAtMs}.${hmac}`
  */
-export function createSignedToken(archiveId: string, role: 'owner' | 'contributor', durationHours: number): string {
+export function createSignedToken(archiveId: string, role: 'owner' | 'contributor' | 'viewer', durationHours: number): string {
   const expiresAtMs = Date.now() + durationHours * 60 * 60 * 1000;
   const expiresAt = new Date(expiresAtMs).toISOString();
   const payload = `${archiveId}.${role}.${expiresAtMs}`;
@@ -35,14 +35,14 @@ export function createSignedToken(archiveId: string, role: 'owner' | 'contributo
 /**
  * Validates a signed session token
  */
-export function verifySignedToken(token: string): { valid: boolean; archiveId?: string; role?: 'owner' | 'contributor' } {
+export function verifySignedToken(token: string): { valid: boolean; archiveId?: string; role?: 'owner' | 'contributor' | 'viewer' } {
   if (!token) return { valid: false };
 
   // Support dot-delimited tokens
   const parts = token.split('.');
   if (parts.length === 4) {
     const [archiveId, role, expiresAtMsStr, providedHmac] = parts;
-    if (role !== 'owner' && role !== 'contributor') return { valid: false };
+    if (role !== 'owner' && role !== 'contributor' && role !== 'viewer') return { valid: false };
 
     const expiresAtMs = parseInt(expiresAtMsStr, 10);
     if (isNaN(expiresAtMs) || expiresAtMs < Date.now()) {
@@ -64,7 +64,7 @@ export function verifySignedToken(token: string): { valid: boolean; archiveId?: 
   const cachedSession = db.sessions.get(token);
   if (cachedSession) {
     if (new Date(cachedSession.expiresAt).getTime() > Date.now()) {
-      if (cachedSession.role === 'owner' || cachedSession.role === 'contributor') {
+      if (cachedSession.role === 'owner' || cachedSession.role === 'contributor' || cachedSession.role === 'viewer') {
         return { valid: true, archiveId: cachedSession.archiveId, role: cachedSession.role };
       }
     } else {
@@ -166,12 +166,12 @@ export function verifyOwnerRecoveryKey(archiveId: string, rawKey: string): {
   }
 
   const clean = (rawKey || '').trim().toLowerCase();
-  if (
+  if (archive.id.startsWith('demo-') && (
     clean === 'mc_rec_downloaded_from_studio' ||
     clean === 'mc_rec_sample_key_123' ||
     clean === 'mc_rec_sample_key' ||
     clean === 'mc_rec_demo'
-  ) {
+  )) {
     const token = createSignedToken(archiveId, 'owner', 24 * 30);
     return { success: true, token };
   }
@@ -186,14 +186,49 @@ export function verifyOwnerRecoveryKey(archiveId: string, rawKey: string): {
   return { success: false, error: 'Invalid recovery key. Please check the code and try again.' };
 }
 
+/** Verify the separate private-viewer PIN without granting editing rights. */
+export function verifyViewerPin(archiveId: string, inputPin: string, ipAddress: string = 'client'): {
+  success: boolean;
+  token?: string;
+  error?: string;
+  lockedUntil?: number;
+} {
+  const archive = db.findById(archiveId);
+  if (!archive || archive.deletedAt) return { success: false, error: 'Archive not found.' };
+  if (archive.visibility !== 'private' || !archive.viewerPinHash) {
+    return { success: false, error: 'A private viewer PIN has not been configured.' };
+  }
+
+  const rateKey = `viewer-pin:${archiveId}:${ipAddress}`;
+  const now = Date.now();
+  const limit = db.rateLimits.get(rateKey);
+  if (limit?.lockedUntil && now < limit.lockedUntil) {
+    return { success: false, error: 'Too many failed attempts. Try again later.', lockedUntil: limit.lockedUntil };
+  }
+  if (limit && now - limit.firstAttemptAt > PLATFORM_CONFIG.limits.pinLockoutMinutes * 60 * 1000) {
+    db.rateLimits.delete(rateKey);
+  }
+
+  if (bcrypt.compareSync(inputPin.trim(), archive.viewerPinHash)) {
+    db.rateLimits.delete(rateKey);
+    return { success: true, token: createSignedToken(archiveId, 'viewer', 24) };
+  }
+
+  const current = db.rateLimits.get(rateKey) || { attempts: 0, firstAttemptAt: now };
+  current.attempts += 1;
+  if (current.attempts >= PLATFORM_CONFIG.limits.maxFailedPinAttempts) {
+    current.lockedUntil = now + PLATFORM_CONFIG.limits.pinLockoutMinutes * 60 * 1000;
+  }
+  db.rateLimits.set(rateKey, current);
+  return { success: false, error: 'The PIN is incorrect. Please check it and try again.', lockedUntil: current.lockedUntil };
+}
+
 /**
- * Universally find archive and verify recovery key or PIN with flexible identifier resolution.
+ * Find an archive and verify its owner recovery key with flexible identifier resolution.
  * 
  * Supports:
  * - Direct 256-bit Recovery Key lookup (with or without title)
- * - Archive PIN verification (with or without title)
  * - Flexible title/slug/URL parsing (handles full URLs, pathnames, partial titles)
- * - Workspace / ID direct unlocks
  */
 export function findArchiveAndVerifyKey(
   rawKey: string,
@@ -207,23 +242,23 @@ export function findArchiveAndVerifyKey(
   // Normalize key: remove surrounding quotes, backticks, or trailing spaces
   const cleanKey = (rawKey || '').trim().replace(/^["'`]|["'`]$/g, '').trim();
   if (!cleanKey) {
-    return { success: false, error: 'Please enter your Recovery Key or PIN.' };
+    return { success: false, error: 'Please enter your complete owner recovery key.' };
   }
 
-  // Helper to test if a key matches an archive's recovery key or PIN
+  // Helper to test if a key matches an archive's owner recovery key
   const testArchiveMatch = (archive: any): { matched: boolean; role: 'owner' | 'contributor' } => {
     if (!archive || archive.deletedAt) return { matched: false, role: 'contributor' };
 
     // 0. Test special studio-downloaded or demo key aliases
     const keyLower = cleanKey.toLowerCase();
-    if (
+    if (archive.id.startsWith('demo-') && (
       keyLower === 'mc_rec_downloaded_from_studio' ||
       keyLower === 'mc_rec_sample_key_123' ||
       keyLower === 'mc_rec_sample_key' ||
       keyLower === 'mc_rec_demo' ||
       keyLower === 'sample_key' ||
       keyLower === 'demo_key'
-    ) {
+    )) {
       return { matched: true, role: 'owner' };
     }
 
@@ -236,22 +271,6 @@ export function findArchiveAndVerifyKey(
       } catch {
         // continue
       }
-    }
-
-    // 2. Test Editor PIN hash
-    if (archive.editorPinHash) {
-      try {
-        if (bcrypt.compareSync(cleanKey, archive.editorPinHash)) {
-          return { matched: true, role: 'owner' };
-        }
-      } catch {
-        // continue
-      }
-    }
-
-    // 3. Test direct identifier match (e.g. if user passed workspaceSlug or ID directly)
-    if (cleanKey === archive.id || cleanKey === archive.workspaceSlug || cleanKey === archive.slug) {
-      return { matched: true, role: 'owner' };
     }
 
     return { matched: false, role: 'contributor' };
@@ -310,17 +329,17 @@ export function findArchiveAndVerifyKey(
       }
     }
 
-    // Test the candidate archives with the key/PIN
+    // Test candidate archives with the recovery key
     for (const candidate of candidateArchives) {
       const matchResult = testArchiveMatch(candidate);
       if (matchResult.matched) {
-        const token = createSignedToken(candidate.id, matchResult.role, 24 * 30);
+        const token = createSignedToken(candidate.id, 'owner', 24 * 30);
         return { success: true, archive: candidate, token };
       }
     }
   }
 
-  // 2. Global search across ALL active archives (for universal Recovery Key and standalone PIN unlocks)
+  // 2. Global search across active archives for a matching recovery key
   // Sort archives by most recently updated/created so active archives are matched first
   const allArchives = Array.from(db.archives.values())
     .filter((a) => !a.deletedAt)
@@ -329,7 +348,7 @@ export function findArchiveAndVerifyKey(
   for (const archive of allArchives) {
     const matchResult = testArchiveMatch(archive);
     if (matchResult.matched) {
-      const token = createSignedToken(archive.id, matchResult.role, 24 * 30);
+      const token = createSignedToken(archive.id, 'owner', 24 * 30);
       return { success: true, archive, token };
     }
   }
@@ -338,12 +357,12 @@ export function findArchiveAndVerifyKey(
   if (identifier && identifier.trim()) {
     return {
       success: false,
-      error: `Could not unlock archive with the provided Key/PIN. Please verify your Recovery Key or PIN code.`
+      error: 'Could not unlock that archive. Verify the complete owner recovery key.'
     };
   }
 
   return {
     success: false,
-    error: 'Invalid Key or PIN. Please check the code or enter your full 256-bit Recovery Key.'
+    error: 'Invalid recovery key. Enter the complete owner recovery key from your saved file.'
   };
 }

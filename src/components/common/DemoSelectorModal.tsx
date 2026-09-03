@@ -88,7 +88,7 @@ export const DemoSelectorModal: React.FC<DemoSelectorModalProps> = ({
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 md:p-8 overflow-y-auto">
+      <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6 md:p-8 overflow-y-auto">
         {/* Backdrop */}
         <motion.div
           initial={{ opacity: 0 }}
@@ -104,7 +104,7 @@ export const DemoSelectorModal: React.FC<DemoSelectorModalProps> = ({
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.94, y: 20 }}
           transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-          className="relative w-full max-w-4xl bg-neutral-900/95 border border-white/15 rounded-3xl shadow-2xl overflow-hidden z-10 my-auto text-neutral-100"
+          className="relative w-full max-w-4xl bg-neutral-900/95 border border-white/15 rounded-t-3xl rounded-b-none sm:rounded-3xl shadow-2xl overflow-hidden z-10 sm:my-auto text-neutral-100 max-h-[100dvh]"
         >
           {/* Header */}
           <div className="p-6 sm:p-8 pb-4 border-b border-white/10 flex items-start justify-between gap-4">

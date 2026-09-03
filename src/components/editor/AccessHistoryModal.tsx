@@ -135,8 +135,8 @@ export const AccessHistoryModal: React.FC<AccessHistoryModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
-      <div className="w-full max-w-xl bg-neutral-900 border border-white/15 rounded-3xl shadow-2xl overflow-hidden my-8 flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
+      <div className="w-full max-w-xl bg-neutral-900 border border-white/15 rounded-t-3xl rounded-b-none sm:rounded-3xl shadow-2xl overflow-hidden sm:my-8 flex flex-col max-h-[100dvh] sm:max-h-[90vh] pb-[env(safe-area-inset-bottom)]">
         {/* Header */}
         <div className="px-6 py-5 border-b border-white/10 flex items-center justify-between bg-neutral-950/60 flex-shrink-0">
           <div className="flex items-center gap-3">
