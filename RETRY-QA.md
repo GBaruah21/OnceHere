@@ -18,6 +18,12 @@ Regression coverage adds five independent iterations of the private-resource per
 
 The supported browser API was inspected again: it provides no viewport resizing/device-emulation capability. Therefore no additional mobile viewport or full browser E2E pass is claimed in this follow-up. The 9-size matrix and authenticated browser upload/crop/admin flows remain unverified. Completing them requires an isolated staging environment plus a mobile-capable test runner. A complete security sign-off also remains blocked by the sessionStorage bearer design, snapshot persistence, media validation/storage and AI remote-fetch concerns listed below. Do not deploy on the basis of this partial security repair.
 
+## Yearbook-member-count repair — 4 September 2026
+
+- Archive-wide save now accepts and validates `approxPeopleCount`, so editing and saving an archive does not silently discard the planned yearbook size.
+- Public/editor responses preserve that saved number until individual member profiles exist. Once profiles are added, the displayed count becomes the real profile total.
+- New regression coverage creates, recovers, reloads and updates draft archives with 30, 31, 40 and 100 members. It also rejects zero. Existing archives are not reset, recreated or removed by this change; the application continues loading the persisted archive snapshot before serving requests.
+
 ## Changes
 
 - AI no longer returns canned captions when its key, image fetch, provider request or response fails. Errors are visible and preserve the previous caption. Rewrite context includes the current draft and recent suggestions; exact repeats and stale responses are rejected. Automatic AI upload analysis is now opt-in.

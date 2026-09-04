@@ -143,7 +143,9 @@ function sanitizeArchive(archive: Archive): Partial<Archive> {
   const { editorPinHash, viewerPinHash, recoveryKeyHash, ...safe } = archive;
   const members = db.getMembers(archive.id);
   const media = db.getMediaItems(archive.id);
-  const actualMembersCount = members.length > 0 ? members.length : (archive.approxPeopleCount || 0);
+  // Before profiles are added, preserve the owner's planned yearbook size.
+  // The previous response overwrote it with zero after an edit path omitted it.
+  const actualMembersCount = members.length > 0 ? members.length : (archive.approxPeopleCount ?? 0);
   const actualMediaCount = media.length > 0 ? media.length : 0;
   return {
     ...safe,
@@ -475,6 +477,13 @@ apiRouter.patch('/archives/:id', (req: Request, res: Response) => {
   if (body.subtitle !== undefined) updates.subtitle = body.subtitle;
   if (body.themeId) updates.themeId = body.themeId;
   if (body.batchLabel !== undefined) updates.batchLabel = body.batchLabel;
+  if (body.approxPeopleCount !== undefined) {
+    const count = Number(body.approxPeopleCount);
+    if (!Number.isInteger(count) || count < 1 || count > 100000) {
+      return res.status(400).json({ error: 'Yearbook member count must be a whole number between 1 and 100000.' });
+    }
+    updates.approxPeopleCount = count;
+  }
   if (body.settings) updates.settings = { ...db.findById(id)?.settings, ...body.settings } as any;
 
   // Owner-only fields

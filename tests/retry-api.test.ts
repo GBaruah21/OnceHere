@@ -27,6 +27,9 @@ const request = (path: string, body?: unknown, headers: Record<string, string> =
   headers: { 'Content-Type': 'application/json', ...headers },
   body: body === undefined ? undefined : JSON.stringify(body)
 });
+const patchRequest = (path: string, body: unknown, headers: Record<string, string> = {}) => fetch(base + path, {
+  method: 'PATCH', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body)
+});
 
 describe.each([1, 2, 3, 4, 5])('Retry regression iteration %i', iteration => {
   it('enforces private subresource isolation, viewer read-only access and session revocation', async () => {
@@ -106,5 +109,27 @@ describe.each([1, 2, 3, 4, 5])('Retry regression iteration %i', iteration => {
     expect(db.listPublicArchives().some(archive => archive.id === id)).toBe(false);
     db.updateArchive(id, { deploymentStatus: 'deployed', visibility: 'private' }, 'owner');
     expect(db.listPublicArchives().some(archive => archive.id === id)).toBe(false);
+  });
+
+  it('persists every planned yearbook size and keeps the draft recoverable', async () => {
+    for (const count of [30, 31, 40, 100]) {
+      const key = `mc_rec_member_count_${iteration}_${count}_f83dba74`;
+      const created = await request('/archives', {
+        archiveType: 'school', title: `Members ${iteration}-${count}`, organizationName: 'Fictional QA',
+        startYear: 2024, endYear: 2026, approxPeopleCount: count, themeId: 'midnight-cinema',
+        visibility: 'public', contributionMode: 'owner-only', recoveryKey: key
+      });
+      expect(created.status).toBe(201);
+      const result = await created.json();
+      expect(result.archive.approxPeopleCount).toBe(count);
+      expect(result.archive.membersCount).toBe(count);
+      const recovery = await request('/archives/auth/key-access', { key });
+      const recovered = await recovery.json();
+      expect(recovered.archive.approxPeopleCount).toBe(count);
+      const updated = await patchRequest(`/archives/${result.archive.id}`, { approxPeopleCount: count + 1 }, { Authorization: `Bearer ${recovered.token}` });
+      expect(updated.status).toBe(200);
+      expect((await updated.json()).archive.membersCount).toBe(count + 1);
+      expect((await patchRequest(`/archives/${result.archive.id}`, { approxPeopleCount: 0 }, { Authorization: `Bearer ${recovered.token}` })).status).toBe(400);
+    }
   });
 });
