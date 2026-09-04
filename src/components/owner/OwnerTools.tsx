@@ -40,6 +40,8 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
 
   const request = async (path: string, options: RequestInit = {}) => {
     const response = await fetch(path, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(30000),
       ...options,
       headers: { 'x-platform-admin-key': ownerKey, ...(options.headers || {}) }
     });
@@ -48,7 +50,7 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
     return data;
   };
 
-  const load = async () => {
+  const load = async (refreshSettings = true) => {
     try {
       const [archiveData, settingsData, shareData] = await Promise.all([
         request('/api/admin/archives'),
@@ -56,14 +58,18 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
         request('/api/admin/share-activity')
       ]);
       setArchives(archiveData.archives || []);
-      setSettings(settingsData.settings || {});
+      if (refreshSettings) setSettings(settingsData.settings || {});
       setShareActivity(shareData.activity || []);
     } catch (error: any) {
       setNotice(error.message || 'Unable to open Owner Tools.');
     }
   };
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => { if (!document.hidden) void load(false); }, 30000);
+    return () => window.clearInterval(timer);
+  }, [ownerKey]);
 
   const saveSettings = async () => {
     try {
@@ -79,7 +85,7 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
   };
 
   const archiveAction = async (archive: Archive, action: 'delete' | 'toggle-explore') => {
-    const isHidden = Boolean(archive.isHiddenFromExplore) || archive.deploymentStatus === 'unpublished';
+    const isHidden = Boolean(archive.isHiddenFromExplore);
     const label = action === 'delete' ? 'delete' : isHidden ? 'restore to Explore' : 'hide from Explore';
     if (!window.confirm(`Do you want to ${label} "${archive.title}"?`)) return;
     try {
@@ -91,8 +97,8 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
       });
       setNotice(action === 'delete'
         ? 'Archive deleted successfully.'
-        : `Archive ${isHidden ? 'restored to' : 'hidden from'} Explore successfully.`);
-      await load();
+        : isHidden ? 'Explore listing approved. It appears only when the creator publishes it publicly.' : 'Archive hidden from Explore.');
+      await load(false);
     } catch (error: any) {
       setNotice(error.message || 'Unable to change the archive.');
     }
@@ -238,7 +244,7 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
               <div className="rounded-xl border border-dashed border-white/10 p-8 text-center text-sm text-neutral-500">No archives match this filter.</div>
             )}
             {filteredArchives.map((archive) => {
-              const isHidden = Boolean(archive.isHiddenFromExplore) || archive.deploymentStatus === 'unpublished';
+              const isHidden = Boolean(archive.isHiddenFromExplore);
               const isDemo = archive.id.startsWith('demo-');
               const hasPublicPage = archive.deploymentStatus === 'deployed' && Boolean(archive.slug);
               return (
@@ -305,12 +311,14 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
                 </div>
                 <div className="text-sm text-neutral-300 truncate mt-1">{preview.archive.title}</div>
               </div>
-              <button onClick={() => setPreview(null)} className="w-10 h-10 rounded-xl bg-white/10 hover:bg-white/15 inline-flex items-center justify-center" aria-label="Close archive preview">
+              <button onClick={() => void openPreview(preview.archive)} disabled={previewLoadingId !== null} className="min-h-11 px-3 rounded-xl bg-white/10 disabled:opacity-50">{previewLoadingId ? 'Refreshing…' : 'Refresh preview'}</button>
+              <button onClick={() => setPreview(null)} className="w-11 h-11 rounded-xl bg-white/10 hover:bg-white/15 inline-flex items-center justify-center" aria-label="Close archive preview">
                 <X className="w-5 h-5" />
               </button>
             </header>
-            <div data-archive-preview-scroll className="flex-1 overflow-y-auto">
+            <div data-archive-preview-scroll className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain">
               <ArchivePublicView
+                key={preview.archive.id}
                 archive={preview.archive}
                 sections={preview.sections}
                 timeline={preview.timeline}

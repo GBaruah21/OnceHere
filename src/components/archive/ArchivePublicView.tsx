@@ -566,9 +566,17 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   const [instagramMode, setInstagramMode] = useState<'story' | 'post'>('story');
   const [quickCopied, setQuickCopied] = useState(false);
   const [isFloatingMenuOpen, setIsFloatingMenuOpen] = useState(false);
+  const dockDragged = useRef(false);
+  const [dockBounds, setDockBounds] = useState({ left: 0, right: 0, top: 0, bottom: 0 });
+  useEffect(() => {
+    const resize = () => setDockBounds({ left: -Math.max(0, window.innerWidth - 320), right: 0, top: -Math.max(0, window.innerHeight - 620), bottom: 0 });
+    resize(); window.addEventListener('resize', resize);
+    return () => window.removeEventListener('resize', resize);
+  }, []);
 
   // Memory Wall States
   const [wallPosts, setWallPosts] = useState<WallPost[]>(() => {
+    if (isPreviewMode || readOnly) return wall || [];
     try {
       const localKey1 = `archive_wall_${archive.id}`;
       const localKey2 = archive.slug ? `archive_wall_${archive.slug}` : null;
@@ -600,6 +608,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   // Synchronize wall posts safely with incoming server wall props & local storage
   useEffect(() => {
+    if (isPreviewMode || readOnly) { setWallPosts(wall || []); return; }
     try {
       const localKey1 = `archive_wall_${archive.id}`;
       const localKey2 = archive.slug ? `archive_wall_${archive.slug}` : null;
@@ -626,7 +635,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
     } catch {
       if (wall) setWallPosts(wall);
     }
-  }, [wall, archive.id, archive.slug]);
+  }, [wall, archive.id, archive.slug, isPreviewMode, readOnly]);
 
   // Audio ambience state
   const [isPlayingMusic, setIsPlayingMusic] = useState(false);
@@ -1090,7 +1099,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   // Slow graceful scroll-loading animation variants for cinematic reveals
   const sectionRevealVariants = {
-    hidden: { opacity: 0, y: 48 },
+    hidden: { opacity: isPreviewMode ? 1 : 0, y: isPreviewMode ? 0 : 48 },
     visible: {
       opacity: 1,
       y: 0,
@@ -1102,7 +1111,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   };
 
   const staggerGridVariants = {
-    hidden: { opacity: 0 },
+    hidden: { opacity: isPreviewMode ? 1 : 0 },
     visible: {
       opacity: 1,
       transition: {
@@ -1113,7 +1122,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   };
 
   const staggerCardVariants = {
-    hidden: { opacity: 0, y: 42, scale: 0.96 },
+    hidden: { opacity: isPreviewMode ? 1 : 0, y: isPreviewMode ? 0 : 42, scale: isPreviewMode ? 1 : 0.96 },
     visible: {
       opacity: 1,
       y: 0,
@@ -2219,7 +2228,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
       </main>
 
       {/* 3. ANIMATED EXPANDABLE FLOATING ACTION DOCK */}
-      <div className={`${isPreviewMode ? 'absolute bottom-20 left-3 z-20 items-start' : 'fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-3 sm:right-6 z-40 items-end'} flex flex-col max-w-[calc(100vw-1.5rem)]`}>
+      <motion.div drag dragConstraints={dockBounds} dragElastic={0} dragMomentum={false} onDragStart={() => { dockDragged.current = true; }} onDragEnd={() => { setTimeout(() => { dockDragged.current = false; }, 150); }} className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-3 sm:right-6 z-40 flex flex-col items-end max-w-[calc(100vw-1.5rem)]" style={{ touchAction: 'none' }}>
         {/* Backdrop dismiss when floating menu is open */}
         {isFloatingMenuOpen && (
           <div
@@ -2374,28 +2383,26 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
         <motion.button
           whileHover={{ scale: 1.06 }}
           whileTap={{ scale: 0.94 }}
-          onClick={() => setIsFloatingMenuOpen(!isFloatingMenuOpen)}
+          onClick={() => { if (!dockDragged.current) setIsFloatingMenuOpen(!isFloatingMenuOpen); }}
+          aria-label="Explore and share — drag to move"
+          aria-expanded={isFloatingMenuOpen}
           title={isFloatingMenuOpen ? 'Close Menu' : isPreviewMode ? 'Preview actions' : 'Open Quick Actions Menu'}
-          className={`relative z-40 ${isPreviewMode ? 'p-2.5' : 'p-3.5 sm:p-4'} rounded-full shadow-2xl backdrop-blur-xl border transition-all duration-300 flex items-center justify-center cursor-pointer ${
+          className={`relative z-40 min-w-11 min-h-11 p-2.5 rounded-full shadow-2xl backdrop-blur-xl border transition-all duration-300 flex items-center justify-center cursor-pointer ${
             isFloatingMenuOpen
               ? 'bg-neutral-900 text-white border-white/30 rotate-90 shadow-amber-500/20'
-              : 'bg-gradient-to-tr from-neutral-900 via-neutral-950 to-neutral-900 text-amber-400 border-amber-500/40 hover:border-amber-400 shadow-amber-500/25 ring-2 ring-amber-400/20'
+              : 'bg-neutral-950/40 text-amber-400 border-white/20 opacity-40 hover:opacity-100 focus-visible:opacity-100'
           }`}
         >
           {isFloatingMenuOpen ? (
             <X className="w-5 h-5 text-neutral-200" />
           ) : (
             <div className="flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-amber-400 animate-pulse" />
-              {!isPreviewMode && (
-                <span className="hidden sm:inline text-xs font-bold font-serif text-white tracking-wide pr-1">
-                  Explore & Share
-                </span>
-              )}
+              <Sparkles className="w-5 h-5 text-amber-400" />
+              
             </div>
           )}
         </motion.button>
-      </div>
+      </motion.div>
 
       {/* 4. LIGHTBOX & MEDIA VAULT ANNOTATION MODAL (With Touch-Zoom & Creator Notes) */}
       {lightboxIndex !== null && sortedAndFilteredMedia[lightboxIndex] && (() => {
@@ -2470,19 +2477,23 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
                 {/* Photo with dynamic zoom transform */}
                 <div className="w-full h-full flex items-center justify-center overflow-auto p-2">
-                  <motion.img
-                    src={activeItem.url}
-                    alt={activeItem.caption || 'Media item'}
-                    animate={{ scale: photoZoom }}
-                    transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-                    className="max-h-[60vh] max-w-full object-contain rounded-xl select-none cursor-zoom-in"
-                    onClick={() => setPhotoZoom((z) => (z > 1.2 ? 1 : 1.8))}
-                  />
+                  {activeItem.type === 'video' || /^data:video\//i.test(activeItem.url) || /\.(mp4|webm|mov)(?:[?#]|$)/i.test(activeItem.url) ? (
+                    <video src={activeItem.url} controls playsInline preload="metadata" className="max-h-[60vh] max-w-full object-contain rounded-xl" />
+                  ) : (
+                    <motion.img
+                      src={activeItem.url}
+                      alt={activeItem.caption || 'Media item'}
+                      animate={{ scale: photoZoom }}
+                      transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                      className="max-h-[60vh] max-w-full object-contain rounded-xl select-none cursor-zoom-in"
+                      onClick={() => setPhotoZoom((z) => (z > 1.2 ? 1 : 1.8))}
+                    />
+                  )}
                 </div>
 
                 {/* Bottom Photo Metadata */}
                 <div className="w-full flex items-center justify-between text-xs text-neutral-400 font-mono mt-2 pt-2 border-t border-white/10">
-                  <span>Photo {lightboxIndex + 1} of {sortedAndFilteredMedia.length}</span>
+                  <span>Media {lightboxIndex + 1} of {sortedAndFilteredMedia.length}</span>
                   <span className="text-amber-400 font-sans">{activeItem.eventDate || activeItem.year || 'Vault Record'}</span>
                 </div>
               </div>

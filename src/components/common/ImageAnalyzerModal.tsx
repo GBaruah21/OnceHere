@@ -88,6 +88,8 @@ export const ImageAnalyzerModal: React.FC<ImageAnalyzerModalProps> = ({
   const [analysis, setAnalysis] = useState<ImageAnalysisData | null>(null);
   const [appliedAction, setAppliedAction] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const analysisRequest = useRef(0);
+  const previousCaptions = useRef<string[]>([]);
 
   useEffect(() => {
     setImageUrl(initialImageUrl);
@@ -96,6 +98,9 @@ export const ImageAnalyzerModal: React.FC<ImageAnalyzerModalProps> = ({
     setRevisionInstruction('');
     setAnalysis(null);
     setErrorMsg(null);
+    analysisRequest.current += 1;
+    previousCaptions.current = [];
+    setIsAnalyzing(false);
   }, [initialImageUrl, initialContextHint, isOpen]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -131,6 +136,7 @@ export const ImageAnalyzerModal: React.FC<ImageAnalyzerModalProps> = ({
   };
 
   const triggerAnalysis = async (imgSource: string, hint?: string) => {
+    const requestId = ++analysisRequest.current;
     if (!imgSource || !imgSource.trim()) {
       setErrorMsg('Please select or upload an image to analyze.');
       return;
@@ -143,10 +149,11 @@ export const ImageAnalyzerModal: React.FC<ImageAnalyzerModalProps> = ({
 
       const res = await fetch('/api/ai/analyze-image', {
         method: 'POST',
+        signal: AbortSignal.timeout(60000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           image: imgSource,
-          contextHint: hint || contextHint,
+          contextHint: [hint || contextHint, previousCaptions.current.length ? `Do not repeat these earlier captions: ${JSON.stringify(previousCaptions.current.slice(-5))}` : ''].filter(Boolean).join('\n'),
           archiveType
         })
       });
@@ -156,12 +163,16 @@ export const ImageAnalyzerModal: React.FC<ImageAnalyzerModalProps> = ({
         throw new Error(data.error || 'Failed to analyze memory image.');
       }
 
+      if (requestId !== analysisRequest.current) return;
+      if (!data.analysis?.caption) throw new Error('AI returned no caption. Please retry.');
+      if (previousCaptions.current.includes(data.analysis.caption)) throw new Error('AI repeated the previous caption. Add a specific change and try again; your current caption is unchanged.');
+      previousCaptions.current.push(data.analysis.caption);
       setAnalysis(data.analysis);
     } catch (err: any) {
       console.error(err);
-      setErrorMsg(err.message || 'Error occurred while analyzing image.');
+      if (requestId === analysisRequest.current) setErrorMsg(err.name === 'TimeoutError' ? 'AI request timed out. Your current caption is unchanged. Please retry.' : err.message || 'Error occurred while analyzing image.');
     } finally {
-      setIsAnalyzing(false);
+      if (requestId === analysisRequest.current) setIsAnalyzing(false);
     }
   };
 

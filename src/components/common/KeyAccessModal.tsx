@@ -35,6 +35,7 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
 
     if (!archiveKey.trim()) {
       setErrorMsg('Please enter your complete owner recovery key.');
@@ -47,6 +48,7 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
 
       const res = await fetch('/api/archives/auth/key-access', {
         method: 'POST',
+        signal: AbortSignal.timeout(30000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           key: archiveKey.trim(),
@@ -151,6 +153,14 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
           </div>
 
           {/* Recovery help */}
+          <p className="text-sm text-neutral-300">This screen is for the owner recovery key. To use a contributor PIN, open the archive and choose Contribute. A private archive asks for its viewer PIN before showing content.</p>
+          <button type="button" onClick={() => {
+            setArchiveKey('mc_rec_sample_key_123');
+            setIdentifier('marys-convent-2025');
+            setErrorMsg(null);
+          }} className="min-h-11 w-full rounded-xl border border-amber-400/30 text-amber-300 text-sm">
+            Try sample key — fictional demo only
+          </button>
           <div className="pt-2 border-t border-white/10 flex flex-col gap-2.5">
             <div className="flex items-center justify-between text-xs">
               <button
@@ -171,7 +181,7 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
                 </div>
                 <ul className="list-disc pl-4 space-y-2 text-[11px] text-neutral-400 leading-relaxed">
                   <li>
-                    <strong className="text-neutral-200">256-bit Recovery Key:</strong> Generated when you create an archive (e.g. <code>mc_rec_...</code>). Because it is mathematically unique, pasting it opens your studio immediately from anywhere.
+                    <strong className="text-neutral-200">Owner Recovery Key:</strong> Generated when you create an archive (e.g. <code>mc_rec_...</code>). Keep it private: anyone with this key can recover owner access.
                   </li>
                   <li><strong className="text-neutral-200">Contributor PIN:</strong> enter it through Contribute on the archive. It never grants owner settings.</li>
                   <li><strong className="text-neutral-200">Viewer PIN:</strong> enter it on a private archive. It only grants viewing.</li>

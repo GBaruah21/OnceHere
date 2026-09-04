@@ -65,7 +65,7 @@ export const LazyImage: React.FC<LazyImageProps> = ({
   };
 
   return (
-    <div className={`relative overflow-hidden ${containerClassName}`}>
+    <div className={`${/(^|\s)(absolute|fixed|sticky)(\s|$)/.test(containerClassName) ? '' : 'relative'} overflow-hidden ${containerClassName}`}>
       {/* Shimmer / Skeleton Placeholder while approaching viewport or loading */}
       {showSkeleton && !isLoaded && !hasError && (
         <div className="absolute inset-0 bg-white/5 animate-pulse flex items-center justify-center pointer-events-none z-0">
@@ -82,11 +82,12 @@ export const LazyImage: React.FC<LazyImageProps> = ({
           <span className="text-xs font-serif font-bold text-amber-100 line-clamp-1">{alt || 'Memory Moment'}</span>
           <span className="text-[10px] text-neutral-400 mt-0.5 flex items-center gap-1">
             <Sparkles className="w-2.5 h-2.5 text-amber-400" />
-            <span>Preserved in Chapter</span>
+            <span>Image could not load</span>
           </span>
         </div>
       ) : (
         <img
+          {...props}
           ref={imgRef}
           src={currentSrc}
           alt={alt}
@@ -95,10 +96,7 @@ export const LazyImage: React.FC<LazyImageProps> = ({
           referrerPolicy="no-referrer"
           onLoad={handleLoad}
           onError={handleError}
-          className={`transition-all duration-500 ease-out ${
-            isLoaded ? 'opacity-100 filter-none' : 'opacity-0 scale-102 blur-xs'
-          } ${className}`}
-          {...props}
+          className={`transition-opacity duration-300 ${className}`}
         />
       )}
     </div>

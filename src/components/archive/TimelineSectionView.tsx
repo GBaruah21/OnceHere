@@ -27,6 +27,11 @@ interface TimelineSectionViewProps {
   archive: Archive;
 }
 
+const isVideoSource = (src: string) => /^data:video\//i.test(src) || /\.(mp4|webm|mov)(?:[?#]|$)/i.test(src);
+const TimelineMedia = ({ src, alt, containerClassName, className }: { src: string; alt: string; containerClassName?: string; className?: string }) => isVideoSource(src)
+  ? <div className={containerClassName}><video src={src} aria-label={alt} playsInline controls preload="metadata" className={className} onClick={(event) => event.stopPropagation()} /></div>
+  : <LazyImage src={src} alt={alt} containerClassName={containerClassName} className={className} />;
+
 const ROMAN_NUMERALS = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII', 'XIII', 'XIV', 'XV', 'XVI', 'XVII', 'XVIII', 'XIX', 'XX'];
 
 export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
@@ -54,16 +59,7 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
   const [expandedImage, setExpandedImage] = useState<{ url: string; title: string; location?: string; year?: string } | null>(null);
 
   const scrollSlider = (direction: 'prev' | 'next') => {
-    if (!sliderScrollRef.current) return;
-    const container = sliderScrollRef.current;
-    const scrollAmount = container.clientWidth * 0.75;
-    if (direction === 'prev') {
-      container.scrollBy({ left: -scrollAmount, behavior: 'smooth' });
-      setActiveSliderIdx((prev) => Math.max(0, prev - 1));
-    } else {
-      container.scrollBy({ left: scrollAmount, behavior: 'smooth' });
-      setActiveSliderIdx((prev) => Math.min(timeline.length - 1, prev + 1));
-    }
+    scrollToMilestone(Math.max(0, Math.min(timeline.length - 1, activeSliderIdx + (direction === 'prev' ? -1 : 1))));
   };
 
   const scrollToMilestone = (idx: number) => {
@@ -83,8 +79,8 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
       <motion.section
         id="section-timeline"
         variants={sectionRevealVariants}
-        initial="hidden"
-        whileInView="visible"
+        initial={false}
+        animate="visible"
         viewport={{ once: true, amount: 0.08 }}
         className="px-4 sm:px-8 max-w-6xl mx-auto py-12 text-center"
       >
@@ -103,8 +99,8 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
       id="section-timeline"
       data-timeline-layout={layout}
       variants={sectionRevealVariants}
-      initial="hidden"
-      whileInView="visible"
+      initial={false}
+      animate="visible"
       viewport={{ once: true, amount: 0.08, margin: '0px 0px -40px 0px' }}
       className="px-4 sm:px-8 max-w-6xl mx-auto space-y-10 sm:space-y-16 relative"
     >
@@ -135,8 +131,8 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
           {/* Vertical Stream */}
           <motion.div
             variants={staggerGridVariants}
-            initial="hidden"
-            whileInView="visible"
+            initial={false}
+            animate="visible"
             viewport={{ once: true, amount: 0.08, margin: '0px 0px -40px 0px' }}
             className="space-y-12 sm:space-y-20 relative"
           >
@@ -163,13 +159,13 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
                           className="w-full max-w-md rounded-2xl overflow-hidden aspect-[4/3] border border-white/15 shadow-2xl group relative cursor-pointer"
                           style={{ borderColor: `${theme.palette.accent}40` }}
                         >
-                          <LazyImage
+                          <TimelineMedia
                             src={event.mediaUrl || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?auto=format&fit=crop&w=800&q=80'}
                             alt={event.title}
-                            containerClassName="w-full h-full"
+                            containerClassName="absolute inset-0 w-full h-full"
                             className="w-full h-full object-cover group-hover:scale-108 transition-transform duration-700 ease-out"
                           />
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent p-4 flex items-end justify-between text-xs text-white">
+                          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent p-4 flex items-end justify-between text-xs text-white">
                             <span className="font-mono text-xs text-amber-300 font-bold bg-black/80 px-2.5 py-1 rounded-lg backdrop-blur-md border border-amber-400/40 shadow-md">
                               📍 {event.location || event.yearLabel}
                             </span>
@@ -263,13 +259,13 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
                           className="w-full max-w-md rounded-2xl overflow-hidden aspect-[4/3] border border-white/15 shadow-2xl group relative cursor-pointer"
                           style={{ borderColor: `${theme.palette.accent}40` }}
                         >
-                          <LazyImage
+                          <TimelineMedia
                             src={event.mediaUrl || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?auto=format&fit=crop&w=800&q=80'}
                             alt={event.title}
-                            containerClassName="w-full h-full"
+                            containerClassName="absolute inset-0 w-full h-full"
                             className="w-full h-full object-cover group-hover:scale-108 transition-transform duration-700 ease-out"
                           />
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent p-4 flex items-end justify-between text-xs text-white">
+                          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent p-4 flex items-end justify-between text-xs text-white">
                             <span className="font-mono text-xs text-amber-300 font-bold bg-black/80 px-2.5 py-1 rounded-lg backdrop-blur-md border border-amber-400/40 shadow-md">
                               📍 {event.location || event.yearLabel}
                             </span>
@@ -314,10 +310,10 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
                           }
                           className="rounded-xl overflow-hidden aspect-video border border-white/10 cursor-pointer relative group"
                         >
-                          <LazyImage
+                          <TimelineMedia
                             src={event.mediaUrl}
                             alt={event.title}
-                            containerClassName="w-full h-full"
+                            containerClassName="absolute inset-0 w-full h-full"
                             className="w-full h-full object-cover"
                           />
                           <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-semibold">
@@ -391,7 +387,7 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
           {/* Horizontal Track Container */}
           <div
             ref={sliderScrollRef}
-            className="flex gap-6 overflow-x-auto pb-6 pt-2 snap-x snap-mandatory scroll-smooth no-scrollbar"
+            className="relative flex gap-6 overflow-x-auto pb-6 pt-2 snap-x snap-mandatory scroll-smooth no-scrollbar"
             style={{ scrollbarWidth: 'none' }}
           >
             {timeline.map((event, idx) => (
@@ -415,10 +411,10 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
                   }
                   className="aspect-video w-full relative overflow-hidden bg-neutral-900 cursor-pointer"
                 >
-                  <LazyImage
+                  <TimelineMedia
                     src={event.mediaUrl || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?auto=format&fit=crop&w=800&q=80'}
                     alt={event.title}
-                    containerClassName="w-full h-full"
+                    containerClassName="absolute inset-0 w-full h-full"
                     className="w-full h-full object-cover group-hover:scale-106 transition-transform duration-500"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent flex items-end justify-between p-4">
@@ -509,10 +505,10 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
                     }
                     className="aspect-video sm:aspect-[16/10] w-full rounded-2xl overflow-hidden border border-white/10 cursor-pointer relative group/img"
                   >
-                    <LazyImage
+                    <TimelineMedia
                       src={event.mediaUrl}
                       alt={event.title}
-                      containerClassName="w-full h-full"
+                      containerClassName="absolute inset-0 w-full h-full"
                       className="w-full h-full object-cover group-hover/img:scale-106 transition-transform duration-500"
                     />
                     <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-semibold gap-1.5">
@@ -607,10 +603,10 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
                       className="w-full max-w-sm p-3 bg-white text-stone-900 rounded-2xl shadow-2xl rotate-1 hover:rotate-0 transition-transform duration-300 cursor-pointer group"
                     >
                       <div className="aspect-[4/3] rounded-xl overflow-hidden bg-neutral-900 relative">
-                        <LazyImage
+                        <TimelineMedia
                           src={event.mediaUrl || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?auto=format&fit=crop&w=800&q=80'}
                           alt={event.title}
-                          containerClassName="w-full h-full"
+                          containerClassName="absolute inset-0 w-full h-full"
                           className="w-full h-full object-cover group-hover:scale-106 transition-transform duration-500"
                         />
                         <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-semibold">
@@ -646,11 +642,11 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
             >
               ✕ Close
             </button>
-            <img
+            {isVideoSource(expandedImage.url) ? <video src={expandedImage.url} controls playsInline className="max-h-[75vh] max-w-full" /> : <img
               src={expandedImage.url}
               alt={expandedImage.title}
               className="max-h-[75vh] w-auto max-w-full rounded-2xl object-contain shadow-2xl border border-white/20"
-            />
+            />}
             <div className="mt-3 text-center space-y-1">
               <h4 className="text-base font-bold text-white">{expandedImage.title}</h4>
               <p className="text-xs text-neutral-400 font-mono">

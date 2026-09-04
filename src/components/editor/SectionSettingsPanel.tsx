@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Section,
   Archive,
@@ -75,14 +75,14 @@ interface SectionSettingsPanelProps {
   onChangeViewerPin?: (pin: string) => Promise<void>;
   onUpdateArchive: (updates: Partial<Archive>) => void;
   onUpdateSections: (sections: Section[]) => void;
-  onAddTimelineEvent: (event: Partial<TimelineEvent>) => void;
-  onUpdateTimelineEvent: (id: string, updates: Partial<TimelineEvent>) => void;
+  onAddTimelineEvent: (event: Partial<TimelineEvent>) => Promise<void>;
+  onUpdateTimelineEvent: (id: string, updates: Partial<TimelineEvent>) => Promise<void>;
   onReorderTimeline: (events: TimelineEvent[]) => void;
   onDeleteTimelineEvent: (id: string) => void;
   onAddMember: (member: Partial<Member>) => void;
   onUpdateMember: (id: string, updates: Partial<Member>) => void;
   onDeleteMember: (id: string) => void;
-  onAddMedia: (media: Partial<MediaItem>) => void;
+  onAddMedia: (media: Partial<MediaItem>) => Promise<void>;
   onUpdateMedia: (id: string, updates: Partial<MediaItem>) => void;
   onDeleteMedia: (id: string) => void;
   onAddWallPost?: (post: Partial<WallPost>) => void;
@@ -172,6 +172,8 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   const [newEventImg, setNewEventImg] = useState('');
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [draggedEventId, setDraggedEventId] = useState<string | null>(null);
+  const [timelineSaveError, setTimelineSaveError] = useState<string | null>(null);
+  const [isSavingTimeline, setIsSavingTimeline] = useState(false);
 
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberRole, setNewMemberRole] = useState('');
@@ -185,12 +187,15 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   const [newMediaType, setNewMediaType] = useState<'image' | 'video'>('image');
   const [newMediaHint, setNewMediaHint] = useState('');
   const [newMediaTags, setNewMediaTags] = useState('');
-  const [autoAiOnUpload, setAutoAiOnUpload] = useState(true);
+  const [autoAiOnUpload, setAutoAiOnUpload] = useState(false);
+  const mediaAnalysisRequest = useRef(0);
   const [isAiAnalyzingMedia, setIsAiAnalyzingMedia] = useState(false);
   const [aiSuggestedNotes, setAiSuggestedNotes] = useState<Array<{ id: string; authorName: string; text: string; selected: boolean }>>([]);
   const [aiDetectedMood, setAiDetectedMood] = useState<string | null>(null);
   const [aiTags, setAiTags] = useState<string[]>([]);
   const [aiAnalysisError, setAiAnalysisError] = useState<string | null>(null);
+  const [mediaSaveError, setMediaSaveError] = useState<string | null>(null);
+  const [isSavingMedia, setIsSavingMedia] = useState(false);
   const [editingMediaId, setEditingMediaId] = useState<string | null>(null);
   const [editMediaCaption, setEditMediaCaption] = useState('');
   const [editMediaTags, setEditMediaTags] = useState('');
@@ -253,6 +258,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
 
   // Automatic Gemini AI analysis for media uploads
   const handleAnalyzeMediaItem = async (mediaSource: string, customHint?: string) => {
+    const requestId = ++mediaAnalysisRequest.current;
     if (!mediaSource || mediaSource.startsWith('data:video') || mediaSource.endsWith('.mp4')) {
       return;
     }
@@ -263,20 +269,24 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
 
       const res = await fetch('/api/ai/analyze-image', {
         method: 'POST',
+        signal: AbortSignal.timeout(60000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           image: mediaSource,
-          contextHint: customHint || `${archive.title} · ${archive.organizationName}`,
+          contextHint: [customHint || newMediaHint || `${archive.title} · ${archive.organizationName}`, newMediaCaption ? `Current draft: ${newMediaCaption}. Write a genuinely different version while following the creator's requested changes.` : ''].filter(Boolean).join('\n'),
           archiveType: archive.archiveType
         })
       });
 
       const data = await res.json();
+      if (requestId !== mediaAnalysisRequest.current) return;
       if (!res.ok) {
         throw new Error(data.error || 'Failed to generate AI captions and notes.');
       }
 
       if (data.analysis) {
+        if (!data.analysis.caption?.trim()) throw new Error('AI returned an empty caption. Your draft is unchanged.');
+        if (data.analysis.caption.trim() === newMediaCaption.trim()) throw new Error('AI repeated the previous caption. Try a more specific change; your draft is unchanged.');
         setNewMediaCaption(data.analysis.caption || '');
         setAiDetectedMood(data.analysis.detectedMood || null);
         setAiTags(data.analysis.tags || []);
@@ -292,10 +302,11 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
         setAiSuggestedNotes(formattedNotes);
       }
     } catch (err: any) {
+      if (requestId !== mediaAnalysisRequest.current) return;
       console.warn('AI analysis notice:', err);
       setAiAnalysisError(err.message || 'Could not reach Gemini service.');
     } finally {
-      setIsAiAnalyzingMedia(false);
+      if (requestId === mediaAnalysisRequest.current) setIsAiAnalyzingMedia(false);
     }
   };
 
@@ -937,6 +948,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             />
 
             <MediaUploader
+              key={newEventImg ? 'timeline-media-selected' : 'timeline-media-empty'}
               acceptMode="image-video"
               value={newEventImg}
               onChange={(url) => setNewEventImg(url)}
@@ -944,11 +956,20 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               placeholder="Paste photo/video URL or upload local file..."
             />
 
+            {timelineSaveError && <p role="alert" className="text-xs text-rose-300">{timelineSaveError}</p>}
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  if (!newEventTitle.trim()) return;
+                onClick={async () => {
+                  setTimelineSaveError(null);
+                  if (!newEventTitle.trim() || newEventTitle.trim().length < 2) {
+                    setTimelineSaveError('Add a milestone title before saving.');
+                    return;
+                  }
+                  if (!newEventDesc.trim() || newEventDesc.trim().length < 2) {
+                    setTimelineSaveError('Add a short description so this milestone can be saved.');
+                    return;
+                  }
                   const values = {
                     title: newEventTitle.trim(),
                     yearLabel: newEventYear.trim(),
@@ -956,14 +977,22 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                     icon: newEventIcon.trim() || '📍',
                     mediaUrl: newEventImg.trim() || undefined
                   };
-                  if (editingEventId) onUpdateTimelineEvent(editingEventId, values);
-                  else onAddTimelineEvent(values);
-                  resetEventForm();
+                  setIsSavingTimeline(true);
+                  try {
+                    if (editingEventId) await onUpdateTimelineEvent(editingEventId, values);
+                    else await onAddTimelineEvent(values);
+                    resetEventForm();
+                  } catch (error) {
+                    setTimelineSaveError(error instanceof Error ? error.message : 'Could not save this milestone. Your media is still selected—please retry.');
+                  } finally {
+                    setIsSavingTimeline(false);
+                  }
                 }}
-                className="flex-1 py-2 rounded-xl text-xs font-semibold bg-amber-400 text-neutral-950 hover:brightness-110 shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                disabled={isSavingTimeline}
+                className="flex-1 py-2 rounded-xl text-xs font-semibold bg-amber-400 text-neutral-950 hover:brightness-110 shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-60"
               >
                 {editingEventId && <Save className="w-3.5 h-3.5" />}
-                {editingEventId ? 'Save Milestone Changes' : 'Add Milestone to Journey'}
+                {isSavingTimeline ? 'Saving milestone…' : editingEventId ? 'Save Milestone Changes' : 'Add Milestone to Journey'}
               </button>
               {editingEventId && (
                 <button type="button" onClick={resetEventForm} className="px-3 rounded-xl border border-white/15 bg-white/5 text-neutral-300 hover:text-white" title="Cancel editing">
@@ -1278,9 +1307,13 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             </div>
 
             <MediaUploader
+              key={newMediaUrl ? 'vault-media-selected' : 'vault-media-empty'}
               acceptMode="image-video"
               value={newMediaUrl}
               onChange={(url, type) => {
+                mediaAnalysisRequest.current += 1;
+                setIsAiAnalyzingMedia(false);
+                setAiAnalysisError(null);
                 setNewMediaUrl(url);
                 if (type) setNewMediaType(type);
                 if (url && type !== 'video' && autoAiOnUpload) {
@@ -1311,6 +1344,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             )}
 
             {/* AI Loading indicator */}
+            {aiAnalysisError && <p role="alert" className="text-sm text-rose-300">{aiAnalysisError}</p>}
             {isAiAnalyzingMedia && (
               <div className="p-3 rounded-xl bg-purple-500/10 border border-purple-400/20 text-purple-200 text-xs flex items-center gap-2.5 animate-pulse">
                 <Sparkles className="w-4 h-4 text-purple-400 animate-spin" />
@@ -1417,11 +1451,16 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               ))}
             </div>
 
+            {mediaSaveError && <p role="alert" className="text-xs text-rose-300">{mediaSaveError}</p>}
             {/* Upload Button */}
             <button
               type="button"
-              onClick={() => {
-                if (!newMediaUrl.trim()) return;
+              onClick={async () => {
+                setMediaSaveError(null);
+                if (!newMediaUrl.trim()) {
+                  setMediaSaveError('Choose a photo or video before uploading.');
+                  return;
+                }
                 
                 // Formulate notes from AI suggestions if selected
                 const attachedNotes = aiSuggestedNotes
@@ -1433,26 +1472,33 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                     createdAt: new Date().toISOString()
                   }));
 
-                onAddMedia({
-                  url: newMediaUrl.trim(),
-                  caption: newMediaCaption.trim() || undefined,
-                  type: newMediaType,
-                  tags: parseTags(newMediaTags).length > 0 ? parseTags(newMediaTags) : (aiTags.length > 0 ? aiTags : ['Memories']),
-                  notes: attachedNotes
-                });
-
-                setNewMediaUrl('');
-                setNewMediaCaption('');
-                setNewMediaType('image');
-                setAiSuggestedNotes([]);
-                setAiDetectedMood(null);
-                setAiTags([]);
-                setNewMediaHint('');
-                setNewMediaTags('');
+                setIsSavingMedia(true);
+                try {
+                  await onAddMedia({
+                    url: newMediaUrl.trim(),
+                    caption: newMediaCaption.trim() || undefined,
+                    type: newMediaType,
+                    tags: parseTags(newMediaTags).length > 0 ? parseTags(newMediaTags) : (aiTags.length > 0 ? aiTags : ['Memories']),
+                    notes: attachedNotes
+                  });
+                  setNewMediaUrl('');
+                  setNewMediaCaption('');
+                  setNewMediaType('image');
+                  setAiSuggestedNotes([]);
+                  setAiDetectedMood(null);
+                  setAiTags([]);
+                  setNewMediaHint('');
+                  setNewMediaTags('');
+                } catch (error) {
+                  setMediaSaveError(error instanceof Error ? error.message : 'Upload failed. Your selected media is still here—please retry.');
+                } finally {
+                  setIsSavingMedia(false);
+                }
               }}
-              className="w-full py-2.5 rounded-xl text-xs font-bold bg-amber-400 text-neutral-950 hover:brightness-110 shadow-md transition-all cursor-pointer"
+              disabled={isSavingMedia}
+              className="w-full py-2.5 rounded-xl text-xs font-bold bg-amber-400 text-neutral-950 hover:brightness-110 shadow-md transition-all cursor-pointer disabled:opacity-60"
             >
-              Upload to Memory Vault
+              {isSavingMedia ? 'Uploading…' : 'Upload to Memory Vault'}
             </button>
           </div>
 

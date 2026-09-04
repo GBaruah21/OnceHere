@@ -159,18 +159,22 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
 
   // Sub-entity mutations
   const handleAddTimelineEvent = async (eventData: Partial<TimelineEvent>) => {
-    const res = await fetch(`/api/archives/${archive.id}/timeline`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ownerToken || ''}`
-      },
-      body: JSON.stringify(eventData)
-    });
-    const data = await res.json();
-    if (data.success && data.event) {
-      setTimeline((current) => [...current, data.event]);
+    let res: Response;
+    try {
+      res = await fetch(`/api/archives/${archive.id}/timeline`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken || ''}`
+        },
+        body: JSON.stringify(eventData)
+      });
+    } catch {
+      throw new Error('Network error while saving the milestone. Check your connection and retry.');
     }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success || !data.event) throw new Error(data.error || 'Could not save the milestone. Your details have not been cleared.');
+    setTimeline((current) => [...current, data.event]);
   };
 
   const handleUpdateTimelineEvent = async (id: string, updates: Partial<TimelineEvent>) => {
@@ -269,18 +273,22 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
   };
 
   const handleAddMedia = async (mediaData: Partial<MediaItem>) => {
-    const res = await fetch(`/api/archives/${archive.id}/media`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ownerToken || ''}`
-      },
-      body: JSON.stringify(mediaData)
-    });
-    const data = await res.json();
-    if (data.success && data.item) {
-      setMedia((current) => [data.item, ...current]);
+    let res: Response;
+    try {
+      res = await fetch(`/api/archives/${archive.id}/media`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken || ''}`
+        },
+        body: JSON.stringify(mediaData)
+      });
+    } catch {
+      throw new Error('Network error while uploading. Check your connection and retry.');
     }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success || !data.item) throw new Error(data.error || 'Upload failed. Your selected media has not been removed.');
+    setMedia((current) => [data.item, ...current]);
   };
 
   const handleUpdateMedia = async (id: string, updates: Partial<MediaItem>) => {

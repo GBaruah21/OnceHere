@@ -4,7 +4,7 @@ import { db } from './db';
 import { UserSession } from '../src/types';
 import { PLATFORM_CONFIG } from '../src/config/platform';
 
-const SESSION_SECRET = process.env.SESSION_SECRET || 'oncehere-session-secret-key-salt';
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
 export interface AuthContext {
   archiveId: string;
@@ -13,12 +13,12 @@ export interface AuthContext {
 }
 
 /**
- * Creates a cryptographically signed token: `${archiveId}.${role}.${expiresAtMs}.${hmac}`
+ * Creates a signed, independently revocable token with a random nonce.
  */
 export function createSignedToken(archiveId: string, role: 'owner' | 'contributor' | 'viewer', durationHours: number): string {
   const expiresAtMs = Date.now() + durationHours * 60 * 60 * 1000;
   const expiresAt = new Date(expiresAtMs).toISOString();
-  const payload = `${archiveId}.${role}.${expiresAtMs}`;
+  const payload = `${archiveId}.${role}.${expiresAtMs}.${crypto.randomBytes(16).toString('hex')}`;
   const hmac = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
   const token = `${payload}.${hmac}`;
 
@@ -37,11 +37,15 @@ export function createSignedToken(archiveId: string, role: 'owner' | 'contributo
  */
 export function verifySignedToken(token: string): { valid: boolean; archiveId?: string; role?: 'owner' | 'contributor' | 'viewer' } {
   if (!token) return { valid: false };
+  const session = db.sessions.get(token);
+  if (!session || new Date(session.expiresAt).getTime() <= Date.now()) return { valid: false };
+  if (db.archives.get(session.archiveId)?.deletedAt) return { valid: false };
 
   // Support dot-delimited tokens
   const parts = token.split('.');
-  if (parts.length === 4) {
-    const [archiveId, role, expiresAtMsStr, providedHmac] = parts;
+  if (parts.length === 4 || parts.length === 5) {
+    const [archiveId, role, expiresAtMsStr] = parts;
+    const providedHmac = parts[parts.length - 1];
     if (role !== 'owner' && role !== 'contributor' && role !== 'viewer') return { valid: false };
 
     const expiresAtMs = parseInt(expiresAtMsStr, 10);
@@ -50,25 +54,14 @@ export function verifySignedToken(token: string): { valid: boolean; archiveId?: 
       return { valid: false };
     }
 
-    const payload = `${archiveId}.${role}.${expiresAtMs}`;
+    if (session.archiveId !== archiveId || session.role !== role) return { valid: false };
+    const payload = parts.slice(0, -1).join('.');
     const expectedHmac = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
     const providedBuf = Buffer.from(providedHmac);
     const expectedBuf = Buffer.from(expectedHmac);
 
     if (providedBuf.length === expectedBuf.length && crypto.timingSafeEqual(providedBuf, expectedBuf)) {
       return { valid: true, archiveId, role };
-    }
-  }
-
-  // Fallback check against db.sessions map
-  const cachedSession = db.sessions.get(token);
-  if (cachedSession) {
-    if (new Date(cachedSession.expiresAt).getTime() > Date.now()) {
-      if (cachedSession.role === 'owner' || cachedSession.role === 'contributor' || cachedSession.role === 'viewer') {
-        return { valid: true, archiveId: cachedSession.archiveId, role: cachedSession.role };
-      }
-    } else {
-      db.sessions.delete(token);
     }
   }
 
@@ -85,7 +78,7 @@ export function verifyArchivePin(archiveId: string, inputPin: string, ipAddress:
   lockedUntil?: number;
 } {
   const archive = db.findById(archiveId);
-  if (!archive) {
+  if (!archive || archive.deletedAt || archive.contributionMode === 'owner-only') {
     return { success: false, error: 'Archive not found.' };
   }
 
@@ -161,7 +154,7 @@ export function verifyOwnerRecoveryKey(archiveId: string, rawKey: string): {
   error?: string;
 } {
   const archive = db.findById(archiveId);
-  if (!archive) {
+  if (!archive || archive.deletedAt) {
     return { success: false, error: 'Archive not found.' };
   }
 

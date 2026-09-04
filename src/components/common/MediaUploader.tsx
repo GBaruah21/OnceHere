@@ -1,4 +1,5 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import { ImageCropPreview } from './ImageCropPreview';
 import { Upload, Link as LinkIcon, Image as ImageIcon, Video, X, Check, Camera, RefreshCw, Eye } from 'lucide-react';
 
 export interface MediaUploaderProps {
@@ -29,15 +30,30 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [localPreviewUrl, setLocalPreviewUrl] = useState('');
+  const [selectedFile, setSelectedFile] = useState<{ name: string; type: 'image' | 'video'; size: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileReaderRef = useRef<FileReader | null>(null);
+  const [cropOpen, setCropOpen] = useState(false);
+  useEffect(() => () => { fileReaderRef.current?.abort(); }, []);
+
+  useEffect(() => {
+    if (!value) {
+      setLocalPreviewUrl('');
+      setSelectedFile(null);
+    }
+  }, [value]);
+
+  useEffect(() => () => {
+    if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
+  }, [localPreviewUrl]);
 
   const isVideo = (url: string) => {
     if (!url) return false;
     return (
       url.startsWith('data:video') ||
-      url.endsWith('.mp4') ||
-      url.endsWith('.webm') ||
-      url.endsWith('.mov') ||
+      selectedFile?.type === 'video' ||
+      /\.(mp4|webm|mov)(?:[?#]|$)/i.test(url) ||
       url.includes('youtube.com') ||
       url.includes('youtu.be')
     );
@@ -55,14 +71,19 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
       return;
     }
 
-    // Check size (e.g. max 15MB for in-memory / data URL storage)
-    if (file.size > 15 * 1024 * 1024) {
-      setFileError('File size exceeds 15MB limit. Please choose a smaller file or use a hosted URL.');
+    const maxBytes = isVideoFile ? 18 * 1024 * 1024 : 15 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      setFileError(`${isVideoFile ? 'Video' : 'Image'} is too large for this upload method. Choose a file under ${isVideoFile ? '18' : '15'} MB or use a hosted link.`);
       return;
     }
 
+    if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
+    setLocalPreviewUrl(URL.createObjectURL(file));
+    setSelectedFile({ name: file.name, type: isVideoFile ? 'video' : 'image', size: file.size });
     setIsProcessing(true);
+    fileReaderRef.current?.abort();
     const reader = new FileReader();
+    fileReaderRef.current = reader;
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
       const mediaType: 'image' | 'video' = isVideoFile ? 'video' : 'image';
@@ -86,19 +107,32 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
 
   const handleUrlSubmit = () => {
     if (!urlInput.trim()) return;
+    fileReaderRef.current?.abort();
+    setIsProcessing(false);
+    setLocalPreviewUrl('');
+    setSelectedFile(null);
     const mediaType: 'image' | 'video' = isVideo(urlInput.trim()) ? 'video' : 'image';
     onChange(urlInput.trim(), mediaType);
   };
 
   const handleClear = () => {
+    fileReaderRef.current?.abort();
+    setIsProcessing(false);
+    setFileError(null);
     setUrlInput('');
     if (fileInputRef.current) fileInputRef.current.value = '';
     if (onClear) onClear();
     else onChange('', 'image');
+    if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
+    setLocalPreviewUrl('');
+    setSelectedFile(null);
   };
+
+  const previewValue = value || localPreviewUrl;
 
   return (
     <div className={`space-y-2 text-xs ${className}`}>
+      {cropOpen && <ImageCropPreview src={value || localPreviewUrl} onClose={() => setCropOpen(false)} onApply={(cropped) => onChange(cropped, 'image')} />}
       {label && (
         <div className="flex items-center justify-between font-medium text-neutral-300">
           <span>{label}</span>
@@ -116,27 +150,32 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
       )}
 
       {/* If an image or video is already selected, show live preview card */}
-      {value ? (
+      {previewValue ? (
         <div className="relative rounded-xl border border-white/15 bg-neutral-900/90 overflow-hidden group p-2 flex items-center gap-3">
           <div className="w-16 h-16 rounded-lg bg-black/60 overflow-hidden flex-shrink-0 border border-white/10 flex items-center justify-center">
-            {isVideo(value) ? (
-              <video src={value} className="w-full h-full object-cover" muted playsInline />
+            {isVideo(previewValue) ? (
+              <video src={previewValue} className="w-full h-full object-cover" muted playsInline controls={false} />
             ) : (
-              <img src={value} alt="Selected media" className="w-full h-full object-cover" />
+              <img src={previewValue} alt="Selected media" className="w-full h-full object-cover" />
             )}
           </div>
 
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-white truncate flex items-center gap-1.5">
-              {isVideo(value) ? <Video className="w-3.5 h-3.5 text-amber-400" /> : <ImageIcon className="w-3.5 h-3.5 text-amber-400" />}
-              <span>{isVideo(value) ? 'Video Attached' : 'Image Attached'}</span>
+              {isVideo(previewValue) ? <Video className="w-3.5 h-3.5 text-amber-400" /> : <ImageIcon className="w-3.5 h-3.5 text-amber-400" />}
+              <span>{isProcessing ? 'Preparing media…' : isVideo(previewValue) ? 'Video ready to save' : 'Image ready to save'}</span>
             </div>
             <p className="text-[10px] text-neutral-400 truncate mt-0.5 font-mono">
-              {value.startsWith('data:') ? 'Local file uploaded' : value}
+              {selectedFile ? `${selectedFile.name} · ${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB` : previewValue.startsWith('data:') ? 'Local file ready to save' : previewValue}
             </p>
           </div>
 
           <div className="flex items-center gap-1">
+            {!isVideo(previewValue) && (
+              <button type="button" onClick={() => setCropOpen(true)} title="Preview and crop image" className="min-w-11 min-h-11 p-2 rounded-lg bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white transition-colors cursor-pointer flex items-center justify-center">
+                <Eye className="w-3.5 h-3.5" />
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -205,10 +244,10 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
                     {acceptMode === 'image' ? <ImageIcon className="w-5 h-5" /> : <Upload className="w-5 h-5" />}
                   </div>
                   <div className="text-xs font-medium text-white">
-                    {isProcessing ? 'Processing file...' : 'Click to browse or drop file here'}
+                    {isProcessing ? 'Preparing preview…' : 'Click to browse or drop file here'}
                   </div>
                   <div className="text-[10px] text-neutral-400">
-                    {acceptMode === 'image' ? 'Supports JPG, PNG, WEBP, GIF (up to 15MB)' : 'Supports Images & Videos: JPG, PNG, MP4, WEBM'}
+                    {acceptMode === 'image' ? 'Supports JPG, PNG, WEBP, GIF (up to 15MB)' : 'Images up to 15MB · videos up to 18MB (MP4, WEBM, MOV)'}
                   </div>
                 </div>
               </div>
@@ -242,6 +281,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
           {fileError && <p className="text-[11px] text-rose-400">{fileError}</p>}
         </div>
       )}
+      {fileError && previewValue && <p role="alert" className="text-rose-300">{fileError}</p>}
 
       {/* Hidden Native File Input */}
       <input

@@ -28,11 +28,26 @@ import { PLATFORM_CONFIG } from '../src/config/platform';
 import { analyzeMemoryImage } from './ai';
 
 export const apiRouter = express.Router();
-apiRouter.use(express.json({ limit: '25mb' }));
+apiRouter.use(express.json({ limit: '40mb' }));
 
 function hasPlatformAdminAccess(req: Request) {
   const adminKey = process.env.PLATFORM_ADMIN_KEY;
   return Boolean(adminKey && req.header('x-platform-admin-key') === adminKey);
+}
+
+function limitRecoveryAttempts(req: Request, res: Response, next: NextFunction) {
+  const key = `recovery:${req.ip || req.socket.remoteAddress || 'unknown'}`;
+  const now = Date.now();
+  let entry = db.rateLimits.get(key);
+  if (!entry || now - entry.firstAttemptAt >= 15 * 60 * 1000) entry = { attempts: 0, firstAttemptAt: now };
+  if (entry.attempts >= 5) {
+    res.setHeader('Retry-After', Math.ceil((entry.firstAttemptAt + 15 * 60 * 1000 - now) / 1000));
+    return res.status(429).json({ error: 'Too many recovery attempts. Wait 15 minutes before trying again.' });
+  }
+  entry.attempts += 1;
+  db.rateLimits.set(key, entry);
+  res.once('finish', () => { if (res.statusCode < 400) db.rateLimits.delete(key); });
+  next();
 }
 
 // Supabase is loaded before a route reads state. Responses wait for their
@@ -79,14 +94,29 @@ function getAuthContext(req: Request): { archiveId?: string; role: 'owner' | 'co
     return { archiveId: verification.archiveId, role: verification.role };
   }
 
-  // Check if session token exists directly in db.sessions
-  const session = db.sessions.get(token);
-  if (session && new Date(session.expiresAt).getTime() > Date.now()) {
-    return { archiveId: session.archiveId, role: session.role };
-  }
-
   return { role: 'none' };
 }
+
+// Apply tenant visibility consistently to subresources, not just page loaders.
+apiRouter.use('/archives/:id', (req: Request, res: Response, next: NextFunction) => {
+  if (req.path.startsWith('/auth/') || ['auth', 'by-slug', 'by-workspace'].includes(req.params.id)) return next();
+  const archive = db.findById(req.params.id);
+  if (!archive || archive.deletedAt) return res.status(404).json({ error: 'Archive not found.' });
+  const auth = getAuthContext(req);
+  const ownSession = auth.archiveId === archive.id && auth.role !== 'none';
+  if ((archive.visibility === 'private' || archive.deploymentStatus !== 'deployed') && !ownSession) {
+    return res.status(403).json({ error: 'Archive access required.' });
+  }
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    if (ownSession && auth.role === 'viewer') return res.status(403).json({ error: 'Permission denied.' });
+    if (auth.role === 'contributor' && ownSession && (
+      archive.contributionMode === 'owner-only' ||
+      (archive.contributionMode === 'open' && ['PUT', 'PATCH', 'DELETE'].includes(req.method))
+    )) return res.status(403).json({ error: 'Permission denied.' });
+  }
+  res.setHeader('Cache-Control', 'private, no-store');
+  return next();
+});
 
 /**
  * Extracts human-readable device and IP hints for access transparency logs
@@ -212,6 +242,7 @@ apiRouter.post('/archives', (req: Request, res: Response) => {
       viewerPinHash,
       recoveryKeyHash,
       deploymentStatus: 'draft', // Created in draft workspace first!
+      isHiddenFromExplore: true,
       settings: defaultSettings,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -321,8 +352,11 @@ apiRouter.get('/archives/by-slug/:slug', (req: Request, res: Response) => {
 
   const auth = getAuthContext(req);
   const canViewPrivate = auth.archiveId === archive.id && ['owner', 'contributor', 'viewer'].includes(auth.role);
+  if (archive.deletedAt || (archive.deploymentStatus !== 'deployed' && !canViewPrivate)) {
+    return res.status(404).json({ error: 'Memory archive not found.' });
+  }
   if (archive.visibility === 'private' && !canViewPrivate) {
-    return res.json({ archive: sanitizeArchive(archive), locked: true });
+    return res.json({ archive: { id: archive.id, slug: archive.slug, title: archive.title, visibility: 'private' }, locked: true });
   }
 
   // Load all associated tenant data
@@ -668,9 +702,7 @@ apiRouter.post('/admin/archives/:id/explore-visibility', (req: Request, res: Res
     isHiddenFromExplore: parsed.data.isHiddenFromExplore
   };
 
-  if (!parsed.data.isHiddenFromExplore && existing.deploymentStatus === 'unpublished') {
-    updates.deploymentStatus = 'deployed';
-  }
+  // Discovery approval never overrides the creator's privacy or publishes a draft.
 
   const archive = db.updateArchive(req.params.id, updates, 'owner');
   return res.json({ success: true, archive: sanitizeArchive(archive!) });
@@ -683,6 +715,8 @@ apiRouter.post('/admin/archives/:id/explore-visibility', (req: Request, res: Res
 // Get Access History for the archive (Last 5 PIN entries or edit attempts)
 apiRouter.get('/archives/:id/access-history', (req: Request, res: Response) => {
   const { id } = req.params;
+  const auth = getAuthContext(req);
+  if (auth.archiveId !== id || auth.role !== 'owner') return res.status(403).json({ error: 'Owner access required.' });
   const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 5;
   const safeLimit = isNaN(limit) ? 5 : Math.min(Math.max(limit, 1), 20);
   
@@ -731,11 +765,11 @@ apiRouter.post('/archives/:id/auth/viewer-pin', (req: Request, res: Response) =>
 });
 
 // Verify owner recovery key (by specific ID)
-apiRouter.post('/archives/:id/auth/recovery', (req: Request, res: Response) => {
+apiRouter.post('/archives/:id/auth/recovery', limitRecoveryAttempts, (req: Request, res: Response) => {
   const { id } = req.params;
   const { recoveryKey } = req.body;
 
-  if (!recoveryKey || typeof recoveryKey !== 'string') {
+  if (!recoveryKey || typeof recoveryKey !== 'string' || recoveryKey.length > 512) {
     return res.status(400).json({ error: 'Recovery key is required.' });
   }
 
@@ -774,10 +808,10 @@ apiRouter.post('/archives/:id/auth/recovery/regenerate', (req: Request, res: Res
 });
 
 // Universal Archive Key Access (Direct Owner Login)
-apiRouter.post('/archives/auth/key-access', (req: Request, res: Response) => {
+apiRouter.post('/archives/auth/key-access', limitRecoveryAttempts, (req: Request, res: Response) => {
   const { key, identifier } = req.body;
 
-  if (!key || typeof key !== 'string') {
+  if (!key || typeof key !== 'string' || key.length > 512 || (identifier !== undefined && typeof identifier !== 'string')) {
     return res.status(400).json({ error: 'Please enter your owner recovery key.' });
   }
 
@@ -1038,7 +1072,7 @@ apiRouter.delete('/archives/:id/members/:memberId', (req: Request, res: Response
 // Member individual memory messages
 apiRouter.get('/archives/:id/members/:memberId/messages', (req: Request, res: Response) => {
   const { id, memberId } = req.params;
-  const messages = db.getMemberMessages(id, memberId);
+  const messages = db.getMemberMessages(id, memberId).filter(message => message.visibility === 'public' && !message.isHidden);
   return res.json({ messages });
 });
 
