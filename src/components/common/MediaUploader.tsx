@@ -43,6 +43,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   const [selectedFile, setSelectedFile] = useState<{ name: string; type: 'image' | 'video'; size: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileReaderRef = useRef<FileReader | null>(null);
+  const pendingFileRef = useRef<File | null>(null);
   const [cropOpen, setCropOpen] = useState(false);
   const uploadDirectly = async (file: File) => {
     if (!directUpload) throw new Error('Direct upload is unavailable.');
@@ -110,6 +111,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   const handleFile = async (file: File) => {
     setFileError(null);
     if (!file) return;
+    pendingFileRef.current = file;
 
     const isImageFile = file.type.startsWith('image/');
     const isVideoFile = file.type.startsWith('video/');
@@ -172,11 +174,11 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
           contentType: completed.contentType,
           analysisDataUrl
         });
+        pendingFileRef.current = null;
       } catch (error) {
         setFileError(error instanceof Error ? error.message : 'Cloud upload failed. Please retry.');
-        setSelectedFile(null);
-        if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
-        setLocalPreviewUrl('');
+        // Keep the File object and its local preview alive. A failed network or
+        // expired session must be retryable without making the user reselect it.
       } finally {
         setIsProcessing(false);
       }
@@ -222,6 +224,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     setIsProcessing(false);
     setFileError(null);
     setUrlInput('');
+    pendingFileRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = '';
     if (onClear) onClear();
     else onChange('', 'image');
@@ -276,6 +279,17 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
           </div>
 
           <div className="flex items-center gap-1">
+            {fileError && pendingFileRef.current && (
+              <button
+                type="button"
+                onClick={() => { if (pendingFileRef.current) void handleFile(pendingFileRef.current); }}
+                disabled={isProcessing}
+                title="Retry upload"
+                className="min-w-11 min-h-11 p-2 rounded-lg bg-amber-400/15 hover:bg-amber-400/25 text-amber-300 disabled:opacity-50 transition-colors cursor-pointer flex items-center justify-center"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isProcessing ? 'animate-spin' : ''}`} />
+              </button>
+            )}
             {!directUpload && !isVideo(previewValue) && (
               <button type="button" onClick={() => setCropOpen(true)} title="Preview and crop image" className="min-w-11 min-h-11 p-2 rounded-lg bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white transition-colors cursor-pointer flex items-center justify-center">
                 <Eye className="w-3.5 h-3.5" />
