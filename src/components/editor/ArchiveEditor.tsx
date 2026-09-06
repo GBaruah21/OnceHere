@@ -209,19 +209,22 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
     setTimeline(normalized);
     setSaveStatus('saving');
     try {
-      const responses = await Promise.all(normalized.map((event) => fetch(`/api/archives/${archive.id}/timeline/${event.id}`, {
-        method: 'PATCH',
+      const response = await fetch(`/api/archives/${archive.id}/timeline/reorder`, {
+        method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${ownerToken || ''}`
         },
-        body: JSON.stringify({ position: event.position })
-      })));
-      if (responses.some((response) => !response.ok)) throw new Error('Could not save milestone order.');
+        body: JSON.stringify({ orderedIds: normalized.map((event) => event.id) })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success) throw new Error(data.error || 'Could not save milestone order.');
+      if (Array.isArray(data.events)) setTimeline(data.events);
       setSaveStatus('saved');
-    } catch {
+    } catch (error) {
       setTimeline(previous);
       setSaveStatus('error');
+      throw error;
     }
   };
 
