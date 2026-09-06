@@ -10,6 +10,7 @@ export interface MediaUploaderProps {
     size?: number;
     storageKey?: string;
     contentType?: string;
+    analysisDataUrl?: string;
   }) => void;
   onClear?: () => void;
   acceptMode?: 'image' | 'image-video';
@@ -143,6 +144,15 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
 
     if (directUpload) {
       try {
+        let analysisDataUrl: string | undefined;
+        if (isImageFile) {
+          analysisDataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(new Error('Could not prepare this image for AI analysis.'));
+            reader.readAsDataURL(uploadFile);
+          });
+        }
         // Sending the bytes straight to object storage avoids relaying every image
         // through Render. If bucket CORS is not ready, retain the same-origin proxy
         // as a compatibility fallback instead of losing the user's selection.
@@ -159,7 +169,8 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
           // fallback returns `storageKey`. Preserve either receipt so the media
           // record always points at the exact object the user selected.
           storageKey: completed.storageKey || completed.key,
-          contentType: completed.contentType
+          contentType: completed.contentType,
+          analysisDataUrl
         });
       } catch (error) {
         setFileError(error instanceof Error ? error.message : 'Cloud upload failed. Please retry.');
