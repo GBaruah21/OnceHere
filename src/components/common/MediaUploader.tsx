@@ -99,32 +99,17 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
 
     if (directUpload) {
       try {
-        const headers = {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${directUpload.token || ''}`
-        };
-        const authorize = await fetch(`/api/archives/${directUpload.archiveId}/media/upload-url`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ fileName: uploadFile.name, contentType: uploadFile.type, size: uploadFile.size })
-        });
-        const authorization = await authorize.json().catch(() => ({}));
-        if (!authorize.ok || !authorization.uploadUrl) throw new Error(authorization.error || 'Unable to authorize cloud upload.');
-
-        const upload = await fetch(authorization.uploadUrl, {
+        const upload = await fetch(`/api/archives/${directUpload.archiveId}/media/upload`, {
           method: 'PUT',
-          headers: { 'Content-Type': uploadFile.type },
+          headers: {
+            'Content-Type': uploadFile.type,
+            'X-File-Name': encodeURIComponent(uploadFile.name),
+            Authorization: `Bearer ${directUpload.token || ''}`
+          },
           body: uploadFile
         });
-        if (!upload.ok) throw new Error(`Cloud storage rejected the upload (${upload.status}). Check the storage credentials and CORS rule.`);
-
-        const complete = await fetch(`/api/archives/${directUpload.archiveId}/media/upload-complete`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ key: authorization.key, fileName: uploadFile.name, contentType: uploadFile.type, size: uploadFile.size })
-        });
-        const completed = await complete.json().catch(() => ({}));
-        if (!complete.ok || !completed.url) throw new Error(completed.error || 'Uploaded file could not be verified.');
+        const completed = await upload.json().catch(() => ({}));
+        if (!upload.ok || !completed.url) throw new Error(completed.error || `Upload failed (${upload.status}).`);
         onChange(completed.url, completed.type, {
           name: uploadFile.name,
           size: completed.fileSize,

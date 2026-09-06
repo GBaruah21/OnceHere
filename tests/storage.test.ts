@@ -24,6 +24,18 @@ describe('S3-compatible object storage uploads', () => {
     expect(signedUrl.searchParams.has('x-amz-meta-expectedsize')).toBe(false);
   });
 
+  it('normalizes a Backblaze endpoint entered without https in hosting settings', async () => {
+    vi.stubEnv('OBJECT_STORAGE_ENDPOINT', 's3.us-east-005.backblazeb2.com');
+    vi.stubEnv('OBJECT_STORAGE_REGION', 'us-east-005');
+    vi.stubEnv('OBJECT_STORAGE_ACCESS_KEY_ID', 'example-access-key');
+    vi.stubEnv('OBJECT_STORAGE_SECRET_ACCESS_KEY', 'example-secret-key');
+    vi.stubEnv('OBJECT_STORAGE_BUCKET', 'oncehere-media');
+
+    const signedUrl = new URL(await createUploadUrl('archives/archive-123/photo.jpg', 'image/jpeg', 1024));
+    expect(signedUrl.protocol).toBe('https:');
+    expect(signedUrl.hostname).toBe('oncehere-media.s3.us-east-005.backblazeb2.com');
+  });
+
   it('enforces storage-saving source and per-archive limits', () => {
     expect(R2_LIMITS.imageBytes).toBe(10 * 1024 * 1024);
     expect(R2_LIMITS.videoBytes).toBe(20 * 1024 * 1024);

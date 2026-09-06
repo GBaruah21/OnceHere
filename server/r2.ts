@@ -42,7 +42,10 @@ export function isR2Configured(): boolean {
 }
 
 function client(): S3Client {
-  const genericEndpoint = process.env.OBJECT_STORAGE_ENDPOINT?.trim().replace(/\/$/, '');
+  const configuredEndpoint = process.env.OBJECT_STORAGE_ENDPOINT?.trim().replace(/\/$/, '');
+  const genericEndpoint = configuredEndpoint && !/^https?:\/\//i.test(configuredEndpoint)
+    ? `https://${configuredEndpoint}`
+    : configuredEndpoint;
   return new S3Client({
     region: process.env.OBJECT_STORAGE_REGION?.trim() || (genericEndpoint ? 'us-east-1' : 'auto'),
     endpoint: genericEndpoint || `https://${required('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com`,
@@ -91,6 +94,16 @@ export async function createUploadUrl(key: string, contentType: string, _size: n
     Key: key,
     ContentType: contentType
   }), { expiresIn: 10 * 60 });
+}
+
+export async function uploadObject(key: string, contentType: string, body: Buffer): Promise<void> {
+  await client().send(new PutObjectCommand({
+    Bucket: bucketName(),
+    Key: key,
+    ContentType: contentType,
+    ContentLength: body.length,
+    Body: body
+  }));
 }
 
 export async function verifyObject(key: string, expectedType: string, expectedSize: number) {
