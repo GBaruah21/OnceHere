@@ -1280,10 +1280,17 @@ apiRouter.get('/archives/:id/media-object/:fileName', async (req: Request, res: 
   if (archive.visibility === 'private' && auth.archiveId !== id) {
     return res.status(401).json({ error: 'Viewer access is required.' });
   }
-  const item = db.getMediaItems(id).find((entry) => entry.storageKey === `archives/${id}/${fileName}`);
+  const requestedStorageKey = `archives/${id}/${fileName}`;
+  // Older direct uploads stored the same-origin media URL but lost the parallel
+  // storageKey because the authorization response called it `key`. Accept that
+  // exact URL as a repair path so existing broken cards begin working too.
+  const requestedUrl = publicObjectUrl(requestedStorageKey);
+  const item = db.getMediaItems(id).find((entry) => (
+    entry.storageKey === requestedStorageKey || entry.url === requestedUrl
+  ));
   if (!item) return res.status(404).json({ error: 'Media not found.' });
   try {
-    const stored = await downloadObject(item.storageKey!);
+    const stored = await downloadObject(item.storageKey || requestedStorageKey);
     res.setHeader('Content-Type', stored.contentType);
     res.setHeader('Content-Length', String(stored.contentLength));
     res.setHeader('Content-Disposition', 'inline');
