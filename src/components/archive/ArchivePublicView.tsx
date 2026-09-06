@@ -1824,12 +1824,23 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                       data-cursor-text="ZOOM & NOTE"
                       className="group relative aspect-square rounded-2xl sm:rounded-3xl overflow-hidden border border-white/10 cursor-pointer shadow-lg hover:shadow-2xl hover:border-amber-400/50 transition-all duration-300 bg-neutral-900/60"
                     >
-                      <LazyImage
-                        src={item.url}
-                        alt={item.caption || 'Memory snapshot'}
-                        containerClassName="w-full h-full"
-                        className="w-full h-full object-cover group-hover:scale-115 group-active:scale-125 transition-transform duration-700 ease-out"
-                      />
+                      {item.type === 'video' && !item.thumbnailUrl ? (
+                        <video
+                          src={item.url}
+                          muted
+                          playsInline
+                          preload="metadata"
+                          onLoadedMetadata={(event) => { event.currentTarget.currentTime = 0.1; }}
+                          className="w-full h-full object-cover group-hover:scale-115 group-active:scale-125 transition-transform duration-700 ease-out"
+                        />
+                      ) : (
+                        <LazyImage
+                          src={item.type === 'video' ? item.thumbnailUrl! : item.url}
+                          alt={item.caption || (item.type === 'video' ? 'Video preview' : 'Memory snapshot')}
+                          containerClassName="w-full h-full"
+                          className="w-full h-full object-cover group-hover:scale-115 group-active:scale-125 transition-transform duration-700 ease-out"
+                        />
+                      )}
                       
                       {/* Top badge indicators: Notes count & Category tag */}
                       <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between z-10 pointer-events-none">
