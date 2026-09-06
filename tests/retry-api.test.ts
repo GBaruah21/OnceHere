@@ -1,4 +1,5 @@
 import express from 'express';
+import cookieParser from 'cookie-parser';
 import type { Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { apiRouter } from '../server/api';
@@ -12,6 +13,7 @@ beforeAll(async () => {
   vi.spyOn(db, 'ensureLoaded').mockResolvedValue();
   vi.spyOn(db, 'persist').mockResolvedValue();
   const app = express();
+  app.use(cookieParser());
   app.use('/api', apiRouter);
   server = await new Promise<Server>(resolve => { const instance = app.listen(0, '127.0.0.1', () => resolve(instance)); });
   const address = server.address();
@@ -29,6 +31,9 @@ const request = (path: string, body?: unknown, headers: Record<string, string> =
 });
 const patchRequest = (path: string, body: unknown, headers: Record<string, string> = {}) => fetch(base + path, {
   method: 'PATCH', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body)
+});
+const putRequest = (path: string, body: unknown, headers: Record<string, string> = {}) => fetch(base + path, {
+  method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body)
 });
 
 describe.each([1, 2, 3, 4, 5])('Retry regression iteration %i', iteration => {
@@ -100,9 +105,32 @@ describe.each([1, 2, 3, 4, 5])('Retry regression iteration %i', iteration => {
     const recovery = await recovered.json();
     expect(recovery.archive.id).toBe(id);
     expect(recovery.token).toBeTruthy();
+    const ownerCookie = recovered.headers.getSetCookie().find(cookie => cookie.startsWith('mc_owner_token='));
+    expect(ownerCookie).toBeTruthy();
+    const staleToken = `${recovery.token}-stale`;
+    const cookieHeader = ownerCookie!.split(';')[0];
+    expect((await request(`/archives/${id}/access-history`, undefined, {
+      Authorization: `Bearer ${staleToken}`,
+      Cookie: cookieHeader
+    })).status).toBe(200);
     expect((await request('/archives/auth/key-access', { key: 'wrong-test-key', identifier: data.workspaceSlug })).status).toBe(401);
     expect((await request(`/archives/${id}/access-history`)).status).toBe(403);
     expect((await request(`/archives/${id}/access-history`, undefined, { Authorization: `Bearer ${recovery.token}` })).status).toBe(200);
+    for (const year of ['2025', '2026']) {
+      const added = await request(`/archives/${id}/timeline`, {
+        title: `QA milestone ${year}`,
+        description: `Isolated reorder regression milestone for ${year}.`,
+        yearLabel: year
+      }, { Authorization: `Bearer ${recovery.token}` });
+      expect(added.status).toBe(201);
+    }
+    const beforeOrder = db.getTimelineEvents(id).map(event => event.id);
+    expect(beforeOrder).toHaveLength(2);
+    const reversed = [...beforeOrder].reverse();
+    const reordered = await putRequest(`/archives/${id}/timeline/reorder`, { orderedIds: reversed }, { Authorization: `Bearer ${recovery.token}` });
+    expect(reordered.status).toBe(200);
+    expect(db.getTimelineEvents(id).map(event => event.id)).toEqual(reversed);
+    expect((await putRequest(`/archives/${id}/timeline/reorder`, { orderedIds: [reversed[0]] }, { Authorization: `Bearer ${recovery.token}` })).status).toBe(409);
     const unhidden = await request(`/admin/archives/${id}/explore-visibility`, { isHiddenFromExplore: false }, { 'x-platform-admin-key': 'test-only-platform-key' });
     expect(unhidden.status).toBe(200);
     expect((await unhidden.json()).archive.deploymentStatus).toBe('draft');
