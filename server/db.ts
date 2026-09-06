@@ -293,6 +293,17 @@ class MemoryDatabase {
     return list[index];
   }
 
+  reorderTimelineEvents(archiveId: string, orderedIds: string[]): TimelineEvent[] | undefined {
+    const current = this.timelineEvents.get(archiveId) || [];
+    if (orderedIds.length !== current.length || new Set(orderedIds).size !== current.length) return undefined;
+    const byId = new Map(current.map((event) => [event.id, event]));
+    if (orderedIds.some((id) => !byId.has(id))) return undefined;
+    const reordered = orderedIds.map((id, position) => ({ ...byId.get(id)!, position }));
+    this.timelineEvents.set(archiveId, reordered);
+    this.addRevision(archiveId, 'timeline', 'Reordered timeline milestones', 'contributor', reordered);
+    return reordered;
+  }
+
   deleteTimelineEvent(archiveId: string, eventId: string): boolean {
     const list = this.timelineEvents.get(archiveId) || [];
     const filtered = list.filter((e) => e.id !== eventId);
