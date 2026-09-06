@@ -1187,7 +1187,6 @@ apiRouter.put(
       if (quotaError) return res.status(413).json({ error: quotaError });
       const key = createObjectKey(id, contentType);
       await uploadObject(key, contentType, body);
-      await verifyObject(key, contentType, body.length);
       return res.json({
         success: true,
         url: publicObjectUrl(key),
@@ -1217,7 +1216,16 @@ apiRouter.post('/archives/:id/media/upload-url', async (req: Request, res: Respo
     if (quotaError) return res.status(413).json({ error: quotaError });
     const key = createObjectKey(id, parsed.data.contentType);
     const uploadUrl = await createUploadUrl(key, parsed.data.contentType, parsed.data.size);
-    return res.json({ uploadUrl, key, expiresIn: 600 });
+    return res.json({
+      uploadUrl,
+      key,
+      url: publicObjectUrl(key),
+      storageKey: key,
+      fileSize: parsed.data.size,
+      contentType: parsed.data.contentType,
+      type: kind,
+      expiresIn: 600
+    });
   } catch (error) {
     return res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to authorize upload.' });
   }

@@ -38,6 +38,45 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileReaderRef = useRef<FileReader | null>(null);
   const [cropOpen, setCropOpen] = useState(false);
+  const uploadDirectly = async (file: File) => {
+    if (!directUpload) throw new Error('Direct upload is unavailable.');
+    const authorization = await fetch(`/api/archives/${directUpload.archiveId}/media/upload-url`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${directUpload.token || ''}`
+      },
+      body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size })
+    });
+    const authorized = await authorization.json().catch(() => ({}));
+    if (!authorization.ok || !authorized.uploadUrl || !authorized.url) {
+      throw new Error(authorized.error || `Upload authorization failed (${authorization.status}).`);
+    }
+
+    const upload = await fetch(authorized.uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': file.type },
+      body: file
+    });
+    if (!upload.ok) throw new Error(`Storage upload failed (${upload.status}).`);
+    return authorized;
+  };
+
+  const uploadThroughServer = async (file: File) => {
+    if (!directUpload) throw new Error('Server upload is unavailable.');
+    const upload = await fetch(`/api/archives/${directUpload.archiveId}/media/upload`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': file.type,
+        'X-File-Name': encodeURIComponent(file.name),
+        Authorization: `Bearer ${directUpload.token || ''}`
+      },
+      body: file
+    });
+    const completed = await upload.json().catch(() => ({}));
+    if (!upload.ok || !completed.url) throw new Error(completed.error || `Upload failed (${upload.status}).`);
+    return completed;
+  };
   useEffect(() => () => { fileReaderRef.current?.abort(); }, []);
 
   useEffect(() => {
@@ -99,17 +138,15 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
 
     if (directUpload) {
       try {
-        const upload = await fetch(`/api/archives/${directUpload.archiveId}/media/upload`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': uploadFile.type,
-            'X-File-Name': encodeURIComponent(uploadFile.name),
-            Authorization: `Bearer ${directUpload.token || ''}`
-          },
-          body: uploadFile
-        });
-        const completed = await upload.json().catch(() => ({}));
-        if (!upload.ok || !completed.url) throw new Error(completed.error || `Upload failed (${upload.status}).`);
+        // Sending the bytes straight to object storage avoids relaying every image
+        // through Render. If bucket CORS is not ready, retain the same-origin proxy
+        // as a compatibility fallback instead of losing the user's selection.
+        let completed;
+        try {
+          completed = await uploadDirectly(uploadFile);
+        } catch {
+          completed = await uploadThroughServer(uploadFile);
+        }
         onChange(completed.url, completed.type, {
           name: uploadFile.name,
           size: completed.fileSize,
@@ -174,7 +211,10 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     setSelectedFile(null);
   };
 
-  const previewValue = value || localPreviewUrl;
+  // Keep showing the local object URL while the newly uploaded object has not yet
+  // been committed to the media table. The protected API URL intentionally 404s
+  // until that commit and previously produced a blank preview here.
+  const previewValue = localPreviewUrl || value;
 
   return (
     <div className={`space-y-2 text-xs ${className}`}>

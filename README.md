@@ -26,3 +26,21 @@ Read [RETRY-QA.md](RETRY-QA.md) before deploying. It lists the implemented repai
 The active application is under `src/`; server implementation is under `server/`. Configure server values from `.env.example` in `.env.local` for local development, or in your hosting environment for production. Never put Gemini, Supabase, session or admin secrets in frontend variables. The server now loads local environment files explicitly.
 
 Run `npm run lint`, `npm test`, and `npm run build` to repeat the checked validations. Start a built Node deployment with `NODE_ENV=production npm start` only after satisfying the deployment gate in the QA notes.
+
+### Backblaze B2 fast uploads
+
+OnceHere first uploads files directly from the browser to the private B2 bucket.
+If that request is blocked, it automatically falls back to the slower same-origin
+Render upload proxy.
+
+In the Backblaze bucket, open **CORS Rules** and add a rule for the exact deployed
+OnceHere origin (for example, `https://your-service.onrender.com`) with:
+
+- Allowed operation: `s3_put`
+- Allowed origin: the exact HTTPS origin of the deployed app
+- Allowed header: `content-type`
+- Maximum age: `3600`
+
+Do not include a path or trailing slash in the origin. Add each production or
+preview origin explicitly. Keeping the bucket private is supported; CORS does not
+make stored objects public.

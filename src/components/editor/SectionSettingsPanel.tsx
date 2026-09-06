@@ -1308,7 +1308,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             </div>
 
             <MediaUploader
-              key={newMediaUrl ? 'vault-media-selected' : 'vault-media-empty'}
               acceptMode="image-video"
               value={newMediaUrl}
               directUpload={{ archiveId: archive.id, token: ownerToken }}
