@@ -32,6 +32,7 @@ import {
   createDownloadUrl,
   createUploadUrl,
   inspectObject,
+  downloadObject,
   deleteObject,
   isR2Configured,
   publicObjectUrl,
@@ -1282,9 +1283,13 @@ apiRouter.get('/archives/:id/media-object/:fileName', async (req: Request, res: 
   const item = db.getMediaItems(id).find((entry) => entry.storageKey === `archives/${id}/${fileName}`);
   if (!item) return res.status(404).json({ error: 'Media not found.' });
   try {
-    const signedUrl = await createDownloadUrl(item.storageKey!);
+    const stored = await downloadObject(item.storageKey!);
+    res.setHeader('Content-Type', stored.contentType);
+    res.setHeader('Content-Length', String(stored.contentLength));
+    res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', archive.visibility === 'public' ? 'public, max-age=300' : 'private, no-store');
-    return res.redirect(302, signedUrl);
+    return res.status(200).send(Buffer.from(stored.body));
   } catch {
     return res.status(503).json({ error: 'Media is temporarily unavailable.' });
   }
