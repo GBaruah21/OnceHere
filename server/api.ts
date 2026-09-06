@@ -1300,7 +1300,8 @@ apiRouter.post('/archives/:id/media', async (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Permission denied.' });
   }
 
-  const { url, type, caption, altText, tags, albumId, notes, eventDate, isFeatured, position } = req.body;
+  let { url } = req.body;
+  const { type, caption, altText, tags, albumId, notes, eventDate, isFeatured, position } = req.body;
   let fileSize = req.body.fileSize;
   let contentType = req.body.contentType;
   if (!url) return res.status(400).json({ error: 'Media URL or payload required.' });
@@ -1311,6 +1312,29 @@ apiRouter.post('/archives/:id/media', async (req: Request, res: Response) => {
   if (!storageKey && typeof url === 'string') {
     const match = url.match(new RegExp(`^/api/archives/${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/media-object/([a-zA-Z0-9._-]+)$`));
     if (match) storageKey = `archives/${id}/${match[1]}`;
+  }
+
+  // Compatibility path for a client that finished reading the local file but
+  // lost the separate object-storage receipt. Persist the bytes now instead of
+  // rejecting a valid selection as an "incomplete file reference".
+  if (!storageKey && typeof url === 'string' && url.startsWith('data:')) {
+    if (!isR2Configured()) return res.status(503).json({ error: 'Object storage is not configured yet.' });
+    const match = url.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/);
+    if (!match) return res.status(400).json({ error: 'The selected media could not be decoded. Select it again and retry.' });
+    try {
+      contentType = match[1].toLowerCase();
+      const body = Buffer.from(match[2], 'base64');
+      fileSize = body.length;
+      const kind = validateUpload(contentType, fileSize);
+      if (kind !== (type === 'video' ? 'video' : 'image')) return res.status(400).json({ error: 'Media type does not match the selected file.' });
+      const quotaError = checkMediaQuota(id, kind, fileSize);
+      if (quotaError) return res.status(413).json({ error: quotaError });
+      storageKey = createObjectKey(id, contentType);
+      await uploadObject(storageKey, contentType, body);
+      url = publicObjectUrl(storageKey);
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : 'The selected media could not be uploaded.' });
+    }
   }
 
   if (storageKey) {
@@ -1332,7 +1356,7 @@ apiRouter.post('/archives/:id/media', async (req: Request, res: Response) => {
     } catch (error) {
       return res.status(400).json({ error: error instanceof Error ? error.message : 'Uploaded media could not be verified.' });
     }
-  } else if (typeof url !== 'string' || url.startsWith('data:')) {
+  } else if (typeof url !== 'string' || url.startsWith('data:') || url.startsWith('blob:')) {
     return res.status(400).json({ error: 'The uploaded file reference was incomplete. Select the file again and retry.' });
   }
 
