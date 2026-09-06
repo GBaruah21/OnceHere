@@ -5,7 +5,14 @@ import { compressImageForUpload, IMAGE_SOURCE_LIMIT_BYTES, VIDEO_SOURCE_LIMIT_BY
 
 export interface MediaUploaderProps {
   value?: string;
-  onChange: (url: string, type?: 'image' | 'video', meta?: { name?: string; size?: number; storageKey?: string; contentType?: string }) => void;
+  onChange: (url: string, type?: 'image' | 'video', meta?: {
+    name?: string;
+    size?: number;
+    storageKey?: string;
+    contentType?: string;
+    thumbnailUrl?: string;
+    thumbnailStorageKey?: string;
+  }) => void;
   onClear?: () => void;
   acceptMode?: 'image' | 'image-video';
   label?: string;
@@ -14,6 +21,41 @@ export interface MediaUploaderProps {
   compact?: boolean;
   className?: string;
   directUpload?: { archiveId: string; token?: string };
+}
+
+async function createVideoPoster(file: File): Promise<File> {
+  const sourceUrl = URL.createObjectURL(file);
+  try {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'metadata';
+    video.src = sourceUrl;
+    await new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => reject(new Error('Video preview timed out.')), 12000);
+      video.onloadedmetadata = () => {
+        const duration = Number.isFinite(video.duration) ? video.duration : 1;
+        video.currentTime = Math.min(Math.max(duration * 0.08, 0.1), 1.5);
+      };
+      video.onseeked = () => { window.clearTimeout(timeout); resolve(); };
+      video.onerror = () => { window.clearTimeout(timeout); reject(new Error('This video format cannot provide a preview frame.')); };
+    });
+    const maxWidth = 960;
+    const scale = Math.min(1, maxWidth / Math.max(video.videoWidth, 1));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Video preview could not be created.');
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((result) => result ? resolve(result) : reject(new Error('Video preview could not be encoded.')), 'image/jpeg', 0.82);
+    });
+    const baseName = file.name.replace(/\.[^.]+$/, '') || 'video';
+    return new File([blob], `${baseName}-poster.jpg`, { type: 'image/jpeg' });
+  } finally {
+    URL.revokeObjectURL(sourceUrl);
+  }
 }
 
 export const MediaUploader: React.FC<MediaUploaderProps> = ({
@@ -147,6 +189,15 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         } catch {
           completed = await uploadThroughServer(uploadFile);
         }
+        let posterReceipt: any = null;
+        if (isVideoFile) {
+          try {
+            const posterFile = await createVideoPoster(uploadFile);
+            posterReceipt = await uploadThroughServer(posterFile);
+          } catch (posterError) {
+            console.warn('Automatic video poster generation failed; the gallery will use the video frame.', posterError);
+          }
+        }
         onChange(completed.url, completed.type, {
           name: uploadFile.name,
           size: completed.fileSize,
@@ -154,7 +205,9 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
           // fallback returns `storageKey`. Preserve either receipt so the media
           // record always points at the exact object the user selected.
           storageKey: completed.storageKey || completed.key,
-          contentType: completed.contentType
+          contentType: completed.contentType,
+          thumbnailUrl: posterReceipt?.url,
+          thumbnailStorageKey: posterReceipt?.storageKey || posterReceipt?.key
         });
       } catch (error) {
         setFileError(error instanceof Error ? error.message : 'Cloud upload failed. Please retry.');
