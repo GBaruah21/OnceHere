@@ -98,20 +98,21 @@ apiRouter.use(async (req, res, next) => {
  */
 function getAuthContext(req: Request): { archiveId?: string; role: 'owner' | 'contributor' | 'viewer' | 'none' } {
   const authHeader = req.headers.authorization;
-  let token = '';
+  const candidates = [
+    authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : '',
+    req.cookies?.mc_owner_token,
+    req.cookies?.mc_editor_token,
+    req.cookies?.mc_viewer_token
+  ].filter((token): token is string => Boolean(token));
 
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    token = authHeader.substring(7);
-  } else if (req.cookies && typeof req.cookies === 'object') {
-    const cookieToken = req.cookies.mc_owner_token || req.cookies.mc_editor_token || req.cookies.mc_viewer_token;
-    if (cookieToken) token = cookieToken;
-  }
-
-  if (!token) return { role: 'none' };
-
-  const verification = verifySignedToken(token);
-  if (verification.valid && verification.archiveId && verification.role) {
-    return { archiveId: verification.archiveId, role: verification.role };
+  // A stale bearer token must not mask a freshly renewed HTTP-only cookie.
+  // This happens after owner recovery while an already-mounted editor still
+  // has the previous token in its props.
+  for (const token of candidates) {
+    const verification = verifySignedToken(token);
+    if (verification.valid && verification.archiveId && verification.role) {
+      return { archiveId: verification.archiveId, role: verification.role };
+    }
   }
 
   return { role: 'none' };
@@ -913,6 +914,11 @@ apiRouter.post('/archives/auth/key-access', limitRecoveryAttempts, (req: Request
     deviceInfo: clientInfo.device
   });
 
+  // Recovery must renew the browser's real server session, not only return a
+  // token for transient React state. This keeps saves working after reloads
+  // and replaces any stale owner cookie from an older deployment.
+  setSessionCookie(res, result.token!, 'owner');
+
   return res.json({
     success: true,
     token: result.token,
@@ -1026,6 +1032,19 @@ apiRouter.post('/archives/:id/timeline', (req: Request, res: Response) => {
   });
 
   return res.status(201).json({ success: true, event });
+});
+
+apiRouter.put('/archives/:id/timeline/reorder', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const auth = getAuthContext(req);
+  if (auth.archiveId !== id || (auth.role !== 'owner' && auth.role !== 'contributor')) {
+    return res.status(403).json({ error: 'Permission denied.' });
+  }
+  const parsed = z.object({ orderedIds: z.array(z.string().min(1)).max(500) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid milestone order.' });
+  const events = db.reorderTimelineEvents(id, parsed.data.orderedIds);
+  if (!events) return res.status(409).json({ error: 'Milestones changed. Refresh the list and try reordering again.' });
+  return res.json({ success: true, events });
 });
 
 apiRouter.patch('/archives/:id/timeline/:eventId', (req: Request, res: Response) => {
@@ -1328,11 +1347,12 @@ apiRouter.get('/archives/:id/media-object/:fileName', async (req: Request, res: 
   // exact URL as a repair path so existing broken cards begin working too.
   const requestedUrl = publicObjectUrl(requestedStorageKey);
   const item = db.getMediaItems(id).find((entry) => (
-    entry.storageKey === requestedStorageKey || entry.url === requestedUrl
+    entry.storageKey === requestedStorageKey || entry.url === requestedUrl ||
+    entry.thumbnailStorageKey === requestedStorageKey || entry.thumbnailUrl === requestedUrl
   ));
   if (!item) return res.status(404).json({ error: 'Media not found.' });
   try {
-    const stored = await downloadObject(item.storageKey || requestedStorageKey);
+    const stored = await downloadObject(requestedStorageKey);
     res.setHeader('Content-Type', stored.contentType);
     res.setHeader('Content-Length', String(stored.contentLength));
     res.setHeader('Content-Disposition', 'inline');
@@ -1414,12 +1434,29 @@ apiRouter.post('/archives/:id/media', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'The uploaded file reference was incomplete. Select the file again and retry.' });
   }
 
+  let thumbnailUrl = type === 'video' ? req.body.thumbnailUrl : url;
+  let thumbnailStorageKey = type === 'video' ? req.body.thumbnailStorageKey : storageKey;
+  if (type === 'video' && (thumbnailUrl || thumbnailStorageKey)) {
+    if (typeof thumbnailUrl !== 'string' || typeof thumbnailStorageKey !== 'string' ||
+        !thumbnailStorageKey.startsWith(`archives/${id}/`) || thumbnailUrl !== publicObjectUrl(thumbnailStorageKey)) {
+      return res.status(400).json({ error: 'Invalid video thumbnail reference.' });
+    }
+    try {
+      const poster = await inspectObject(thumbnailStorageKey);
+      validateUpload(String(poster.ContentType || ''), Number(poster.ContentLength || 0));
+      if (!String(poster.ContentType || '').startsWith('image/')) throw new Error('Video thumbnail must be an image.');
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : 'Video thumbnail could not be verified.' });
+    }
+  }
+
   const item: MediaItem = {
     id: `med-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
     archiveId: id,
     type: type === 'video' ? 'video' : 'image',
     url,
-    thumbnailUrl: url,
+    thumbnailUrl,
+    thumbnailStorageKey,
     caption: caption || '',
     altText: altText || caption || 'Archive memory photograph',
     tags: Array.isArray(tags) ? tags : [],
@@ -1512,6 +1549,9 @@ apiRouter.delete('/archives/:id/media/:mediaId', async (req: Request, res: Respo
   const success = db.deleteMediaItem(targetId, mediaId);
   if (success && item?.storageKey && isR2Configured()) {
     try { await deleteObject(item.storageKey); } catch (error) { console.error('Failed to remove R2 object:', error); }
+    if (item.thumbnailStorageKey && item.thumbnailStorageKey !== item.storageKey) {
+      try { await deleteObject(item.thumbnailStorageKey); } catch (error) { console.error('Failed to remove video thumbnail:', error); }
+    }
   }
   return res.json({ success });
 });
