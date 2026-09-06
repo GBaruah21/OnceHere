@@ -185,7 +185,13 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   const [newMediaUrl, setNewMediaUrl] = useState('');
   const [newMediaCaption, setNewMediaCaption] = useState('');
   const [newMediaType, setNewMediaType] = useState<'image' | 'video'>('image');
-  const [newMediaStorage, setNewMediaStorage] = useState<{ storageKey?: string; fileSize?: number; contentType?: string }>({});
+  const [newMediaStorage, setNewMediaStorage] = useState<{
+    storageKey?: string;
+    fileSize?: number;
+    contentType?: string;
+    thumbnailUrl?: string;
+    thumbnailStorageKey?: string;
+  }>({});
   const [newMediaHint, setNewMediaHint] = useState('');
   const [newMediaTags, setNewMediaTags] = useState('');
   const [autoAiOnUpload, setAutoAiOnUpload] = useState(false);
@@ -1316,7 +1322,13 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 setIsAiAnalyzingMedia(false);
                 setAiAnalysisError(null);
                 setNewMediaUrl(url);
-                setNewMediaStorage({ storageKey: meta?.storageKey, fileSize: meta?.size, contentType: meta?.contentType });
+                setNewMediaStorage({
+                  storageKey: meta?.storageKey,
+                  fileSize: meta?.size,
+                  contentType: meta?.contentType,
+                  thumbnailUrl: meta?.thumbnailUrl,
+                  thumbnailStorageKey: meta?.thumbnailStorageKey
+                });
                 if (type) setNewMediaType(type);
                 if (url && type !== 'video' && autoAiOnUpload) {
                   handleAnalyzeMediaItem(url, newMediaHint);
@@ -1484,7 +1496,9 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                     notes: attachedNotes,
                     storageKey: newMediaStorage.storageKey,
                     fileSize: newMediaStorage.fileSize,
-                    contentType: newMediaStorage.contentType
+                    contentType: newMediaStorage.contentType,
+                    thumbnailUrl: newMediaStorage.thumbnailUrl,
+                    thumbnailStorageKey: newMediaStorage.thumbnailStorageKey
                   });
                   setNewMediaUrl('');
                   setNewMediaStorage({});
