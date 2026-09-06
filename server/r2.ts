@@ -128,3 +128,17 @@ export async function createDownloadUrl(key: string): Promise<string> {
     Key: key
   }), { expiresIn: 5 * 60 });
 }
+
+export async function downloadObject(key: string): Promise<{ body: Uint8Array; contentType: string; contentLength: number }> {
+  const result = await client().send(new GetObjectCommand({
+    Bucket: bucketName(),
+    Key: key
+  }));
+  if (!result.Body) throw new Error('Stored media has no response body.');
+  const body = await result.Body.transformToByteArray();
+  return {
+    body,
+    contentType: result.ContentType || 'application/octet-stream',
+    contentLength: result.ContentLength || body.byteLength
+  };
+}
