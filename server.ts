@@ -5,6 +5,7 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './server/api';
 import { PLATFORM_CONFIG } from './src/config/platform';
+import { db } from './server/db';
 
 const portFlag = process.argv.indexOf('--port');
 const PORT = Number(portFlag >= 0 ? process.argv[portFlag + 1] : process.env.PORT || 3000);
@@ -26,6 +27,7 @@ async function startServer() {
     res.json({
       status: 'healthy',
       platform: PLATFORM_CONFIG.name,
+      durableStorage: db.hasDurableStorage() ? 'configured' : 'not-configured',
       timestamp: new Date().toISOString()
     });
   });

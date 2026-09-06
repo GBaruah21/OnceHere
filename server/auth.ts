@@ -4,7 +4,18 @@ import { db } from './db';
 import { UserSession } from '../src/types';
 import { PLATFORM_CONFIG } from '../src/config/platform';
 
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+// Keep signatures stable across deployments. A random per-process secret made
+// every existing owner session invalid immediately after a server restart.
+const SESSION_SECRET = process.env.SESSION_SECRET
+  || process.env.SUPABASE_SECRET_KEY
+  || process.env.SUPABASE_SERVICE_ROLE_KEY
+  || crypto.randomBytes(32).toString('hex');
+
+/** Accept a copied key or the complete downloaded recovery-key receipt. */
+export function normalizeRecoveryKeyInput(value: string): string {
+  const trimmed = (value || '').trim().replace(/^["'`]|["'`]$/g, '').trim();
+  return trimmed.match(/mc_rec_[a-z0-9_-]+/i)?.[0] || trimmed;
+}
 
 export interface AuthContext {
   archiveId: string;
@@ -158,7 +169,8 @@ export function verifyOwnerRecoveryKey(archiveId: string, rawKey: string): {
     return { success: false, error: 'Archive not found.' };
   }
 
-  const clean = (rawKey || '').trim().toLowerCase();
+  const normalizedKey = normalizeRecoveryKeyInput(rawKey);
+  const clean = normalizedKey.toLowerCase();
   if (archive.id.startsWith('demo-') && (
     clean === 'mc_rec_downloaded_from_studio' ||
     clean === 'mc_rec_sample_key_123' ||
@@ -169,7 +181,7 @@ export function verifyOwnerRecoveryKey(archiveId: string, rawKey: string): {
     return { success: true, token };
   }
 
-  const isMatch = bcrypt.compareSync(rawKey.trim(), archive.recoveryKeyHash);
+  const isMatch = bcrypt.compareSync(normalizedKey, archive.recoveryKeyHash);
   if (isMatch) {
     // Owner session token with 30-day lifetime
     const token = createSignedToken(archiveId, 'owner', 24 * 30);
@@ -233,7 +245,7 @@ export function findArchiveAndVerifyKey(
   error?: string;
 } {
   // Normalize key: remove surrounding quotes, backticks, or trailing spaces
-  const cleanKey = (rawKey || '').trim().replace(/^["'`]|["'`]$/g, '').trim();
+  const cleanKey = normalizeRecoveryKeyInput(rawKey);
   if (!cleanKey) {
     return { success: false, error: 'Please enter your complete owner recovery key.' };
   }

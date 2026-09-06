@@ -26,6 +26,17 @@ import { evaluatePin } from '../src/lib/security';
 import { PLATFORM_CONFIG } from '../src/config/platform';
 
 import { analyzeMemoryImage } from './ai';
+import {
+  R2_LIMITS,
+  createObjectKey,
+  createDownloadUrl,
+  createUploadUrl,
+  deleteObject,
+  isR2Configured,
+  publicObjectUrl,
+  validateUpload,
+  verifyObject
+} from './r2';
 
 export const apiRouter = express.Router();
 apiRouter.use(express.json({ limit: '40mb' }));
@@ -162,6 +173,11 @@ function sanitizeArchive(archive: Archive): Partial<Archive> {
 // Create a new archive workspace (Step 5 in flow - BEFORE domain choice)
 apiRouter.post('/archives', (req: Request, res: Response) => {
   try {
+    if (process.env.NODE_ENV === 'production' && !db.hasDurableStorage()) {
+      return res.status(503).json({
+        error: 'Archive creation is temporarily unavailable because durable storage is not configured.'
+      });
+    }
     const schema = z.object({
       archiveType: z.enum(['school', 'college', 'university', 'workplace', 'team', 'trip', 'reunion', 'club', 'custom']),
       title: z.string().min(2).max(100),
@@ -805,6 +821,9 @@ apiRouter.post('/archives/:id/auth/recovery/regenerate', (req: Request, res: Res
   const { id } = req.params;
   const auth = getAuthContext(req);
   if (auth.archiveId !== id || auth.role !== 'owner') return res.status(403).json({ error: 'Owner access required.' });
+  if (process.env.NODE_ENV === 'production' && !db.hasDurableStorage()) {
+    return res.status(503).json({ error: 'The recovery key cannot be replaced until durable storage is available.' });
+  }
   const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
   const bytes = require('crypto').randomBytes(24);
   let recoveryKey = 'mc_rec_';
@@ -1112,6 +1131,80 @@ apiRouter.post('/archives/:id/members/:memberId/messages', (req: Request, res: R
 // 7. MEDIA VAULT & UPLOADS
 // ==========================================
 
+const r2UploadSchema = z.object({
+  fileName: z.string().trim().min(1).max(255),
+  contentType: z.string().trim().min(1).max(100),
+  size: z.number().int().positive()
+});
+
+function requireArchiveEditor(req: Request, archiveId: string, allowOpen = false) {
+  const archive = db.findById(archiveId);
+  if (!archive) return { error: 'Archive not found.', status: 404 as const };
+  const auth = getAuthContext(req);
+  const permitted = auth.archiveId === archiveId && (auth.role === 'owner' || auth.role === 'contributor');
+  if (!permitted && !(allowOpen && archive.contributionMode === 'open')) {
+    return { error: 'Permission denied.', status: 403 as const };
+  }
+  return { archive, auth };
+}
+
+function checkMediaQuota(archiveId: string, kind: 'image' | 'video', incomingBytes: number) {
+  const media = db.getMediaItems(archiveId);
+  const images = media.filter((item) => item.type === 'image').length;
+  const videos = media.filter((item) => item.type === 'video').length;
+  const totalBytes = media.reduce((sum, item) => sum + (item.fileSize || 0), 0);
+  if (kind === 'image' && images >= R2_LIMITS.maxImagesPerArchive) return 'This archive already has the maximum of 50 images.';
+  if (kind === 'video' && videos >= R2_LIMITS.maxVideosPerArchive) return 'This archive already has the maximum of 2 videos.';
+  if (totalBytes + incomingBytes > R2_LIMITS.maxTotalBytesPerArchive) return 'This archive would exceed its 200 MB media allowance.';
+  return null;
+}
+
+apiRouter.post('/archives/:id/media/upload-url', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const access = requireArchiveEditor(req, id, true);
+  if ('error' in access) return res.status(access.status).json({ error: access.error });
+  if (!isR2Configured()) return res.status(503).json({ error: 'Cloudflare R2 storage is not configured yet.' });
+
+  const parsed = r2UploadSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid upload request.' });
+  try {
+    const kind = validateUpload(parsed.data.contentType, parsed.data.size);
+    const quotaError = checkMediaQuota(id, kind, parsed.data.size);
+    if (quotaError) return res.status(413).json({ error: quotaError });
+    const key = createObjectKey(id, parsed.data.contentType);
+    const uploadUrl = await createUploadUrl(key, parsed.data.contentType, parsed.data.size);
+    return res.json({ uploadUrl, key, expiresIn: 600 });
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to authorize upload.' });
+  }
+});
+
+apiRouter.post('/archives/:id/media/upload-complete', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const access = requireArchiveEditor(req, id, true);
+  if ('error' in access) return res.status(access.status).json({ error: access.error });
+  const parsed = r2UploadSchema.extend({ key: z.string().min(1).max(500) }).safeParse(req.body);
+  if (!parsed.success || !parsed.data.key.startsWith(`archives/${id}/`)) {
+    return res.status(400).json({ error: 'Invalid upload completion request.' });
+  }
+  try {
+    const kind = validateUpload(parsed.data.contentType, parsed.data.size);
+    const quotaError = checkMediaQuota(id, kind, parsed.data.size);
+    if (quotaError) return res.status(413).json({ error: quotaError });
+    await verifyObject(parsed.data.key, parsed.data.contentType, parsed.data.size);
+    return res.json({
+      success: true,
+      url: publicObjectUrl(parsed.data.key),
+      storageKey: parsed.data.key,
+      fileSize: parsed.data.size,
+      contentType: parsed.data.contentType,
+      type: kind
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to verify upload.' });
+  }
+});
+
 apiRouter.get('/archives/:id/media', (req: Request, res: Response) => {
   const { id } = req.params;
   const media = db.getMediaItems(id);
@@ -1119,7 +1212,26 @@ apiRouter.get('/archives/:id/media', (req: Request, res: Response) => {
   return res.json({ media, albums });
 });
 
-apiRouter.post('/archives/:id/media', (req: Request, res: Response) => {
+apiRouter.get('/archives/:id/media-object/:fileName', async (req: Request, res: Response) => {
+  const { id, fileName } = req.params;
+  const archive = db.findById(id);
+  if (!archive || !/^[a-zA-Z0-9._-]+$/.test(fileName)) return res.status(404).json({ error: 'Media not found.' });
+  const auth = getAuthContext(req);
+  if (archive.visibility === 'private' && auth.archiveId !== id) {
+    return res.status(401).json({ error: 'Viewer access is required.' });
+  }
+  const item = db.getMediaItems(id).find((entry) => entry.storageKey === `archives/${id}/${fileName}`);
+  if (!item) return res.status(404).json({ error: 'Media not found.' });
+  try {
+    const signedUrl = await createDownloadUrl(item.storageKey!);
+    res.setHeader('Cache-Control', archive.visibility === 'public' ? 'public, max-age=300' : 'private, no-store');
+    return res.redirect(302, signedUrl);
+  } catch {
+    return res.status(503).json({ error: 'Media is temporarily unavailable.' });
+  }
+});
+
+apiRouter.post('/archives/:id/media', async (req: Request, res: Response) => {
   const { id } = req.params;
   const auth = getAuthContext(req);
   const archive = db.findById(id);
@@ -1129,8 +1241,26 @@ apiRouter.post('/archives/:id/media', (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Permission denied.' });
   }
 
-  const { url, type, caption, altText, tags, albumId, notes, eventDate, isFeatured, position } = req.body;
+  const { url, type, caption, altText, tags, albumId, notes, eventDate, isFeatured, position, storageKey, fileSize, contentType } = req.body;
   if (!url) return res.status(400).json({ error: 'Media URL or payload required.' });
+
+  if (storageKey) {
+    if (typeof storageKey !== 'string' || !storageKey.startsWith(`archives/${id}/`)) {
+      return res.status(400).json({ error: 'Invalid media storage key.' });
+    }
+    try {
+      const kind = validateUpload(contentType, fileSize);
+      if (kind !== (type === 'video' ? 'video' : 'image')) return res.status(400).json({ error: 'Media type does not match the uploaded file.' });
+      const quotaError = checkMediaQuota(id, kind, fileSize);
+      if (quotaError) return res.status(413).json({ error: quotaError });
+      await verifyObject(storageKey, contentType, fileSize);
+      if (url !== publicObjectUrl(storageKey)) return res.status(400).json({ error: 'Invalid media URL.' });
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : 'Uploaded media could not be verified.' });
+    }
+  } else if (typeof url !== 'string' || url.startsWith('data:')) {
+    return res.status(400).json({ error: 'Direct file uploads require Cloudflare R2. Configure R2 or use a hosted HTTPS URL.' });
+  }
 
   const item: MediaItem = {
     id: `med-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
@@ -1146,6 +1276,9 @@ apiRouter.post('/archives/:id/media', (req: Request, res: Response) => {
     eventDate,
     isFeatured: Boolean(isFeatured),
     position: typeof position === 'number' ? position : db.getMediaItems(id).length,
+    storageKey,
+    fileSize,
+    contentType,
     createdAt: new Date().toISOString()
   };
 
@@ -1214,7 +1347,7 @@ apiRouter.delete('/archives/:id/media/:mediaId/notes/:noteId', (req: Request, re
   return res.json({ success: true, item: updated });
 });
 
-apiRouter.delete('/archives/:id/media/:mediaId', (req: Request, res: Response) => {
+apiRouter.delete('/archives/:id/media/:mediaId', async (req: Request, res: Response) => {
   const { id, mediaId } = req.params;
   const archive = db.findById(id) || db.findBySlug(id);
   const targetId = archive ? archive.id : id;
@@ -1223,7 +1356,11 @@ apiRouter.delete('/archives/:id/media/:mediaId', (req: Request, res: Response) =
     return res.status(403).json({ error: 'Permission denied.' });
   }
 
+  const item = db.getMediaItems(targetId).find((entry) => entry.id === mediaId);
   const success = db.deleteMediaItem(targetId, mediaId);
+  if (success && item?.storageKey && isR2Configured()) {
+    try { await deleteObject(item.storageKey); } catch (error) { console.error('Failed to remove R2 object:', error); }
+  }
   return res.json({ success });
 });
 

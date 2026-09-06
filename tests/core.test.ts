@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { sanitizeSlug, validateSlug, resolveTenant } from '../src/lib/tenant';
 import { evaluatePin, generateRecoveryKey } from '../src/lib/security';
-import { createSignedToken, verifySignedToken, findArchiveAndVerifyKey, verifyArchivePin, verifyViewerPin } from '../server/auth';
+import { createSignedToken, verifySignedToken, findArchiveAndVerifyKey, normalizeRecoveryKeyInput, verifyArchivePin, verifyViewerPin } from '../server/auth';
 import { db } from '../server/db';
 
 describe('Tenant & Slug Utilities', () => {
@@ -42,6 +42,12 @@ describe('Security & Authentication', () => {
     const key = generateRecoveryKey();
     expect(key.startsWith('mc_rec_')).toBe(true);
     expect(key.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it('extracts a recovery key when the downloaded receipt is pasted', () => {
+    const key = 'mc_rec_abcdef-ghjkmn-pqrstu-vw2345';
+    expect(normalizeRecoveryKeyInput(`ONCEHERE ARCHIVE OWNER RECOVERY KEY\n\nRECOVERY KEY:\n${key}\n\nKeep this safe.`)).toBe(key);
+    expect(normalizeRecoveryKeyInput(`\`${key}\``)).toBe(key);
   });
 
   it('signs and cryptographically verifies user session tokens', () => {

@@ -10,3 +10,6 @@ alter table public.oncehere_state enable row level security;
 
 -- No browser-facing policies are created. The table is accessed only by the
 -- application's server with SUPABASE_SECRET_KEY.
+-- Keep this table and row when redeploying: it contains the durable archive state,
+-- including one-way recovery-key hashes. A normal application deployment must not
+-- drop, truncate, reseed, or replace this table.

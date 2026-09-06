@@ -46,8 +46,13 @@ class MemoryDatabase {
 
   private get storageConfig() {
     const url = process.env.SUPABASE_URL?.replace(/\/$/, '');
-    const key = process.env.SUPABASE_SECRET_KEY;
+    const key = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
     return url && key ? { url, key } : undefined;
+  }
+
+  /** True when archives and their recovery-key hashes survive redeployments. */
+  hasDurableStorage(): boolean {
+    return Boolean(this.storageConfig);
   }
 
   private snapshot() {

@@ -185,6 +185,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   const [newMediaUrl, setNewMediaUrl] = useState('');
   const [newMediaCaption, setNewMediaCaption] = useState('');
   const [newMediaType, setNewMediaType] = useState<'image' | 'video'>('image');
+  const [newMediaStorage, setNewMediaStorage] = useState<{ storageKey?: string; fileSize?: number; contentType?: string }>({});
   const [newMediaHint, setNewMediaHint] = useState('');
   const [newMediaTags, setNewMediaTags] = useState('');
   const [autoAiOnUpload, setAutoAiOnUpload] = useState(false);
@@ -1310,11 +1311,13 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               key={newMediaUrl ? 'vault-media-selected' : 'vault-media-empty'}
               acceptMode="image-video"
               value={newMediaUrl}
-              onChange={(url, type) => {
+              directUpload={{ archiveId: archive.id, token: ownerToken }}
+              onChange={(url, type, meta) => {
                 mediaAnalysisRequest.current += 1;
                 setIsAiAnalyzingMedia(false);
                 setAiAnalysisError(null);
                 setNewMediaUrl(url);
+                setNewMediaStorage({ storageKey: meta?.storageKey, fileSize: meta?.size, contentType: meta?.contentType });
                 if (type) setNewMediaType(type);
                 if (url && type !== 'video' && autoAiOnUpload) {
                   handleAnalyzeMediaItem(url, newMediaHint);
@@ -1479,9 +1482,13 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                     caption: newMediaCaption.trim() || undefined,
                     type: newMediaType,
                     tags: parseTags(newMediaTags).length > 0 ? parseTags(newMediaTags) : (aiTags.length > 0 ? aiTags : ['Memories']),
-                    notes: attachedNotes
+                    notes: attachedNotes,
+                    storageKey: newMediaStorage.storageKey,
+                    fileSize: newMediaStorage.fileSize,
+                    contentType: newMediaStorage.contentType
                   });
                   setNewMediaUrl('');
+                  setNewMediaStorage({});
                   setNewMediaCaption('');
                   setNewMediaType('image');
                   setAiSuggestedNotes([]);

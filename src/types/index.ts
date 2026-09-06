@@ -186,6 +186,10 @@ export interface MediaItem {
   width?: number;
   height?: number;
   duration?: number;
+  /** R2 object metadata. Never contains storage credentials. */
+  storageKey?: string;
+  fileSize?: number;
+  contentType?: string;
   createdAt: string;
 }
 

@@ -4,7 +4,7 @@ import { Upload, Link as LinkIcon, Image as ImageIcon, Video, X, Check, Camera, 
 
 export interface MediaUploaderProps {
   value?: string;
-  onChange: (url: string, type?: 'image' | 'video', meta?: { name?: string; size?: number }) => void;
+  onChange: (url: string, type?: 'image' | 'video', meta?: { name?: string; size?: number; storageKey?: string; contentType?: string }) => void;
   onClear?: () => void;
   acceptMode?: 'image' | 'image-video';
   label?: string;
@@ -12,6 +12,7 @@ export interface MediaUploaderProps {
   onOpenAnalyzer?: () => void;
   compact?: boolean;
   className?: string;
+  directUpload?: { archiveId: string; token?: string };
 }
 
 export const MediaUploader: React.FC<MediaUploaderProps> = ({
@@ -23,7 +24,8 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   placeholder = 'Paste URL or select file from your device...',
   onOpenAnalyzer,
   compact = false,
-  className = ''
+  className = '',
+  directUpload
 }) => {
   const [activeTab, setActiveTab] = useState<'upload' | 'url'>('upload');
   const [urlInput, setUrlInput] = useState(value && !value.startsWith('data:') ? value : '');
@@ -59,7 +61,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     );
   };
 
-  const handleFile = (file: File) => {
+  const handleFile = async (file: File) => {
     setFileError(null);
     if (!file) return;
 
@@ -71,9 +73,9 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
       return;
     }
 
-    const maxBytes = isVideoFile ? 18 * 1024 * 1024 : 15 * 1024 * 1024;
+    const maxBytes = isVideoFile ? 59 * 1024 * 1024 : 15 * 1024 * 1024;
     if (file.size > maxBytes) {
-      setFileError(`${isVideoFile ? 'Video' : 'Image'} is too large for this upload method. Choose a file under ${isVideoFile ? '18' : '15'} MB or use a hosted link.`);
+      setFileError(`${isVideoFile ? 'Video' : 'Image'} is too large. Choose a file of ${isVideoFile ? '59' : '15'} MB or less.`);
       return;
     }
 
@@ -81,6 +83,52 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     setLocalPreviewUrl(URL.createObjectURL(file));
     setSelectedFile({ name: file.name, type: isVideoFile ? 'video' : 'image', size: file.size });
     setIsProcessing(true);
+
+    if (directUpload) {
+      try {
+        const headers = {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${directUpload.token || ''}`
+        };
+        const authorize = await fetch(`/api/archives/${directUpload.archiveId}/media/upload-url`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size })
+        });
+        const authorization = await authorize.json().catch(() => ({}));
+        if (!authorize.ok || !authorization.uploadUrl) throw new Error(authorization.error || 'Unable to authorize R2 upload.');
+
+        const upload = await fetch(authorization.uploadUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': file.type },
+          body: file
+        });
+        if (!upload.ok) throw new Error('Cloudflare R2 rejected the upload. Check the bucket CORS configuration.');
+
+        const complete = await fetch(`/api/archives/${directUpload.archiveId}/media/upload-complete`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ key: authorization.key, fileName: file.name, contentType: file.type, size: file.size })
+        });
+        const completed = await complete.json().catch(() => ({}));
+        if (!complete.ok || !completed.url) throw new Error(completed.error || 'Uploaded file could not be verified.');
+        onChange(completed.url, completed.type, {
+          name: file.name,
+          size: completed.fileSize,
+          storageKey: completed.storageKey,
+          contentType: completed.contentType
+        });
+      } catch (error) {
+        setFileError(error instanceof Error ? error.message : 'R2 upload failed. Please retry.');
+        setSelectedFile(null);
+        if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
+        setLocalPreviewUrl('');
+      } finally {
+        setIsProcessing(false);
+      }
+      return;
+    }
+
     fileReaderRef.current?.abort();
     const reader = new FileReader();
     fileReaderRef.current = reader;
@@ -171,7 +219,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
           </div>
 
           <div className="flex items-center gap-1">
-            {!isVideo(previewValue) && (
+            {!directUpload && !isVideo(previewValue) && (
               <button type="button" onClick={() => setCropOpen(true)} title="Preview and crop image" className="min-w-11 min-h-11 p-2 rounded-lg bg-white/10 hover:bg-white/20 text-neutral-300 hover:text-white transition-colors cursor-pointer flex items-center justify-center">
                 <Eye className="w-3.5 h-3.5" />
               </button>
@@ -244,10 +292,10 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
                     {acceptMode === 'image' ? <ImageIcon className="w-5 h-5" /> : <Upload className="w-5 h-5" />}
                   </div>
                   <div className="text-xs font-medium text-white">
-                    {isProcessing ? 'Preparing preview…' : 'Click to browse or drop file here'}
+                    {isProcessing ? (directUpload ? 'Uploading securely to R2…' : 'Preparing preview…') : 'Click to browse or drop file here'}
                   </div>
                   <div className="text-[10px] text-neutral-400">
-                    {acceptMode === 'image' ? 'Supports JPG, PNG, WEBP, GIF (up to 15MB)' : 'Images up to 15MB · videos up to 18MB (MP4, WEBM, MOV)'}
+                    {acceptMode === 'image' ? 'Supports JPG, PNG, WebP, AVIF, GIF (up to 15 MB)' : 'Images up to 15 MB · videos up to 59 MB (MP4, WebM, MOV)'}
                   </div>
                 </div>
               </div>

@@ -31,7 +31,10 @@ export const PLATFORM_CONFIG = {
   },
   limits: {
     maxImageSizeMB: 15,
-    maxVideoSizeMB: 150,
+    maxVideoSizeMB: 59,
+    maxImagesPerArchive: 50,
+    maxVideosPerArchive: 2,
+    maxMediaStorageMBPerArchive: 200,
     maxBatchUploadCount: 30,
     maxWallMessageLength: 500,
     maxFailedPinAttempts: 5,
