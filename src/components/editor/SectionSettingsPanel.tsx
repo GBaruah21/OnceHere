@@ -77,7 +77,7 @@ interface SectionSettingsPanelProps {
   onUpdateSections: (sections: Section[]) => void;
   onAddTimelineEvent: (event: Partial<TimelineEvent>) => Promise<void>;
   onUpdateTimelineEvent: (id: string, updates: Partial<TimelineEvent>) => Promise<void>;
-  onReorderTimeline: (events: TimelineEvent[]) => void;
+  onReorderTimeline: (events: TimelineEvent[]) => Promise<void>;
   onDeleteTimelineEvent: (id: string) => void;
   onAddMember: (member: Partial<Member>) => void;
   onUpdateMember: (id: string, updates: Partial<Member>) => void;
@@ -243,7 +243,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
     setNewEventImg(event.mediaUrl || '');
   };
 
-  const moveTimelineEvent = (sourceId: string, targetId: string) => {
+  const moveTimelineEvent = async (sourceId: string, targetId: string) => {
     if (sourceId === targetId) return;
     const ordered = [...timeline].sort((a, b) => a.position - b.position);
     const sourceIndex = ordered.findIndex((event) => event.id === sourceId);
@@ -251,17 +251,27 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
     if (sourceIndex < 0 || targetIndex < 0) return;
     const [moved] = ordered.splice(sourceIndex, 1);
     ordered.splice(targetIndex, 0, moved);
-    onReorderTimeline(ordered);
+    setTimelineSaveError(null);
+    try {
+      await onReorderTimeline(ordered);
+    } catch (error) {
+      setTimelineSaveError(error instanceof Error ? error.message : 'Could not save milestone order.');
+    }
   };
 
-  const moveTimelineBy = (eventId: string, direction: -1 | 1) => {
+  const moveTimelineBy = async (eventId: string, direction: -1 | 1) => {
     const ordered = [...timeline].sort((a, b) => a.position - b.position);
     const index = ordered.findIndex((event) => event.id === eventId);
     const target = index + direction;
     if (index < 0 || target < 0 || target >= ordered.length) return;
     const [moved] = ordered.splice(index, 1);
     ordered.splice(target, 0, moved);
-    onReorderTimeline(ordered);
+    setTimelineSaveError(null);
+    try {
+      await onReorderTimeline(ordered);
+    } catch (error) {
+      setTimelineSaveError(error instanceof Error ? error.message : 'Could not save milestone order.');
+    }
   };
 
   // Automatic Gemini AI analysis for media uploads
@@ -1020,7 +1030,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 onDragStart={() => setDraggedEventId(event.id)}
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={() => {
-                  if (draggedEventId) moveTimelineEvent(draggedEventId, event.id);
+                  if (draggedEventId) void moveTimelineEvent(draggedEventId, event.id);
                   setDraggedEventId(null);
                 }}
                 onDragEnd={() => setDraggedEventId(null)}
