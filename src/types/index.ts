@@ -173,6 +173,7 @@ export interface MediaItem {
   type: 'image' | 'video';
   url: string;
   thumbnailUrl?: string;
+  thumbnailStorageKey?: string;
   caption?: string;
   altText?: string;
   eventDate?: string;
