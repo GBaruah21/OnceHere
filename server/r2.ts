@@ -9,11 +9,11 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 export const R2_LIMITS = {
-  imageBytes: 15 * 1024 * 1024,
-  videoBytes: 59 * 1024 * 1024,
+  imageBytes: 10 * 1024 * 1024,
+  videoBytes: 20 * 1024 * 1024,
   maxImagesPerArchive: 50,
   maxVideosPerArchive: 2,
-  maxTotalBytesPerArchive: 200 * 1024 * 1024
+  maxTotalBytesPerArchive: 100 * 1024 * 1024
 } as const;
 
 const ALLOWED_TYPES = new Set([
@@ -50,7 +50,12 @@ function client(): S3Client {
       accessKeyId: process.env.OBJECT_STORAGE_ACCESS_KEY_ID?.trim() || required('R2_ACCESS_KEY_ID'),
       secretAccessKey: process.env.OBJECT_STORAGE_SECRET_ACCESS_KEY?.trim() || required('R2_SECRET_ACCESS_KEY')
     },
-    forcePathStyle: process.env.OBJECT_STORAGE_FORCE_PATH_STYLE === 'true'
+    forcePathStyle: process.env.OBJECT_STORAGE_FORCE_PATH_STYLE === 'true',
+    // Presigned browser PUTs have no body while being signed. The SDK's default
+    // checksum middleware otherwise signs the CRC32 of an empty body, which B2
+    // correctly rejects when the browser later sends the real file.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED'
   });
 }
 
@@ -80,13 +85,11 @@ export function publicObjectUrl(key: string): string {
   return `/api/archives/${encodeURIComponent(archiveId)}/media-object/${encodeURIComponent(fileName)}`;
 }
 
-export async function createUploadUrl(key: string, contentType: string, size: number): Promise<string> {
+export async function createUploadUrl(key: string, contentType: string, _size: number): Promise<string> {
   return getSignedUrl(client(), new PutObjectCommand({
     Bucket: bucketName(),
     Key: key,
-    ContentType: contentType,
-    ContentLength: size,
-    Metadata: { expectedsize: String(size) }
+    ContentType: contentType
   }), { expiresIn: 10 * 60 });
 }
 

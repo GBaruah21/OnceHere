@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { ImageCropPreview } from './ImageCropPreview';
 import { Upload, Link as LinkIcon, Image as ImageIcon, Video, X, Check, Camera, RefreshCw, Eye } from 'lucide-react';
+import { compressImageForUpload, IMAGE_SOURCE_LIMIT_BYTES, VIDEO_SOURCE_LIMIT_BYTES } from '../../lib/imageCompression';
 
 export interface MediaUploaderProps {
   value?: string;
@@ -73,15 +74,27 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
       return;
     }
 
-    const maxBytes = isVideoFile ? 59 * 1024 * 1024 : 15 * 1024 * 1024;
+    const maxBytes = isVideoFile ? VIDEO_SOURCE_LIMIT_BYTES : IMAGE_SOURCE_LIMIT_BYTES;
     if (file.size > maxBytes) {
-      setFileError(`${isVideoFile ? 'Video' : 'Image'} is too large. Choose a file of ${isVideoFile ? '59' : '15'} MB or less.`);
+      setFileError(`${isVideoFile ? 'Video' : 'Image'} is too large. Choose a file of ${isVideoFile ? '20' : '10'} MB or less.`);
       return;
     }
 
+    let uploadFile = file;
+    if (isImageFile) {
+      try {
+        setIsProcessing(true);
+        uploadFile = await compressImageForUpload(file);
+      } catch (error) {
+        setIsProcessing(false);
+        setFileError(error instanceof Error ? error.message : 'Image compression failed. Please try another image.');
+        return;
+      }
+    }
+
     if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
-    setLocalPreviewUrl(URL.createObjectURL(file));
-    setSelectedFile({ name: file.name, type: isVideoFile ? 'video' : 'image', size: file.size });
+    setLocalPreviewUrl(URL.createObjectURL(uploadFile));
+    setSelectedFile({ name: uploadFile.name, type: isVideoFile ? 'video' : 'image', size: uploadFile.size });
     setIsProcessing(true);
 
     if (directUpload) {
@@ -93,33 +106,33 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         const authorize = await fetch(`/api/archives/${directUpload.archiveId}/media/upload-url`, {
           method: 'POST',
           headers,
-          body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size })
+          body: JSON.stringify({ fileName: uploadFile.name, contentType: uploadFile.type, size: uploadFile.size })
         });
         const authorization = await authorize.json().catch(() => ({}));
-        if (!authorize.ok || !authorization.uploadUrl) throw new Error(authorization.error || 'Unable to authorize R2 upload.');
+        if (!authorize.ok || !authorization.uploadUrl) throw new Error(authorization.error || 'Unable to authorize cloud upload.');
 
         const upload = await fetch(authorization.uploadUrl, {
           method: 'PUT',
-          headers: { 'Content-Type': file.type },
-          body: file
+          headers: { 'Content-Type': uploadFile.type },
+          body: uploadFile
         });
-        if (!upload.ok) throw new Error('Cloudflare R2 rejected the upload. Check the bucket CORS configuration.');
+        if (!upload.ok) throw new Error(`Cloud storage rejected the upload (${upload.status}). Check the storage credentials and CORS rule.`);
 
         const complete = await fetch(`/api/archives/${directUpload.archiveId}/media/upload-complete`, {
           method: 'POST',
           headers,
-          body: JSON.stringify({ key: authorization.key, fileName: file.name, contentType: file.type, size: file.size })
+          body: JSON.stringify({ key: authorization.key, fileName: uploadFile.name, contentType: uploadFile.type, size: uploadFile.size })
         });
         const completed = await complete.json().catch(() => ({}));
         if (!complete.ok || !completed.url) throw new Error(completed.error || 'Uploaded file could not be verified.');
         onChange(completed.url, completed.type, {
-          name: file.name,
+          name: uploadFile.name,
           size: completed.fileSize,
           storageKey: completed.storageKey,
           contentType: completed.contentType
         });
       } catch (error) {
-        setFileError(error instanceof Error ? error.message : 'R2 upload failed. Please retry.');
+        setFileError(error instanceof Error ? error.message : 'Cloud upload failed. Please retry.');
         setSelectedFile(null);
         if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
         setLocalPreviewUrl('');
@@ -135,14 +148,14 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
       const mediaType: 'image' | 'video' = isVideoFile ? 'video' : 'image';
-      onChange(dataUrl, mediaType, { name: file.name, size: file.size });
+      onChange(dataUrl, mediaType, { name: uploadFile.name, size: uploadFile.size });
       setIsProcessing(false);
     };
     reader.onerror = () => {
       setFileError('Failed to read file.');
       setIsProcessing(false);
     };
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(uploadFile);
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -292,10 +305,10 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
                     {acceptMode === 'image' ? <ImageIcon className="w-5 h-5" /> : <Upload className="w-5 h-5" />}
                   </div>
                   <div className="text-xs font-medium text-white">
-                    {isProcessing ? (directUpload ? 'Uploading securely to R2…' : 'Preparing preview…') : 'Click to browse or drop file here'}
+                    {isProcessing ? (directUpload ? 'Optimizing and uploading securely…' : 'Optimizing media…') : 'Click to browse or drop file here'}
                   </div>
                   <div className="text-[10px] text-neutral-400">
-                    {acceptMode === 'image' ? 'Supports JPG, PNG, WebP, AVIF, GIF (up to 15 MB)' : 'Images up to 15 MB · videos up to 59 MB (MP4, WebM, MOV)'}
+                    {acceptMode === 'image' ? 'Images up to 10 MB · optimized before upload' : 'Images up to 10 MB (optimized) · videos up to 20 MB'}
                   </div>
                 </div>
               </div>

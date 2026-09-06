@@ -1155,7 +1155,7 @@ function checkMediaQuota(archiveId: string, kind: 'image' | 'video', incomingByt
   const totalBytes = media.reduce((sum, item) => sum + (item.fileSize || 0), 0);
   if (kind === 'image' && images >= R2_LIMITS.maxImagesPerArchive) return 'This archive already has the maximum of 50 images.';
   if (kind === 'video' && videos >= R2_LIMITS.maxVideosPerArchive) return 'This archive already has the maximum of 2 videos.';
-  if (totalBytes + incomingBytes > R2_LIMITS.maxTotalBytesPerArchive) return 'This archive would exceed its 200 MB media allowance.';
+  if (totalBytes + incomingBytes > R2_LIMITS.maxTotalBytesPerArchive) return 'This archive would exceed its 100 MB media allowance.';
   return null;
 }
 
@@ -1163,7 +1163,7 @@ apiRouter.post('/archives/:id/media/upload-url', async (req: Request, res: Respo
   const { id } = req.params;
   const access = requireArchiveEditor(req, id, true);
   if ('error' in access) return res.status(access.status).json({ error: access.error });
-  if (!isR2Configured()) return res.status(503).json({ error: 'Cloudflare R2 storage is not configured yet.' });
+  if (!isR2Configured()) return res.status(503).json({ error: 'Object storage is not configured yet.' });
 
   const parsed = r2UploadSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Invalid upload request.' });

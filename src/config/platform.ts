@@ -30,11 +30,11 @@ export const PLATFORM_CONFIG = {
     workspacePrefix: '/workspace/'
   },
   limits: {
-    maxImageSizeMB: 15,
-    maxVideoSizeMB: 59,
+    maxImageSizeMB: 10,
+    maxVideoSizeMB: 20,
     maxImagesPerArchive: 50,
     maxVideosPerArchive: 2,
-    maxMediaStorageMBPerArchive: 200,
+    maxMediaStorageMBPerArchive: 100,
     maxBatchUploadCount: 30,
     maxWallMessageLength: 500,
     maxFailedPinAttempts: 5,

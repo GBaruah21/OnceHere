@@ -21,7 +21,7 @@ Apply a CORS rule to the bucket allowing the exact production origin:
   {
     "corsRuleName": "oncehere-browser-uploads",
     "allowedOrigins": ["https://oncehere-the-forever-home-of-memories.onrender.com"],
-    "allowedHeaders": ["content-type"],
+    "allowedHeaders": ["*"],
     "allowedOperations": ["s3_put"],
     "exposeHeaders": ["ETag"],
     "maxAgeSeconds": 3600
@@ -47,3 +47,5 @@ Never prefix secrets with `VITE_`. Keep the existing Supabase and session variab
 ## 5. Verify before launch
 
 Redeploy, create a temporary archive, upload a JPG and an MP4, refresh, and confirm both still load. Delete both and confirm they disappear. A provider account existing is not proof that the integration works; this full upload/read/delete test is required.
+
+OnceHere accepts source images up to 10 MB and optimizes large images to high-quality WebP in the browser before uploading. Videos are limited to 20 MB and are preserved as supplied. Each archive has a 100 MB media allowance, with a maximum of 50 images and 2 videos.
