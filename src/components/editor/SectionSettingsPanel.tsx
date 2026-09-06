@@ -183,6 +183,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
 
   const [newMediaUrl, setNewMediaUrl] = useState('');
+  const [newMediaAnalysisSource, setNewMediaAnalysisSource] = useState('');
   const [newMediaCaption, setNewMediaCaption] = useState('');
   const [newMediaType, setNewMediaType] = useState<'image' | 'video'>('image');
   const [newMediaStorage, setNewMediaStorage] = useState<{
@@ -1322,6 +1323,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 setIsAiAnalyzingMedia(false);
                 setAiAnalysisError(null);
                 setNewMediaUrl(url);
+                setNewMediaAnalysisSource(meta?.analysisDataUrl || '');
                 setNewMediaStorage({
                   storageKey: meta?.storageKey,
                   fileSize: meta?.size,
@@ -1331,7 +1333,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 });
                 if (type) setNewMediaType(type);
                 if (url && type !== 'video' && autoAiOnUpload) {
-                  handleAnalyzeMediaItem(url, newMediaHint);
+                  handleAnalyzeMediaItem(meta?.analysisDataUrl || url, newMediaHint);
                 }
               }}
               label="Select Media File or Link"
@@ -1347,7 +1349,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               <div className="flex items-center justify-between gap-2 pt-0.5">
                 <button
                   type="button"
-                  onClick={() => handleAnalyzeMediaItem(newMediaUrl, [newMediaHint, newMediaCaption && `Creator draft: ${newMediaCaption}`].filter(Boolean).join('. '))}
+                  onClick={() => handleAnalyzeMediaItem(newMediaAnalysisSource || newMediaUrl, [newMediaHint, newMediaCaption && `Creator draft: ${newMediaCaption}`].filter(Boolean).join('. '))}
                   disabled={isAiAnalyzingMedia}
                   className="w-full py-1.5 px-3 rounded-xl bg-gradient-to-r from-purple-500/20 via-pink-500/15 to-amber-500/20 hover:from-purple-500/30 hover:to-amber-500/30 border border-purple-400/30 text-purple-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-50"
                 >
@@ -1393,7 +1395,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               {newMediaUrl && newMediaType !== 'video' && newMediaCaption.trim() && (
                 <button
                   type="button"
-                  onClick={() => handleAnalyzeMediaItem(newMediaUrl, [newMediaHint, `Keep the creator's meaning and improve this draft caption: ${newMediaCaption}`].filter(Boolean).join('. '))}
+                  onClick={() => handleAnalyzeMediaItem(newMediaAnalysisSource || newMediaUrl, [newMediaHint, `Keep the creator's meaning and improve this draft caption: ${newMediaCaption}`].filter(Boolean).join('. '))}
                   disabled={isAiAnalyzingMedia}
                   className="w-full mt-1.5 py-1.5 rounded-lg bg-purple-500/10 border border-purple-400/25 text-[11px] text-purple-200 hover:bg-purple-500/20 disabled:opacity-50 flex items-center justify-center gap-1.5"
                 >
@@ -1501,6 +1503,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                     thumbnailStorageKey: newMediaStorage.thumbnailStorageKey
                   });
                   setNewMediaUrl('');
+                  setNewMediaAnalysisSource('');
                   setNewMediaStorage({});
                   setNewMediaCaption('');
                   setNewMediaType('image');
