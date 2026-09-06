@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Section,
   Archive,
@@ -92,9 +92,14 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
 
   // Save states
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
+  const didMountAutosave = useRef(false);
 
   // Debounced Autosave to backend
   useEffect(() => {
+    if (!didMountAutosave.current) {
+      didMountAutosave.current = true;
+      return;
+    }
     setSaveStatus('saving');
     const timer = setTimeout(async () => {
       try {

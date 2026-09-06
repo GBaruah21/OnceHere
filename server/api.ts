@@ -31,6 +31,7 @@ import {
   createObjectKey,
   createDownloadUrl,
   createUploadUrl,
+  inspectObject,
   deleteObject,
   isR2Configured,
   publicObjectUrl,
@@ -62,22 +63,28 @@ function limitRecoveryAttempts(req: Request, res: Response, next: NextFunction) 
   next();
 }
 
-// Supabase is loaded before a route reads state. Responses wait for their
-// snapshot to be saved, so a successful edit is durable before the browser is
-// told that it succeeded.
-apiRouter.use(async (_req, res, next) => {
+// Load the durable snapshot once. Reads must never rewrite the full snapshot:
+// that previously made every workspace/page load wait on Supabase. Successful
+// mutations respond immediately and queue one ordered background persistence
+// write, so editor interactions are not blocked by storage latency.
+apiRouter.use(async (req, res, next) => {
   try {
     await db.ensureLoaded();
+    const methodCanMutate = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+    const isTransientOperation = req.path.includes('/media/upload')
+      || req.path.startsWith('/ai/')
+      || req.path.includes('/auth/pin/verify')
+      || req.path.includes('/auth/viewer/verify');
+    if (!methodCanMutate || isTransientOperation) return next();
+
     const sendJson = res.json.bind(res);
     res.json = ((body: unknown) => {
-      void db.persist()
-        .then(() => sendJson(body))
-        .catch((error) => {
-          console.error('Failed to save archive data:', error);
-          if (!res.headersSent) res.status(503);
-          sendJson({ error: 'Unable to save archive data. Please try again.' });
-        });
-      return res;
+      const statusCode = res.statusCode;
+      const result = sendJson(body);
+      if (statusCode < 400) {
+        void db.persist().catch((error) => console.error('Failed to save archive data:', error));
+      }
+      return result;
     }) as typeof res.json;
     next();
   } catch (error) {
@@ -1293,14 +1300,29 @@ apiRouter.post('/archives/:id/media', async (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Permission denied.' });
   }
 
-  const { url, type, caption, altText, tags, albumId, notes, eventDate, isFeatured, position, storageKey, fileSize, contentType } = req.body;
+  const { url, type, caption, altText, tags, albumId, notes, eventDate, isFeatured, position } = req.body;
+  let fileSize = req.body.fileSize;
+  let contentType = req.body.contentType;
   if (!url) return res.status(400).json({ error: 'Media URL or payload required.' });
+
+  // Recover the object key from OnceHere's own media URL if a React state update
+  // or older client omitted the parallel storageKey field.
+  let storageKey = req.body.storageKey;
+  if (!storageKey && typeof url === 'string') {
+    const match = url.match(new RegExp(`^/api/archives/${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/media-object/([a-zA-Z0-9._-]+)$`));
+    if (match) storageKey = `archives/${id}/${match[1]}`;
+  }
 
   if (storageKey) {
     if (typeof storageKey !== 'string' || !storageKey.startsWith(`archives/${id}/`)) {
       return res.status(400).json({ error: 'Invalid media storage key.' });
     }
     try {
+      if (!Number.isSafeInteger(fileSize) || typeof contentType !== 'string') {
+        const stored = await inspectObject(storageKey);
+        fileSize = stored.ContentLength;
+        contentType = stored.ContentType;
+      }
       const kind = validateUpload(contentType, fileSize);
       if (kind !== (type === 'video' ? 'video' : 'image')) return res.status(400).json({ error: 'Media type does not match the uploaded file.' });
       const quotaError = checkMediaQuota(id, kind, fileSize);
@@ -1311,7 +1333,7 @@ apiRouter.post('/archives/:id/media', async (req: Request, res: Response) => {
       return res.status(400).json({ error: error instanceof Error ? error.message : 'Uploaded media could not be verified.' });
     }
   } else if (typeof url !== 'string' || url.startsWith('data:')) {
-    return res.status(400).json({ error: 'Direct file uploads require Cloudflare R2. Configure R2 or use a hosted HTTPS URL.' });
+    return res.status(400).json({ error: 'The uploaded file reference was incomplete. Select the file again and retry.' });
   }
 
   const item: MediaItem = {

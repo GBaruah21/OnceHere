@@ -107,11 +107,15 @@ export async function uploadObject(key: string, contentType: string, body: Buffe
 }
 
 export async function verifyObject(key: string, expectedType: string, expectedSize: number) {
-  const result = await client().send(new HeadObjectCommand({ Bucket: bucketName(), Key: key }));
+  const result = await inspectObject(key);
   if (result.ContentLength !== expectedSize || result.ContentType !== expectedType) {
     throw new Error('Uploaded file verification failed. Please remove it and retry.');
   }
   return result;
+}
+
+export async function inspectObject(key: string) {
+  return client().send(new HeadObjectCommand({ Bucket: bucketName(), Key: key }));
 }
 
 export async function deleteObject(key: string): Promise<void> {
