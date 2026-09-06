@@ -1824,7 +1824,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                       data-cursor-text="ZOOM & NOTE"
                       className="group relative aspect-square rounded-2xl sm:rounded-3xl overflow-hidden border border-white/10 cursor-pointer shadow-lg hover:shadow-2xl hover:border-amber-400/50 transition-all duration-300 bg-neutral-900/60"
                     >
-                      {item.type === 'video' && !item.thumbnailUrl ? (
+                      {item.type === 'video' && (!item.thumbnailUrl || item.thumbnailUrl === item.url) ? (
                         <video
                           src={item.url}
                           muted
