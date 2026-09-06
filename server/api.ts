@@ -103,7 +103,7 @@ function getAuthContext(req: Request): { archiveId?: string; role: 'owner' | 'co
   if (authHeader && authHeader.startsWith('Bearer ')) {
     token = authHeader.substring(7);
   } else if (req.cookies && typeof req.cookies === 'object') {
-    const cookieToken = req.cookies.mc_owner_token || req.cookies.mc_editor_token;
+    const cookieToken = req.cookies.mc_owner_token || req.cookies.mc_editor_token || req.cookies.mc_viewer_token;
     if (cookieToken) token = cookieToken;
   }
 
@@ -115,6 +115,26 @@ function getAuthContext(req: Request): { archiveId?: string; role: 'owner' | 'co
   }
 
   return { role: 'none' };
+}
+
+function setSessionCookie(
+  res: Response,
+  token: string,
+  role: 'owner' | 'contributor' | 'viewer'
+) {
+  const cookieName = role === 'owner'
+    ? 'mc_owner_token'
+    : role === 'contributor'
+      ? 'mc_editor_token'
+      : 'mc_viewer_token';
+  const durationHours = role === 'owner' ? 24 * 30 : role === 'contributor' ? 2 : 24;
+  res.cookie(cookieName, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: durationHours * 60 * 60 * 1000
+  });
 }
 
 // Apply tenant visibility consistently to subresources, not just page loaders.
@@ -291,6 +311,7 @@ apiRouter.post('/archives', (req: Request, res: Response) => {
 
     // Create 30-day Owner Session Token
     const ownerToken = createSignedToken(archiveId, 'owner', 24 * 30);
+    setSessionCookie(res, ownerToken, 'owner');
 
     return res.status(201).json({
       success: true,
@@ -783,6 +804,7 @@ apiRouter.post('/archives/:id/auth/pin', (req: Request, res: Response) => {
     deviceInfo: clientInfo.device
   });
 
+  setSessionCookie(res, result.token!, 'contributor');
   return res.json({ success: true, token: result.token });
 });
 
@@ -795,7 +817,25 @@ apiRouter.post('/archives/:id/auth/viewer-pin', (req: Request, res: Response) =>
   }
   const result = verifyViewerPin(id, pin, req.ip || req.socket.remoteAddress || 'client');
   if (!result.success) return res.status(401).json({ error: result.error, lockedUntil: result.lockedUntil });
+  setSessionCookie(res, result.token!, 'viewer');
   return res.json({ success: true, token: result.token });
+});
+
+// Convert an existing bearer session into an HTTP-only cookie. Native image and
+// video elements cannot attach Authorization headers, so this secure same-origin
+// handoff lets protected media requests authenticate without exposing tokens in
+// media URLs or client-readable cookies.
+apiRouter.post('/archives/:id/auth/session-cookie', (req: Request, res: Response) => {
+  const bearer = req.headers.authorization;
+  if (!bearer?.startsWith('Bearer ')) {
+    return res.status(400).json({ error: 'Bearer session required.' });
+  }
+  const auth = getAuthContext(req);
+  if (auth.archiveId !== req.params.id || auth.role === 'none') {
+    return res.status(401).json({ error: 'Archive session required.' });
+  }
+  setSessionCookie(res, bearer.substring(7), auth.role);
+  return res.json({ success: true });
 });
 
 // Verify owner recovery key (by specific ID)
@@ -811,6 +851,8 @@ apiRouter.post('/archives/:id/auth/recovery', limitRecoveryAttempts, (req: Reque
   if (!result.success) {
     return res.status(401).json({ error: result.error });
   }
+
+  setSessionCookie(res, result.token!, 'owner');
 
   // Log successful owner key recovery unlock
   const clientInfo = extractClientInfo(req);
