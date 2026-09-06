@@ -150,7 +150,10 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         onChange(completed.url, completed.type, {
           name: uploadFile.name,
           size: completed.fileSize,
-          storageKey: completed.storageKey,
+          // Presigned-upload authorization returns `key`, while the same-origin
+          // fallback returns `storageKey`. Preserve either receipt so the media
+          // record always points at the exact object the user selected.
+          storageKey: completed.storageKey || completed.key,
           contentType: completed.contentType
         });
       } catch (error) {
