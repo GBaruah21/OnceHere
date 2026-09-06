@@ -46,8 +46,24 @@ class MemoryDatabase {
 
   private get storageConfig() {
     const url = process.env.SUPABASE_URL?.replace(/\/$/, '');
-    const key = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const key = process.env.SUPABASE_SECRET_KEY
+      || process.env.SUPABASE_SERVICE_ROLE_KEY
+      || process.env.service_role;
     return url && key ? { url, key } : undefined;
+  }
+
+  private storageHeaders(config: { key: string }): Record<string, string> {
+    // Supabase's newer sb_secret_* keys are API keys, not JWTs, and must not be
+    // placed in an Authorization: Bearer header. Legacy service-role JWTs need
+    // both headers for PostgREST compatibility.
+    return config.key.startsWith('sb_secret_')
+      ? { apikey: config.key }
+      : { apikey: config.key, Authorization: `Bearer ${config.key}` };
+  }
+
+  private async storageError(response: Response, operation: 'load' | 'save') {
+    const detail = (await response.text()).replace(/[\r\n]+/g, ' ').slice(0, 500);
+    return new Error(`Supabase ${operation} failed (${response.status})${detail ? `: ${detail}` : '.'}`);
   }
 
   /** True when archives and their recovery-key hashes survive redeployments. */
@@ -120,9 +136,9 @@ class MemoryDatabase {
       }
 
       const response = await fetch(`${config.url}/rest/v1/oncehere_state?id=eq.primary&select=data`, {
-        headers: { apikey: config.key, Authorization: `Bearer ${config.key}` }
+        headers: this.storageHeaders(config)
       });
-      if (!response.ok) throw new Error(`Supabase load failed (${response.status}). Run supabase/schema.sql first.`);
+      if (!response.ok) throw await this.storageError(response, 'load');
 
       const rows = await response.json() as Array<{ data?: Record<string, unknown> }>;
       if (rows[0]?.data) this.restore(rows[0].data);
@@ -148,14 +164,13 @@ class MemoryDatabase {
       const response = await fetch(`${config.url}/rest/v1/oncehere_state?on_conflict=id`, {
         method: 'POST',
         headers: {
-          apikey: config.key,
-          Authorization: `Bearer ${config.key}`,
+          ...this.storageHeaders(config),
           'Content-Type': 'application/json',
           Prefer: 'resolution=merge-duplicates,return=minimal'
         },
         body: JSON.stringify([{ id: 'primary', data, updated_at: new Date().toISOString() }])
       });
-      if (!response.ok) throw new Error(`Supabase save failed (${response.status}).`);
+      if (!response.ok) throw await this.storageError(response, 'save');
     });
     return this.writeQueue;
   }

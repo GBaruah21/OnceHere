@@ -78,7 +78,11 @@ async function callGeminiWithResilience(
   };
 
   // Primary model: gemini-3.7-flash, with fallback to gemini-flash-latest if temporarily unavailable
-  const modelsToTry = [...new Set([process.env.GEMINI_MODEL || 'gemini-3.7-flash', 'gemini-flash-latest'])];
+  const modelsToTry = [...new Set([
+    process.env.GEMINI_MODEL || 'gemini-3.7-flash',
+    'gemini-2.5-flash',
+    'gemini-flash-latest'
+  ])];
 
   for (const model of modelsToTry) {
     try {
@@ -92,9 +96,16 @@ async function callGeminiWithResilience(
         return response.text;
       }
     } catch (err: any) {
-      const isTemporaryDemand = err?.status === 503 || err?.message?.includes('503') || err?.message?.includes('high demand') || err?.message?.includes('UNAVAILABLE') || err?.status === 429;
-      if (isTemporaryDemand || err?.status === 404) {
-        console.warn(`[Gemini AI] Model ${model} is experiencing temporary high demand (503/429), attempting graceful alternative.`);
+      const status = Number(err?.status || err?.code || 0);
+      const safeMessage = String(err?.message || 'Unknown provider error')
+        .replace(/AIza[0-9A-Za-z_-]+/g, '[redacted-key]')
+        .replace(/[\r\n]+/g, ' ')
+        .slice(0, 500);
+      console.warn(`[Gemini AI] ${model} failed (${status || 'unknown'}): ${safeMessage}`);
+      const isTemporaryDemand = status === 503 || safeMessage.includes('503') || safeMessage.includes('high demand') || safeMessage.includes('UNAVAILABLE') || status === 429;
+      const canTryAlternative = isTemporaryDemand || status === 404 || (status === 400 && /model|unsupported|not found/i.test(safeMessage));
+      if (canTryAlternative) {
+        console.warn(`[Gemini AI] Attempting an alternative model after ${model}.`);
         // Brief jitter pause before trying next candidate
         await new Promise((resolve) => setTimeout(resolve, 400));
         continue;
