@@ -135,6 +135,17 @@ export default function App() {
           throw new Error(data.error || 'Archive not found or unavailable.');
         }
 
+        // Image/video elements cannot send the bearer token used by fetch. Set a
+        // secure HTTP-only session cookie before rendering protected media so the
+        // browser can request the exact uploaded object instead of its fallback.
+        if (headers.Authorization && data.archive?.id) {
+          const cookieResponse = await fetch(`/api/archives/${data.archive.id}/auth/session-cookie`, {
+            method: 'POST',
+            headers: { Authorization: headers.Authorization }
+          });
+          if (!cookieResponse.ok) throw new Error('Unable to authorize archive media. Please reload and try again.');
+        }
+
         setActiveArchiveData({
           archive: data.archive,
           sections: data.sections || [],
@@ -316,6 +327,11 @@ export default function App() {
                   });
                   const archiveData = await archiveResponse.json();
                   if (!archiveResponse.ok || archiveData.locked) throw new Error(archiveData.error || 'Unable to open archive.');
+                  const cookieResponse = await fetch(`/api/archives/${archiveData.archive.id}/auth/session-cookie`, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${unlockData.token}` }
+                  });
+                  if (!cookieResponse.ok) throw new Error('Unable to authorize archive media. Please try again.');
                   setActiveArchiveData({
                     archive: archiveData.archive,
                     sections: archiveData.sections || [],
