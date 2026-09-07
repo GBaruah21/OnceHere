@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { createHash, randomBytes } from 'node:crypto';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import {
   Archive,
   Section,
@@ -17,14 +18,16 @@ import {
 } from '../src/types';
 import { PLATFORM_CONFIG } from '../src/config/platform';
 
-const SNAPSHOT_FORMAT = 2;
+const SNAPSHOT_FORMAT = 3;
 const SNAPSHOT_CHUNK_SIZE = 64 * 1024;
+const SNAPSHOT_WRITE_CONCURRENCY = 6;
 
 interface SnapshotManifest {
   format: number;
   generation: string;
   chunkCount: number;
   sha256: string;
+  compression?: 'gzip';
   updatedAt: string;
 }
 
@@ -35,19 +38,26 @@ interface StoredStateRow {
 
 export function encodeSnapshot(snapshot: Record<string, unknown>) {
   const json = JSON.stringify(snapshot);
-  const payload = Buffer.from(json, 'utf8').toString('base64');
+  const compressed = gzipSync(Buffer.from(json, 'utf8'), { level: 6 });
+  const payload = compressed.toString('base64');
   const chunks: string[] = [];
   for (let offset = 0; offset < payload.length; offset += SNAPSHOT_CHUNK_SIZE) {
     chunks.push(payload.slice(offset, offset + SNAPSHOT_CHUNK_SIZE));
   }
   return {
     chunks,
+    compression: 'gzip' as const,
     sha256: createHash('sha256').update(json).digest('hex')
   };
 }
 
-export function decodeSnapshot(chunks: string[], expectedSha256: string): Record<string, unknown> {
-  const json = Buffer.from(chunks.join(''), 'base64').toString('utf8');
+export function decodeSnapshot(
+  chunks: string[],
+  expectedSha256: string,
+  compression?: 'gzip'
+): Record<string, unknown> {
+  const stored = Buffer.from(chunks.join(''), 'base64');
+  const json = (compression === 'gzip' ? gunzipSync(stored) : stored).toString('utf8');
   const actualSha256 = createHash('sha256').update(json).digest('hex');
   if (actualSha256 !== expectedSha256) {
     throw new Error('Stored archive snapshot failed its integrity check.');
@@ -207,7 +217,7 @@ class MemoryDatabase {
       const legacySnapshot = rows.find((row) => row.id === 'primary')?.data;
 
       if (
-        manifest?.format === SNAPSHOT_FORMAT
+        (manifest?.format === 2 || manifest?.format === SNAPSHOT_FORMAT)
         && typeof manifest.generation === 'string'
         && Number.isInteger(manifest.chunkCount)
         && Number(manifest.chunkCount) > 0
@@ -226,7 +236,7 @@ class MemoryDatabase {
         if (chunks.some((chunk) => typeof chunk !== 'string')) {
           throw new Error('Stored archive snapshot is incomplete.');
         }
-        this.restore(decodeSnapshot(chunks as string[], manifest.sha256));
+        this.restore(decodeSnapshot(chunks as string[], manifest.sha256, manifest.compression));
       } else if (legacySnapshot) {
         // Existing deployments used one large row. Load it unchanged, then
         // migrate it to the chunked format without deleting the legacy copy.
@@ -261,11 +271,24 @@ class MemoryDatabase {
       }));
 
       // Each statement stays small enough for Supabase's statement timeout.
+      // Independent generation rows are written concurrently so a save takes
+      // roughly one storage round trip instead of one round trip per chunk.
       // The manifest is committed last, so readers see either the complete old
       // generation or the complete new generation, never a partial snapshot.
+      const batches: typeof chunkRows[] = [];
       for (let offset = 0; offset < chunkRows.length; offset += 4) {
-        await this.upsertRows(config, chunkRows.slice(offset, offset + 4));
+        batches.push(chunkRows.slice(offset, offset + 4));
       }
+      let nextBatch = 0;
+      await Promise.all(Array.from(
+        { length: Math.min(SNAPSHOT_WRITE_CONCURRENCY, batches.length) },
+        async () => {
+          while (nextBatch < batches.length) {
+            const batch = batches[nextBatch++];
+            await this.upsertRows(config, batch);
+          }
+        }
+      ));
       await this.upsertRows(config, [{
         id: 'manifest',
         data: {
@@ -273,6 +296,7 @@ class MemoryDatabase {
           generation,
           chunkCount: chunkRows.length,
           sha256: encoded.sha256,
+          compression: encoded.compression,
           updatedAt
         },
         updated_at: updatedAt

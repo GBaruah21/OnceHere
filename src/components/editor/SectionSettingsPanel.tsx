@@ -1523,7 +1523,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                   setNewMediaHint('');
                   setNewMediaTags('');
                 } catch (error) {
-                  setMediaSaveError(error instanceof Error ? error.message : 'Upload failed. Your selected media is still here—please retry.');
+                  setMediaSaveError(error instanceof Error ? `${error.message} Press “Upload to Memory Vault” to retry this same file.` : 'Upload failed. Your selected media is still here. Press “Upload to Memory Vault” to retry it.');
                 } finally {
                   setIsSavingMedia(false);
                 }

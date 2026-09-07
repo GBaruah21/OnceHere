@@ -93,6 +93,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
   // Save states
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
   const didMountAutosave = useRef(false);
+  const retrySaveRef = useRef<null | (() => void)>(null);
 
   // Debounced Autosave to backend
   useEffect(() => {
@@ -101,7 +102,8 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
       return;
     }
     setSaveStatus('saving');
-    const timer = setTimeout(async () => {
+    const saveArchive = async () => {
+      setSaveStatus('saving');
       try {
         const res = await fetch(`/api/archives/${archive.id}`, {
           method: 'PATCH',
@@ -113,6 +115,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
         });
 
         if (res.ok) {
+          retrySaveRef.current = null;
           setSaveStatus('saved');
         } else {
           setSaveStatus('error');
@@ -120,29 +123,35 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
       } catch {
         setSaveStatus('error');
       }
-    }, 800);
+    };
+    retrySaveRef.current = () => { void saveArchive(); };
+    const timer = setTimeout(() => { void saveArchive(); }, 500);
 
     return () => clearTimeout(timer);
   }, [archive, ownerToken]);
 
   const handleUpdateSections = async (updated: Section[]) => {
     setSections(updated);
-    setSaveStatus('saving');
-
-    try {
-      const response = await fetch(`/api/archives/${archive.id}/sections`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${ownerToken || ''}`
-        },
-        body: JSON.stringify({ sections: updated })
-      });
-
-      setSaveStatus(response.ok ? 'saved' : 'error');
-    } catch {
-      setSaveStatus('error');
-    }
+    const saveSections = async () => {
+      setSaveStatus('saving');
+      try {
+        const response = await fetch(`/api/archives/${archive.id}/sections`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken || ''}`
+          },
+          body: JSON.stringify({ sections: updated })
+        });
+        if (!response.ok) throw new Error('Section save failed.');
+        retrySaveRef.current = null;
+        setSaveStatus('saved');
+      } catch {
+        setSaveStatus('error');
+      }
+    };
+    retrySaveRef.current = () => { void saveSections(); };
+    await saveSections();
   };
 
   // Section operations
@@ -410,7 +419,16 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
               <span className="text-[10px] flex-shrink-0">
                 {saveStatus === 'saving' && '⏳ Saving...'}
                 {saveStatus === 'saved' && '✓ Saved'}
-                {saveStatus === 'error' && '⚠️ Retry'}
+                {saveStatus === 'error' && (
+                  <button
+                    type="button"
+                    onClick={() => retrySaveRef.current?.()}
+                    className="min-h-7 px-2 rounded-md text-amber-300 bg-amber-400/10 hover:bg-amber-400/20 underline underline-offset-2"
+                    title="Retry the last failed save"
+                  >
+                    Save failed · Retry now
+                  </button>
+                )}
               </span>
             </div>
           </div>

@@ -3,6 +3,38 @@ import { ImageCropPreview } from './ImageCropPreview';
 import { Upload, Link as LinkIcon, Image as ImageIcon, Video, X, Check, Camera, RefreshCw, Eye } from 'lucide-react';
 import { compressImageForUpload, IMAGE_SOURCE_LIMIT_BYTES, VIDEO_SOURCE_LIMIT_BYTES } from '../../lib/imageCompression';
 
+type UploadPhase = 'optimizing' | 'authorizing' | 'direct' | 'fallback';
+
+export function directUploadTimeoutMs(file: Pick<File, 'size' | 'type'>): number {
+  if (file.type.startsWith('image/')) return 12_000;
+  // Videos get more time, scaled for slower mobile connections, but a stalled
+  // storage request must still hand off to the same-origin fallback promptly.
+  return Math.min(90_000, Math.max(30_000, Math.ceil(file.size / (256 * 1024)) * 1_000));
+}
+
+function uploadBytes(
+  url: string,
+  file: File,
+  headers: Record<string, string>,
+  timeoutMs: number,
+  onProgress: (progress: number) => void
+): Promise<{ status: number; responseText: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', url);
+    xhr.timeout = timeoutMs;
+    Object.entries(headers).forEach(([name, value]) => xhr.setRequestHeader(name, value));
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+    };
+    xhr.onload = () => resolve({ status: xhr.status, responseText: xhr.responseText });
+    xhr.onerror = () => reject(new Error('The upload connection failed.'));
+    xhr.ontimeout = () => reject(new Error('The upload connection timed out.'));
+    xhr.onabort = () => reject(new Error('The upload was cancelled.'));
+    xhr.send(file);
+  });
+}
+
 export interface MediaUploaderProps {
   value?: string;
   onChange: (url: string, type?: 'image' | 'video', meta?: {
@@ -38,6 +70,8 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   const [urlInput, setUrlInput] = useState(value && !value.startsWith('data:') ? value : '');
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [uploadPhase, setUploadPhase] = useState<UploadPhase | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [localPreviewUrl, setLocalPreviewUrl] = useState('');
   const [selectedFile, setSelectedFile] = useState<{ name: string; type: 'image' | 'video'; size: number } | null>(null);
@@ -47,41 +81,59 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   const [cropOpen, setCropOpen] = useState(false);
   const uploadDirectly = async (file: File) => {
     if (!directUpload) throw new Error('Direct upload is unavailable.');
+    setUploadPhase('authorizing');
+    const authorizationController = new AbortController();
+    const authorizationTimeout = window.setTimeout(() => authorizationController.abort(), 10_000);
     const authorization = await fetch(`/api/archives/${directUpload.archiveId}/media/upload-url`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${directUpload.token || ''}`
       },
-      body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size })
-    });
+      body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size }),
+      signal: authorizationController.signal
+    }).finally(() => window.clearTimeout(authorizationTimeout));
     const authorized = await authorization.json().catch(() => ({}));
     if (!authorization.ok || !authorized.uploadUrl || !authorized.url) {
       throw new Error(authorized.error || `Upload authorization failed (${authorization.status}).`);
     }
 
-    const upload = await fetch(authorized.uploadUrl, {
-      method: 'PUT',
-      headers: { 'Content-Type': file.type },
-      body: file
-    });
-    if (!upload.ok) throw new Error(`Storage upload failed (${upload.status}).`);
+    setUploadPhase('direct');
+    setUploadProgress(0);
+    const upload = await uploadBytes(
+      authorized.uploadUrl,
+      file,
+      { 'Content-Type': file.type },
+      directUploadTimeoutMs(file),
+      setUploadProgress
+    );
+    if (upload.status < 200 || upload.status >= 300) throw new Error(`Storage upload failed (${upload.status}).`);
+    setUploadProgress(100);
     return authorized;
   };
 
   const uploadThroughServer = async (file: File) => {
     if (!directUpload) throw new Error('Server upload is unavailable.');
-    const upload = await fetch(`/api/archives/${directUpload.archiveId}/media/upload`, {
-      method: 'PUT',
-      headers: {
+    setUploadPhase('fallback');
+    setUploadProgress(0);
+    const upload = await uploadBytes(
+      `/api/archives/${directUpload.archiveId}/media/upload`,
+      file,
+      {
         'Content-Type': file.type,
         'X-File-Name': encodeURIComponent(file.name),
         Authorization: `Bearer ${directUpload.token || ''}`
       },
-      body: file
-    });
-    const completed = await upload.json().catch(() => ({}));
-    if (!upload.ok || !completed.url) throw new Error(completed.error || `Upload failed (${upload.status}).`);
+      120_000,
+      setUploadProgress
+    );
+    const completed = (() => {
+      try { return JSON.parse(upload.responseText || '{}'); } catch { return {}; }
+    })();
+    if (upload.status < 200 || upload.status >= 300 || !completed.url) {
+      throw new Error(completed.error || `Upload failed (${upload.status}).`);
+    }
+    setUploadProgress(100);
     return completed;
   };
   useEffect(() => () => { fileReaderRef.current?.abort(); }, []);
@@ -131,6 +183,8 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     if (isImageFile) {
       try {
         setIsProcessing(true);
+        setUploadPhase('optimizing');
+        setUploadProgress(null);
         uploadFile = await compressImageForUpload(file);
       } catch (error) {
         setIsProcessing(false);
@@ -181,6 +235,8 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         // expired session must be retryable without making the user reselect it.
       } finally {
         setIsProcessing(false);
+        setUploadPhase(null);
+        setUploadProgress(null);
       }
       return;
     }
@@ -223,6 +279,8 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     fileReaderRef.current?.abort();
     setIsProcessing(false);
     setFileError(null);
+    setUploadPhase(null);
+    setUploadProgress(null);
     setUrlInput('');
     pendingFileRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -271,7 +329,17 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-white truncate flex items-center gap-1.5">
               {isVideo(previewValue) ? <Video className="w-3.5 h-3.5 text-amber-400" /> : <ImageIcon className="w-3.5 h-3.5 text-amber-400" />}
-              <span>{isProcessing ? 'Preparing media…' : isVideo(previewValue) ? 'Video ready to save' : 'Image ready to save'}</span>
+              <span>
+                {isProcessing
+                  ? uploadPhase === 'optimizing'
+                    ? 'Optimizing image…'
+                    : uploadPhase === 'authorizing'
+                      ? 'Preparing secure upload…'
+                      : uploadPhase === 'fallback'
+                        ? `Using secure backup upload${uploadProgress !== null ? ` · ${uploadProgress}%` : '…'}`
+                        : `Uploading directly${uploadProgress !== null ? ` · ${uploadProgress}%` : '…'}`
+                  : isVideo(previewValue) ? 'Video ready to save' : 'Image ready to save'}
+              </span>
             </div>
             <p className="text-[10px] text-neutral-400 truncate mt-0.5 font-mono">
               {selectedFile ? `${selectedFile.name} · ${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB` : previewValue.startsWith('data:') ? 'Local file ready to save' : previewValue}
@@ -284,10 +352,11 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
                 type="button"
                 onClick={() => { if (pendingFileRef.current) void handleFile(pendingFileRef.current); }}
                 disabled={isProcessing}
-                title="Retry upload"
-                className="min-w-11 min-h-11 p-2 rounded-lg bg-amber-400/15 hover:bg-amber-400/25 text-amber-300 disabled:opacity-50 transition-colors cursor-pointer flex items-center justify-center"
+                title="Retry this selected file upload"
+                className="min-h-11 px-3 py-2 rounded-lg bg-amber-400/15 hover:bg-amber-400/25 text-amber-300 disabled:opacity-50 transition-colors cursor-pointer flex items-center justify-center gap-1.5"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isProcessing ? 'animate-spin' : ''}`} />
+                <span>Retry upload</span>
               </button>
             )}
             {!directUpload && !isVideo(previewValue) && (
