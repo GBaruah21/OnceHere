@@ -46,9 +46,12 @@ class MemoryDatabase {
 
   private get storageConfig() {
     const url = process.env.SUPABASE_URL?.replace(/\/$/, '');
-    const key = process.env.SUPABASE_SECRET_KEY
-      || process.env.SUPABASE_SERVICE_ROLE_KEY
-      || process.env.service_role;
+    // Prefer the established service-role credential when both generations are
+    // configured. Some older Supabase projects expose a newly-created secret
+    // key before every Data API gateway has been migrated to accept it.
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+      || process.env.service_role
+      || process.env.SUPABASE_SECRET_KEY;
     return url && key ? { url, key } : undefined;
   }
 
