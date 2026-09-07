@@ -99,13 +99,22 @@ class MemoryDatabase {
 
   private get storageConfig() {
     const url = process.env.SUPABASE_URL?.replace(/\/$/, '');
-    // Prefer the established service-role credential when both generations are
-    // configured. Some older Supabase projects expose a newly-created secret
-    // key before every Data API gateway has been migrated to accept it.
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY
-      || process.env.service_role
-      || process.env.SUPABASE_SECRET_KEY;
+    // The project's schema is configured for SUPABASE_SECRET_KEY. Other names
+    // remain supported for older Render configurations.
+    const key = process.env.SUPABASE_SECRET_KEY
+      || process.env.SUPABASE_SERVICE_ROLE_KEY
+      || process.env.service_role;
     return url && key ? { url, key } : undefined;
+  }
+
+  private storageCandidates(config: { url: string; key: string }) {
+    const keys = [
+      config.key,
+      process.env.SUPABASE_SECRET_KEY,
+      process.env.SUPABASE_SERVICE_ROLE_KEY,
+      process.env.service_role
+    ].filter((key): key is string => Boolean(key?.trim()));
+    return Array.from(new Set(keys)).map((key) => ({ url: config.url, key }));
   }
 
   private storageHeaders(config: { key: string }): Record<string, string> {
@@ -207,38 +216,54 @@ class MemoryDatabase {
   }
 
   private async fetchRows(config: { url: string; key: string }, ids: string[]): Promise<StoredStateRow[]> {
-    const response = await fetch(
-      `${config.url}/rest/v1/oncehere_state?id=in.(${ids.join(',')})&select=id,data&order=id.asc`,
-      { headers: this.storageHeaders(config), signal: AbortSignal.timeout(10_000) }
-    );
-    if (!response.ok) throw await this.storageError(response, 'load');
-    return response.json() as Promise<StoredStateRow[]>;
+    let rejected: Response | undefined;
+    for (const candidate of this.storageCandidates(config)) {
+      const response = await fetch(
+        `${candidate.url}/rest/v1/oncehere_state?id=in.(${ids.join(',')})&select=id,data&order=id.asc`,
+        { headers: this.storageHeaders(candidate), signal: AbortSignal.timeout(10_000) }
+      );
+      if (response.ok) return response.json() as Promise<StoredStateRow[]>;
+      rejected = response;
+      if (response.status !== 401 && response.status !== 403) break;
+    }
+    throw await this.storageError(rejected!, 'load');
   }
 
   private async fetchTenantRows(config: { url: string; key: string }): Promise<StoredStateRow[]> {
-    const response = await fetch(
-      `${config.url}/rest/v1/oncehere_state?id=like.tenant-*&select=id,data&order=id.asc`,
-      { headers: this.storageHeaders(config), signal: AbortSignal.timeout(10_000) }
-    );
-    if (!response.ok) throw await this.storageError(response, 'load');
-    return response.json() as Promise<StoredStateRow[]>;
+    let rejected: Response | undefined;
+    for (const candidate of this.storageCandidates(config)) {
+      const response = await fetch(
+        `${candidate.url}/rest/v1/oncehere_state?id=like.tenant-*&select=id,data&order=id.asc`,
+        { headers: this.storageHeaders(candidate), signal: AbortSignal.timeout(10_000) }
+      );
+      if (response.ok) return response.json() as Promise<StoredStateRow[]>;
+      rejected = response;
+      if (response.status !== 401 && response.status !== 403) break;
+    }
+    throw await this.storageError(rejected!, 'load');
   }
 
   private async upsertRows(
     config: { url: string; key: string },
     rows: Array<{ id: string; data: Record<string, unknown>; updated_at: string }>
   ): Promise<void> {
-    const response = await fetch(`${config.url}/rest/v1/oncehere_state?on_conflict=id`, {
-      method: 'POST',
-      signal: AbortSignal.timeout(10_000),
-      headers: {
-        ...this.storageHeaders(config),
-        'Content-Type': 'application/json',
-        Prefer: 'resolution=merge-duplicates,return=minimal'
-      },
-      body: JSON.stringify(rows)
-    });
-    if (!response.ok) throw await this.storageError(response, 'save');
+    let rejected: Response | undefined;
+    for (const candidate of this.storageCandidates(config)) {
+      const response = await fetch(`${candidate.url}/rest/v1/oncehere_state?on_conflict=id`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(10_000),
+        headers: {
+          ...this.storageHeaders(candidate),
+          'Content-Type': 'application/json',
+          Prefer: 'resolution=merge-duplicates,return=minimal'
+        },
+        body: JSON.stringify(rows)
+      });
+      if (response.ok) return;
+      rejected = response;
+      if (response.status !== 401 && response.status !== 403) break;
+    }
+    throw await this.storageError(rejected!, 'save');
   }
 
   getPlatformSettings() {

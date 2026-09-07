@@ -168,7 +168,8 @@ describe('Durable save acknowledgement', () => {
     const response = await request('/analytics', { eventName: 'test_storage_failure' });
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({
-      error: 'The change could not be saved to durable storage. Retry without closing this page.'
+      error: 'The change could not be saved to durable storage. Retry without closing this page.',
+      storageCode: 'storage-unavailable'
     });
   });
 });

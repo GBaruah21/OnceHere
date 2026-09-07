@@ -101,8 +101,14 @@ apiRouter.use(async (req, res, next) => {
         .catch((error) => {
           console.error('Failed to save archive data:', error);
           if (!res.headersSent) {
+            const status = error instanceof Error
+              ? error.message.match(/Supabase save failed \((\d+)\)/)?.[1]
+              : undefined;
             res.status(503);
-            sendJson({ error: 'The change could not be saved to durable storage. Retry without closing this page.' });
+            sendJson({
+              error: 'The change could not be saved to durable storage. Retry without closing this page.',
+              storageCode: status ? `storage-${status}` : 'storage-unavailable'
+            });
           }
         });
       return res;
