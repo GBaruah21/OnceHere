@@ -64,19 +64,14 @@ function limitRecoveryAttempts(req: Request, res: Response, next: NextFunction) 
   next();
 }
 
-// Load the durable snapshot once. Reads must never rewrite the full snapshot:
-// that previously made every workspace/page load wait on Supabase. Successful
-// mutations wait for the ordered persistence write before reporting success.
-// This prevents the editor from showing "Saved" when durable storage rejected
-// the snapshot.
+// Load durable state once. Mutations persist only the affected archive; the
+// previous full-platform rewrite made every edit progressively slower.
 apiRouter.use(async (req, res, next) => {
   try {
     await db.ensureLoaded();
     const methodCanMutate = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
     const isTransientOperation = req.path.includes('/media/upload')
-      || req.path.startsWith('/ai/')
-      || req.path.includes('/auth/pin/verify')
-      || req.path.includes('/auth/viewer/verify');
+      || req.path.startsWith('/ai/');
     if (!methodCanMutate || isTransientOperation) return next();
 
     const sendJson = res.json.bind(res);
@@ -84,7 +79,22 @@ apiRouter.use(async (req, res, next) => {
       const statusCode = res.statusCode;
       if (statusCode >= 400) return sendJson(body);
 
-      void db.persist()
+      const responseBody = body && typeof body === 'object' ? body as Record<string, any> : {};
+      const pathMatch = req.path.match(/^\/(?:admin\/)?archives\/([^/]+)/);
+      const pathArchiveId = pathMatch?.[1] && pathMatch[1] !== 'auth' ? pathMatch[1] : undefined;
+      const archiveId = pathArchiveId
+        || responseBody.archive?.id
+        || responseBody.archiveId;
+      const persistence = archiveId ? db.persistArchive(archiveId) : db.persist();
+      const nonBlockingAuth = req.path.includes('/auth/');
+
+      if (nonBlockingAuth) {
+        sendJson(body);
+        void persistence.catch((error) => console.error('Failed to save authentication activity:', error));
+        return res;
+      }
+
+      void persistence
         .then(() => {
           if (!res.headersSent) sendJson(body);
         })

@@ -21,6 +21,7 @@ import { PLATFORM_CONFIG } from '../src/config/platform';
 const SNAPSHOT_FORMAT = 3;
 const SNAPSHOT_CHUNK_SIZE = 64 * 1024;
 const SNAPSHOT_WRITE_CONCURRENCY = 6;
+const TENANT_SNAPSHOT_FORMAT = 1;
 
 interface SnapshotManifest {
   format: number;
@@ -89,6 +90,8 @@ class MemoryDatabase {
   private loadingPromise?: Promise<void>;
   private writing = false;
   private pendingWrites: Array<{ resolve: () => void; reject: (error: unknown) => void }> = [];
+  private tenantWriting = new Set<string>();
+  private tenantPending = new Map<string, Array<{ resolve: () => void; reject: (error: unknown) => void }>>();
 
   constructor() {
     this.seedSampleData();
@@ -143,6 +146,43 @@ class MemoryDatabase {
     };
   }
 
+  private tenantSnapshot(archiveId: string): Record<string, unknown> {
+    return {
+      archive: this.archives.get(archiveId),
+      sections: this.sections.get(archiveId) || [],
+      timelineEvents: this.timelineEvents.get(archiveId) || [],
+      members: this.members.get(archiveId) || [],
+      memberMessages: this.memberMessages.get(archiveId) || [],
+      mediaItems: this.mediaItems.get(archiveId) || [],
+      albums: this.albums.get(archiveId) || [],
+      wallPosts: this.wallPosts.get(archiveId) || [],
+      revisions: this.revisions.get(archiveId) || [],
+      accessLogs: this.accessLogs.get(archiveId) || [],
+      shareActivity: this.shareActivity.get(archiveId) || [],
+      sessions: Array.from(this.sessions.entries()).filter(([, session]) => session.archiveId === archiveId)
+    };
+  }
+
+  private restoreTenant(snapshot: Record<string, unknown>) {
+    const archive = snapshot.archive as Archive | undefined;
+    if (!archive?.id) return;
+    const id = archive.id;
+    this.archives.set(id, archive);
+    this.sections.set(id, Array.isArray(snapshot.sections) ? snapshot.sections as Section[] : []);
+    this.timelineEvents.set(id, Array.isArray(snapshot.timelineEvents) ? snapshot.timelineEvents as TimelineEvent[] : []);
+    this.members.set(id, Array.isArray(snapshot.members) ? snapshot.members as Member[] : []);
+    this.memberMessages.set(id, Array.isArray(snapshot.memberMessages) ? snapshot.memberMessages as MemberMessage[] : []);
+    this.mediaItems.set(id, Array.isArray(snapshot.mediaItems) ? snapshot.mediaItems as MediaItem[] : []);
+    this.albums.set(id, Array.isArray(snapshot.albums) ? snapshot.albums as Album[] : []);
+    this.wallPosts.set(id, Array.isArray(snapshot.wallPosts) ? snapshot.wallPosts as WallPost[] : []);
+    this.revisions.set(id, Array.isArray(snapshot.revisions) ? snapshot.revisions as Revision[] : []);
+    this.accessLogs.set(id, Array.isArray(snapshot.accessLogs) ? snapshot.accessLogs as AccessHistoryEntry[] : []);
+    this.shareActivity.set(id, Array.isArray(snapshot.shareActivity) ? snapshot.shareActivity as ShareActivity[] : []);
+    if (Array.isArray(snapshot.sessions)) {
+      for (const entry of snapshot.sessions as [string, UserSession][]) this.sessions.set(entry[0], entry[1]);
+    }
+  }
+
   private restoreMap<T>(value: unknown): Map<string, T> {
     return new Map(Array.isArray(value) ? (value as [string, T][]) : []);
   }
@@ -169,6 +209,15 @@ class MemoryDatabase {
   private async fetchRows(config: { url: string; key: string }, ids: string[]): Promise<StoredStateRow[]> {
     const response = await fetch(
       `${config.url}/rest/v1/oncehere_state?id=in.(${ids.join(',')})&select=id,data&order=id.asc`,
+      { headers: this.storageHeaders(config), signal: AbortSignal.timeout(10_000) }
+    );
+    if (!response.ok) throw await this.storageError(response, 'load');
+    return response.json() as Promise<StoredStateRow[]>;
+  }
+
+  private async fetchTenantRows(config: { url: string; key: string }): Promise<StoredStateRow[]> {
+    const response = await fetch(
+      `${config.url}/rest/v1/oncehere_state?id=like.tenant-*&select=id,data&order=id.asc`,
       { headers: this.storageHeaders(config), signal: AbortSignal.timeout(10_000) }
     );
     if (!response.ok) throw await this.storageError(response, 'load');
@@ -247,6 +296,20 @@ class MemoryDatabase {
         // migrate it to the chunked format without deleting the legacy copy.
         this.restore(legacySnapshot);
       }
+
+      // New writes are stored independently per archive. They overlay the
+      // legacy global snapshot, preserving old data while making edits small.
+      const tenantRows = await this.fetchTenantRows(config);
+      for (const row of tenantRows) {
+        const stored = row.data;
+        if (stored?.format !== TENANT_SNAPSHOT_FORMAT || !Array.isArray(stored.chunks)
+          || typeof stored.sha256 !== 'string') continue;
+        this.restoreTenant(decodeSnapshot(
+          stored.chunks as string[],
+          stored.sha256,
+          stored.compression === 'gzip' ? 'gzip' : undefined
+        ));
+      }
       this.loadedFromStorage = true;
 
       // First production request stores the built-in demo data as the initial state.
@@ -272,6 +335,51 @@ class MemoryDatabase {
       queueMicrotask(() => { void this.flushWrites(); });
     }
     return result;
+  }
+
+  /** Persist only one tenant. Ordinary edits must never rewrite every archive. */
+  persistArchive(archiveId: string): Promise<void> {
+    const config = this.storageConfig;
+    if (!config) return Promise.resolve();
+    const result = new Promise<void>((resolve, reject) => {
+      const pending = this.tenantPending.get(archiveId) || [];
+      pending.push({ resolve, reject });
+      this.tenantPending.set(archiveId, pending);
+    });
+    if (!this.tenantWriting.has(archiveId)) {
+      this.tenantWriting.add(archiveId);
+      queueMicrotask(() => { void this.flushTenantWrites(archiveId); });
+    }
+    return result;
+  }
+
+  private async flushTenantWrites(archiveId: string): Promise<void> {
+    try {
+      while ((this.tenantPending.get(archiveId)?.length || 0) > 0) {
+        const waiters = this.tenantPending.get(archiveId)!.splice(0);
+        try {
+          const config = this.storageConfig;
+          if (!config) throw new Error('Durable storage configuration disappeared.');
+          const encoded = encodeSnapshot(this.tenantSnapshot(archiveId));
+          await this.upsertRows(config, [{
+            id: `tenant-${archiveId}`,
+            data: {
+              format: TENANT_SNAPSHOT_FORMAT,
+              chunks: encoded.chunks,
+              compression: encoded.compression,
+              sha256: encoded.sha256
+            },
+            updated_at: new Date().toISOString()
+          }]);
+          waiters.forEach(({ resolve }) => resolve());
+        } catch (error) {
+          waiters.forEach(({ reject }) => reject(error));
+        }
+      }
+    } finally {
+      this.tenantPending.delete(archiveId);
+      this.tenantWriting.delete(archiveId);
+    }
   }
 
   private async flushWrites(): Promise<void> {

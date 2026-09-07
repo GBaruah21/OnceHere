@@ -19,9 +19,6 @@ async function startServer() {
   app.use(express.urlencoded({ extended: true, limit: '25mb' }));
   app.use(cookieParser());
 
-  // Mount API Router
-  app.use('/api', apiRouter);
-
   // Health check
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -31,6 +28,10 @@ async function startServer() {
       timestamp: new Date().toISOString()
     });
   });
+
+  // Mount API Router after health so infrastructure checks never trigger a
+  // database load and cannot make a healthy server look unavailable.
+  app.use('/api', apiRouter);
 
   // Serve public static folder (favicon, icons, etc.)
   app.use(express.static(path.join(process.cwd(), 'public')));
