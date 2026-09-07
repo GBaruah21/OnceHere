@@ -87,7 +87,8 @@ class MemoryDatabase {
   platformSettings: { instagram?: string; email?: string; displayHandle?: string } = {};
   private loadedFromStorage = false;
   private loadingPromise?: Promise<void>;
-  private writeQueue: Promise<void> = Promise.resolve();
+  private writing = false;
+  private pendingWrites: Array<{ resolve: () => void; reject: (error: unknown) => void }> = [];
 
   constructor() {
     this.seedSampleData();
@@ -168,7 +169,7 @@ class MemoryDatabase {
   private async fetchRows(config: { url: string; key: string }, ids: string[]): Promise<StoredStateRow[]> {
     const response = await fetch(
       `${config.url}/rest/v1/oncehere_state?id=in.(${ids.join(',')})&select=id,data&order=id.asc`,
-      { headers: this.storageHeaders(config) }
+      { headers: this.storageHeaders(config), signal: AbortSignal.timeout(10_000) }
     );
     if (!response.ok) throw await this.storageError(response, 'load');
     return response.json() as Promise<StoredStateRow[]>;
@@ -180,6 +181,7 @@ class MemoryDatabase {
   ): Promise<void> {
     const response = await fetch(`${config.url}/rest/v1/oncehere_state?on_conflict=id`, {
       method: 'POST',
+      signal: AbortSignal.timeout(10_000),
       headers: {
         ...this.storageHeaders(config),
         'Content-Type': 'application/json',
@@ -212,9 +214,12 @@ class MemoryDatabase {
         return;
       }
 
-      const rows = await this.fetchRows(config, ['manifest', 'primary']);
+      const rows = await this.fetchRows(config, ['manifest']);
       const manifest = rows.find((row) => row.id === 'manifest')?.data as Partial<SnapshotManifest> | undefined;
-      const legacySnapshot = rows.find((row) => row.id === 'primary')?.data;
+      // Do not download the potentially enormous legacy row on every cold start.
+      const legacySnapshot = !manifest
+        ? (await this.fetchRows(config, ['primary']))[0]?.data
+        : undefined;
 
       if (
         (manifest?.format === 2 || manifest?.format === SNAPSHOT_FORMAT)
@@ -259,16 +264,55 @@ class MemoryDatabase {
   persist(): Promise<void> {
     const config = this.storageConfig;
     if (!config) return Promise.resolve();
-    const data = this.snapshot();
-    this.writeQueue = this.writeQueue.catch(() => undefined).then(async () => {
+    const result = new Promise<void>((resolve, reject) => {
+      this.pendingWrites.push({ resolve, reject });
+    });
+    if (!this.writing) {
+      this.writing = true;
+      queueMicrotask(() => { void this.flushWrites(); });
+    }
+    return result;
+  }
+
+  private async flushWrites(): Promise<void> {
+    try {
+      while (this.pendingWrites.length) {
+        const waiters = this.pendingWrites.splice(0);
+        try {
+          // Encode immediately: in-flight edits cannot change this generation.
+          await this.writeSnapshot(encodeSnapshot(this.snapshot()));
+          waiters.forEach(({ resolve }) => resolve());
+        } catch (error) {
+          waiters.forEach(({ reject }) => reject(error));
+        }
+      }
+    } finally {
+      this.writing = false;
+    }
+  }
+
+  private async writeSnapshot(encoded: ReturnType<typeof encodeSnapshot>): Promise<void> {
+      const config = this.storageConfig;
+      if (!config) throw new Error('Durable storage configuration disappeared.');
       const generation = `${Date.now().toString(36)}${randomBytes(6).toString('hex')}`;
       const updatedAt = new Date().toISOString();
-      const encoded = encodeSnapshot(data);
       const chunkRows = encoded.chunks.map((payload, index) => ({
         id: `snapshot-${generation}-${String(index).padStart(6, '0')}`,
         data: { format: SNAPSHOT_FORMAT, payload },
         updated_at: updatedAt
       }));
+      const manifestRow = {
+        id: 'manifest',
+        data: { format: SNAPSHOT_FORMAT, generation, chunkCount: chunkRows.length,
+          sha256: encoded.sha256, compression: encoded.compression, updatedAt },
+        updated_at: updatedAt
+      };
+      // A single PostgREST upsert is transactional: small snapshots need only
+      // one round trip, with chunks and manifest becoming visible together.
+      if (chunkRows.length <= 4) {
+        await this.upsertRows(config, [...chunkRows, manifestRow]);
+        return;
+      }
 
       // Each statement stays small enough for Supabase's statement timeout.
       // Independent generation rows are written concurrently so a save takes
@@ -289,20 +333,7 @@ class MemoryDatabase {
           }
         }
       ));
-      await this.upsertRows(config, [{
-        id: 'manifest',
-        data: {
-          format: SNAPSHOT_FORMAT,
-          generation,
-          chunkCount: chunkRows.length,
-          sha256: encoded.sha256,
-          compression: encoded.compression,
-          updatedAt
-        },
-        updated_at: updatedAt
-      }]);
-    });
-    return this.writeQueue;
+      await this.upsertRows(config, [manifestRow]);
   }
 
   // --- Slug & Tenant Lookups ---

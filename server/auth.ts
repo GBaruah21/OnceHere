@@ -235,15 +235,15 @@ export function verifyViewerPin(archiveId: string, inputPin: string, ipAddress: 
  * - Direct 256-bit Recovery Key lookup (with or without title)
  * - Flexible title/slug/URL parsing (handles full URLs, pathnames, partial titles)
  */
-export function findArchiveAndVerifyKey(
+export async function findArchiveAndVerifyKey(
   rawKey: string,
   identifier?: string
-): {
+): Promise<{
   success: boolean;
   archive?: any;
   token?: string;
   error?: string;
-} {
+}> {
   // Normalize key: remove surrounding quotes, backticks, or trailing spaces
   const cleanKey = normalizeRecoveryKeyInput(rawKey);
   if (!cleanKey) {
@@ -251,8 +251,11 @@ export function findArchiveAndVerifyKey(
   }
 
   // Helper to test if a key matches an archive's owner recovery key
-  const testArchiveMatch = (archive: any): { matched: boolean; role: 'owner' | 'contributor' } => {
+  const checked = new Set<string>();
+  const testArchiveMatch = async (archive: any): Promise<{ matched: boolean; role: 'owner' | 'contributor' }> => {
     if (!archive || archive.deletedAt) return { matched: false, role: 'contributor' };
+    if (checked.has(archive.id)) return { matched: false, role: 'contributor' };
+    checked.add(archive.id);
 
     // 0. Test special studio-downloaded or demo key aliases
     const keyLower = cleanKey.toLowerCase();
@@ -270,7 +273,7 @@ export function findArchiveAndVerifyKey(
     // 1. Test Recovery Key hash
     if (archive.recoveryKeyHash) {
       try {
-        if (bcrypt.compareSync(cleanKey, archive.recoveryKeyHash)) {
+        if (await bcrypt.compare(cleanKey, archive.recoveryKeyHash)) {
           return { matched: true, role: 'owner' };
         }
       } catch {
@@ -326,7 +329,7 @@ export function findArchiveAndVerifyKey(
         cleanTitle === term ||
         title.includes(term) ||
         org.includes(term) ||
-        term.includes(slug)
+        (Boolean(slug) && term.includes(slug))
       );
 
       if (isMatch) {
@@ -336,7 +339,7 @@ export function findArchiveAndVerifyKey(
 
     // Test candidate archives with the recovery key
     for (const candidate of candidateArchives) {
-      const matchResult = testArchiveMatch(candidate);
+      const matchResult = await testArchiveMatch(candidate);
       if (matchResult.matched) {
         const token = createSignedToken(candidate.id, 'owner', 24 * 30);
         return { success: true, archive: candidate, token };
@@ -351,7 +354,7 @@ export function findArchiveAndVerifyKey(
     .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
 
   for (const archive of allArchives) {
-    const matchResult = testArchiveMatch(archive);
+    const matchResult = await testArchiveMatch(archive);
     if (matchResult.matched) {
       const token = createSignedToken(archive.id, 'owner', 24 * 30);
       return { success: true, archive, token };

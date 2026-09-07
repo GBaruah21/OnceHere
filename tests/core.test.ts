@@ -63,11 +63,11 @@ describe('Security & Authentication', () => {
     expect(fakeVerification.valid).toBe(false);
   });
 
-  it('uses recovery keys for owner access and never upgrades a PIN to owner', () => {
-    const pinResult = findArchiveAndVerifyKey('202525', 'marys-convent-2025');
+  it('uses recovery keys for owner access and never upgrades a PIN to owner', async () => {
+    const pinResult = await findArchiveAndVerifyKey('202525', 'marys-convent-2025');
     expect(pinResult.success).toBe(false);
 
-    const recoveryResult = findArchiveAndVerifyKey('mc_rec_sample_key_123');
+    const recoveryResult = await findArchiveAndVerifyKey('mc_rec_sample_key_123');
     expect(recoveryResult.success).toBe(true);
     expect(recoveryResult.token).toBeDefined();
     expect(verifySignedToken(recoveryResult.token!).role).toBe('owner');

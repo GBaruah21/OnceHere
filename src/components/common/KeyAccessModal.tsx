@@ -71,7 +71,9 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
       onSuccess(data.archive, data.workspaceSlug, data.token);
       onClose();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Could not verify Archive Key.');
+      setErrorMsg(err.name === 'TimeoutError' || err.name === 'AbortError'
+        ? 'The server took too long to respond. Your key has not been rejected. Please try again.'
+        : err.message || 'Could not verify Archive Key.');
     } finally {
       setIsSubmitting(false);
     }
@@ -88,7 +90,7 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
             </div>
             <div>
               <h3 className="text-base sm:text-lg font-bold font-serif text-white">Recover Owner Access</h3>
-              <p className="text-xs text-neutral-400">Unlock your owner studio workspace from any device</p>
+              <p className="text-xs text-neutral-400">Paste your recovery key or upload its text file. No PIN needed.</p>
             </div>
           </div>
           <button

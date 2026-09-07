@@ -22,15 +22,24 @@ function uploadBytes(
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', url);
-    xhr.timeout = timeoutMs;
+    // This is an inactivity deadline, not a total transfer deadline. Progressing
+    // mobile uploads must not be discarded and uploaded a second time.
+    let idleTimer: ReturnType<typeof setTimeout>;
+    const resetDeadline = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => xhr.abort(), timeoutMs);
+    };
+    xhr.onloadend = () => clearTimeout(idleTimer);
     Object.entries(headers).forEach(([name, value]) => xhr.setRequestHeader(name, value));
     xhr.upload.onprogress = (event) => {
+      resetDeadline();
       if (event.lengthComputable) onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
     };
     xhr.onload = () => resolve({ status: xhr.status, responseText: xhr.responseText });
     xhr.onerror = () => reject(new Error('The upload connection failed.'));
     xhr.ontimeout = () => reject(new Error('The upload connection timed out.'));
     xhr.onabort = () => reject(new Error('The upload was cancelled.'));
+    resetDeadline();
     xhr.send(file);
   });
 }

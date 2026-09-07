@@ -898,14 +898,15 @@ apiRouter.post('/archives/:id/auth/recovery/regenerate', (req: Request, res: Res
 });
 
 // Universal Archive Key Access (Direct Owner Login)
-apiRouter.post('/archives/auth/key-access', limitRecoveryAttempts, (req: Request, res: Response) => {
+apiRouter.post('/archives/auth/key-access', limitRecoveryAttempts, async (req: Request, res: Response, next) => {
+  try {
   const { key, identifier } = req.body;
 
   if (!key || typeof key !== 'string' || key.length > 512 || (identifier !== undefined && typeof identifier !== 'string')) {
     return res.status(400).json({ error: 'Please enter your owner recovery key.' });
   }
 
-  const result = findArchiveAndVerifyKey(key, identifier);
+  const result = await findArchiveAndVerifyKey(key, identifier);
 
   if (!result.success || !result.archive) {
     return res.status(401).json({
@@ -936,6 +937,7 @@ apiRouter.post('/archives/auth/key-access', limitRecoveryAttempts, (req: Request
     slug: result.archive.slug,
     archive: sanitizeArchive(result.archive)
   });
+  } catch (error) { next(error); }
 });
 
 // ==========================================
