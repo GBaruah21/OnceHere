@@ -161,3 +161,14 @@ describe.each([1, 2, 3, 4, 5])('Retry regression iteration %i', iteration => {
     }
   });
 });
+
+describe('Durable save acknowledgement', () => {
+  it('does not report a mutation as successful when persistence fails', async () => {
+    vi.mocked(db.persist).mockRejectedValueOnce(new Error('simulated durable storage failure'));
+    const response = await request('/analytics', { eventName: 'test_storage_failure' });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: 'The change could not be saved to durable storage. Retry without closing this page.'
+    });
+  });
+});

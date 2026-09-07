@@ -66,8 +66,9 @@ function limitRecoveryAttempts(req: Request, res: Response, next: NextFunction) 
 
 // Load the durable snapshot once. Reads must never rewrite the full snapshot:
 // that previously made every workspace/page load wait on Supabase. Successful
-// mutations respond immediately and queue one ordered background persistence
-// write, so editor interactions are not blocked by storage latency.
+// mutations wait for the ordered persistence write before reporting success.
+// This prevents the editor from showing "Saved" when durable storage rejected
+// the snapshot.
 apiRouter.use(async (req, res, next) => {
   try {
     await db.ensureLoaded();
@@ -81,11 +82,20 @@ apiRouter.use(async (req, res, next) => {
     const sendJson = res.json.bind(res);
     res.json = ((body: unknown) => {
       const statusCode = res.statusCode;
-      const result = sendJson(body);
-      if (statusCode < 400) {
-        void db.persist().catch((error) => console.error('Failed to save archive data:', error));
-      }
-      return result;
+      if (statusCode >= 400) return sendJson(body);
+
+      void db.persist()
+        .then(() => {
+          if (!res.headersSent) sendJson(body);
+        })
+        .catch((error) => {
+          console.error('Failed to save archive data:', error);
+          if (!res.headersSent) {
+            res.status(503);
+            sendJson({ error: 'The change could not be saved to durable storage. Retry without closing this page.' });
+          }
+        });
+      return res;
     }) as typeof res.json;
     next();
   } catch (error) {
