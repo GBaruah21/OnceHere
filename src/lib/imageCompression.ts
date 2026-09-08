@@ -31,7 +31,9 @@ export async function compressImageForUpload(file: File): Promise<File> {
     await image.decode();
 
     const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(image.naturalWidth, image.naturalHeight));
-    if (file.size <= 1 * MB && scale === 1) return file;
+    // Re-encoding an already-small image adds visible waiting without a useful
+    // bandwidth saving.
+    if (file.size <= IMAGE_COMPRESSION_TARGET_BYTES && scale === 1) return file;
 
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));

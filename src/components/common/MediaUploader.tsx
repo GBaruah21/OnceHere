@@ -6,10 +6,15 @@ import { compressImageForUpload, IMAGE_SOURCE_LIMIT_BYTES, VIDEO_SOURCE_LIMIT_BY
 type UploadPhase = 'optimizing' | 'authorizing' | 'direct' | 'fallback';
 
 export function directUploadTimeoutMs(file: Pick<File, 'size' | 'type'>): number {
-  if (file.type.startsWith('image/')) return 12_000;
+  if (file.type.startsWith('image/')) return 8_000;
   // Videos get more time, scaled for slower mobile connections, but a stalled
   // storage request must still hand off to the same-origin fallback promptly.
   return Math.min(90_000, Math.max(30_000, Math.ceil(file.size / (256 * 1024)) * 1_000));
+}
+
+export function fallbackUploadTimeoutMs(file: Pick<File, 'size' | 'type'>): number {
+  if (file.type.startsWith('image/')) return 20_000;
+  return Math.min(120_000, Math.max(45_000, Math.ceil(file.size / (192 * 1024)) * 1_000));
 }
 
 function uploadBytes(
@@ -133,7 +138,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         'X-File-Name': encodeURIComponent(file.name),
         Authorization: `Bearer ${directUpload.token || ''}`
       },
-      120_000,
+      fallbackUploadTimeoutMs(file),
       setUploadProgress
     );
     const completed = (() => {
@@ -209,15 +214,17 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
 
     if (directUpload) {
       try {
-        let analysisDataUrl: string | undefined;
-        if (isImageFile) {
-          analysisDataUrl = await new Promise<string>((resolve, reject) => {
+        // Preparing AI input used to block the actual upload. Run it alongside
+        // the network transfer, and never fail a valid upload just because the
+        // optional analyser preview could not be prepared.
+        const analysisDataUrlPromise = isImageFile
+          ? new Promise<string | undefined>((resolve) => {
             const reader = new FileReader();
             reader.onload = () => resolve(String(reader.result || ''));
-            reader.onerror = () => reject(new Error('Could not prepare this image for AI analysis.'));
+            reader.onerror = () => resolve(undefined);
             reader.readAsDataURL(uploadFile);
-          });
-        }
+          })
+          : Promise.resolve(undefined);
         // Sending the bytes straight to object storage avoids relaying every image
         // through Render. If bucket CORS is not ready, retain the same-origin proxy
         // as a compatibility fallback instead of losing the user's selection.
@@ -227,6 +234,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         } catch {
           completed = await uploadThroughServer(uploadFile);
         }
+        const analysisDataUrl = await analysisDataUrlPromise;
         onChange(completed.url, completed.type, {
           name: uploadFile.name,
           size: completed.fileSize,
