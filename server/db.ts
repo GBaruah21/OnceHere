@@ -22,6 +22,8 @@ const SNAPSHOT_FORMAT = 3;
 const SNAPSHOT_CHUNK_SIZE = 64 * 1024;
 const SNAPSHOT_WRITE_CONCURRENCY = 6;
 const TENANT_SNAPSHOT_FORMAT = 1;
+const STORAGE_REQUEST_TIMEOUT_MS = 20_000;
+const STORAGE_RETRY_DELAYS_MS = [0, 250, 750];
 
 interface SnapshotManifest {
   format: number;
@@ -248,22 +250,66 @@ class MemoryDatabase {
     rows: Array<{ id: string; data: Record<string, unknown>; updated_at: string }>
   ): Promise<void> {
     let rejected: Response | undefined;
-    for (const candidate of this.storageCandidates(config)) {
-      const response = await fetch(`${candidate.url}/rest/v1/oncehere_state?on_conflict=id`, {
-        method: 'POST',
-        signal: AbortSignal.timeout(10_000),
-        headers: {
-          ...this.storageHeaders(candidate),
-          'Content-Type': 'application/json',
-          Prefer: 'resolution=merge-duplicates,return=minimal'
-        },
-        body: JSON.stringify(rows)
-      });
-      if (response.ok) return;
-      rejected = response;
-      if (response.status !== 401 && response.status !== 403) break;
+    let lastError: unknown;
+    const body = JSON.stringify(rows);
+    for (const delay of STORAGE_RETRY_DELAYS_MS) {
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      for (const candidate of this.storageCandidates(config)) {
+        try {
+          const response = await fetch(`${candidate.url}/rest/v1/oncehere_state?on_conflict=id`, {
+            method: 'POST',
+            signal: AbortSignal.timeout(STORAGE_REQUEST_TIMEOUT_MS),
+            headers: {
+              ...this.storageHeaders(candidate),
+              'Content-Type': 'application/json',
+              Prefer: 'resolution=merge-duplicates,return=minimal'
+            },
+            body
+          });
+          if (response.ok) return;
+          rejected = response;
+          // A bad key can fall through to a legacy service-role key. Temporary
+          // provider failures are retried; validation failures are not.
+          if (response.status === 401 || response.status === 403) continue;
+          if (response.status !== 408 && response.status !== 429 && response.status < 500) {
+            throw await this.storageError(response, 'save');
+          }
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
     }
-    throw await this.storageError(rejected!, 'save');
+    if (rejected) throw await this.storageError(rejected, 'save');
+    throw lastError instanceof Error ? lastError : new Error('Supabase save failed because the storage service did not respond.');
+  }
+
+  /** A request-scoped copy used only to roll back a mutation when durable save fails. */
+  captureArchiveState(archiveId: string): Record<string, unknown> | undefined {
+    if (!this.archives.has(archiveId)) return undefined;
+    return structuredClone(this.tenantSnapshot(archiveId));
+  }
+
+  /** Restore the exact pre-request state; this never touches another archive. */
+  restoreArchiveState(archiveId: string, snapshot?: Record<string, unknown>): void {
+    if (snapshot) {
+      this.restoreTenant(structuredClone(snapshot));
+      return;
+    }
+    this.archives.delete(archiveId);
+    this.sections.delete(archiveId);
+    this.timelineEvents.delete(archiveId);
+    this.members.delete(archiveId);
+    this.memberMessages.delete(archiveId);
+    this.mediaItems.delete(archiveId);
+    this.albums.delete(archiveId);
+    this.wallPosts.delete(archiveId);
+    this.revisions.delete(archiveId);
+    this.accessLogs.delete(archiveId);
+    this.shareActivity.delete(archiveId);
+    for (const [token, session] of this.sessions) {
+      if (session.archiveId === archiveId) this.sessions.delete(token);
+    }
   }
 
   getPlatformSettings() {
