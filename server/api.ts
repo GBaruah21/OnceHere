@@ -44,6 +44,23 @@ import {
 export const apiRouter = express.Router();
 apiRouter.use(express.json({ limit: '40mb' }));
 
+const archiveMutationTails = new Map<string, Promise<void>>();
+
+async function acquireArchiveMutationLock(archiveId: string, res: Response) {
+  const previous = archiveMutationTails.get(archiveId) || Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.catch(() => undefined).then(() => gate);
+  archiveMutationTails.set(archiveId, tail);
+  await previous.catch(() => undefined);
+  res.once('finish', () => {
+    release();
+    void tail.finally(() => {
+      if (archiveMutationTails.get(archiveId) === tail) archiveMutationTails.delete(archiveId);
+    });
+  });
+}
+
 function hasPlatformAdminAccess(req: Request) {
   const adminKey = process.env.PLATFORM_ADMIN_KEY;
   return Boolean(adminKey && req.header('x-platform-admin-key') === adminKey);
@@ -74,6 +91,15 @@ apiRouter.use(async (req, res, next) => {
       || req.path.startsWith('/ai/');
     if (!methodCanMutate || isTransientOperation) return next();
 
+    const requestPathMatch = req.path.match(/^\/(?:admin\/)?archives\/([^/]+)/);
+    const requestArchiveId = requestPathMatch?.[1] && requestPathMatch[1] !== 'auth'
+      ? requestPathMatch[1]
+      : undefined;
+    if (requestArchiveId && db.findById(requestArchiveId)) {
+      await acquireArchiveMutationLock(requestArchiveId, res);
+    }
+    const beforeState = requestArchiveId ? db.captureArchiveState(requestArchiveId) : undefined;
+
     const sendJson = res.json.bind(res);
     res.json = ((body: unknown) => {
       const statusCode = res.statusCode;
@@ -100,6 +126,7 @@ apiRouter.use(async (req, res, next) => {
         })
         .catch((error) => {
           console.error('Failed to save archive data:', error);
+          if (archiveId) db.restoreArchiveState(archiveId, beforeState);
           if (!res.headersSent) {
             const status = error instanceof Error
               ? error.message.match(/Supabase save failed \((\d+)\)/)?.[1]
@@ -486,6 +513,10 @@ apiRouter.get('/archives/by-workspace/:workspaceSlug', (req: Request, res: Respo
 });
 
 // AI Multimodal Memory Image Analyzer
+apiRouter.get('/ai/status', (_req: Request, res: Response) => {
+  return res.json({ available: Boolean(process.env.GEMINI_API_KEY?.trim()) });
+});
+
 apiRouter.post('/ai/analyze-image', async (req: Request, res: Response) => {
   try {
     const { image, contextHint, archiveType } = req.body;
@@ -631,31 +662,13 @@ apiRouter.get('/domains/check-slug', (req: Request, res: Response) => {
   });
 });
 
-// Custom Domain DNS Verification Simulator
-apiRouter.post('/domains/verify', (req: Request, res: Response) => {
-  const { domain, archiveId } = req.body;
-  if (!domain || !archiveId) {
-    return res.status(400).json({ error: 'Domain and Archive ID required.' });
-  }
-
-  const cleanDomain = domain.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-  
-  // Format check
-  if (!/^[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,10}$/.test(cleanDomain)) {
-    return res.status(400).json({
-      verified: false,
-      status: 'failed',
-      error: 'Invalid domain format. Example: memories.yourinstitution.edu'
-    });
-  }
-
-  // Domain verification mock response with realistic DNS instructions
-  return res.json({
-    verified: true,
-    status: 'verified',
-    domain: cleanDomain,
-    cnameTarget: 'cname.oncehere.app',
-    message: 'DNS configuration verified successfully.'
+// Custom domains stay disabled until real DNS ownership and SSL verification are
+// configured. Never claim that an unverified hostname is ready for deployment.
+apiRouter.post('/domains/verify', (_req: Request, res: Response) => {
+  return res.status(501).json({
+    verified: false,
+    status: 'unavailable',
+    error: 'Custom-domain verification is not configured. Use the path or platform subdomain address.'
   });
 });
 
@@ -669,6 +682,9 @@ apiRouter.post('/archives/:id/deploy', (req: Request, res: Response) => {
   }
 
   const { finalSlug, customDomain } = req.body;
+  if (customDomain) {
+    return res.status(501).json({ error: 'Custom-domain publishing is not configured. Choose a platform address.' });
+  }
   const cleanSlug = sanitizeSlug(finalSlug || '');
 
   const val = validateSlug(cleanSlug);
@@ -1443,6 +1459,12 @@ apiRouter.post('/archives/:id/media', async (req: Request, res: Response) => {
     if (typeof storageKey !== 'string' || !storageKey.startsWith(`archives/${id}/`)) {
       return res.status(400).json({ error: 'Invalid media storage key.' });
     }
+    const existingItem = db.getMediaItems(id).find((entry) => entry.storageKey === storageKey);
+    if (existingItem) {
+      // Registration is idempotent: retrying a timed-out response returns the
+      // original tile rather than creating a duplicate record.
+      return res.status(200).json({ success: true, item: existingItem, alreadyRegistered: true });
+    }
     try {
       if (!Number.isSafeInteger(fileSize) || typeof contentType !== 'string') {
         const stored = await inspectObject(storageKey);
@@ -1559,6 +1581,10 @@ apiRouter.delete('/archives/:id/media/:mediaId/notes/:noteId', (req: Request, re
   const { id, mediaId, noteId } = req.params;
   const archive = db.findById(id) || db.findBySlug(id);
   const targetId = archive ? archive.id : id;
+  const auth = getAuthContext(req);
+  if (auth.archiveId !== targetId || auth.role !== 'owner') {
+    return res.status(403).json({ error: 'Only the archive owner can remove photo notes.' });
+  }
   const updated = db.deleteMediaNote(targetId, mediaId, noteId);
   if (!updated) return res.status(404).json({ error: 'Note or media item not found.' });
   return res.json({ success: true, item: updated });
@@ -1569,8 +1595,8 @@ apiRouter.delete('/archives/:id/media/:mediaId', async (req: Request, res: Respo
   const archive = db.findById(id) || db.findBySlug(id);
   const targetId = archive ? archive.id : id;
   const auth = getAuthContext(req);
-  if (auth.archiveId !== targetId && auth.archiveId !== id && auth.role !== 'owner' && auth.role !== 'contributor') {
-    return res.status(403).json({ error: 'Permission denied.' });
+  if (auth.archiveId !== targetId || auth.role !== 'owner') {
+    return res.status(403).json({ error: 'Only the archive owner can delete media.' });
   }
 
   const item = db.getMediaItems(targetId).find((entry) => entry.id === mediaId);
@@ -1648,10 +1674,8 @@ apiRouter.patch('/archives/:id/wall/:postId', (req: Request, res: Response) => {
   const archive = db.findById(id) || db.findBySlug(id);
   const targetId = archive ? archive.id : id;
   const auth = getAuthContext(req);
-  const isDemo = targetId.startsWith('demo-') || (archive && ['sistec-batch-2026', 'riverdale-tech-2026', 'marys-convent-2025', 'st-thomas-2024'].includes(archive.slug));
-
-  if (!isDemo && auth.archiveId !== targetId && auth.role !== 'owner' && auth.role !== 'contributor') {
-    return res.status(403).json({ error: 'Permission denied.' });
+  if (auth.archiveId !== targetId || auth.role !== 'owner') {
+    return res.status(403).json({ error: 'Only the archive owner can moderate wall posts.' });
   }
 
   const { isHidden, isApproved, isPinned } = req.body;
@@ -1679,10 +1703,8 @@ apiRouter.delete('/archives/:id/wall/:postId', (req: Request, res: Response) => 
   const archive = db.findById(id) || db.findBySlug(id);
   const targetId = archive ? archive.id : id;
   const auth = getAuthContext(req);
-  const isDemo = targetId.startsWith('demo-') || (archive && ['sistec-batch-2026', 'riverdale-tech-2026', 'marys-convent-2025', 'st-thomas-2024'].includes(archive.slug));
-
-  if (!isDemo && auth.archiveId !== targetId && auth.role !== 'owner' && auth.role !== 'contributor') {
-    return res.status(403).json({ error: 'Permission denied.' });
+  if (auth.archiveId !== targetId || auth.role !== 'owner') {
+    return res.status(403).json({ error: 'Only the archive owner can delete wall posts.' });
   }
 
   const success = db.deleteWallPost(targetId, postId);
@@ -1701,8 +1723,8 @@ apiRouter.get('/archives/:id/revisions', (req: Request, res: Response) => {
     return res.status(404).json({ error: 'Archive not found.' });
   }
 
-  if (auth.archiveId && auth.archiveId !== id) {
-    return res.status(403).json({ error: 'Permission denied.' });
+  if (auth.archiveId !== id || (auth.role !== 'owner' && auth.role !== 'contributor')) {
+    return res.status(403).json({ error: 'Archive editor access required.' });
   }
 
   const revisions = db.getRevisions(id);
@@ -1717,8 +1739,8 @@ apiRouter.post('/archives/:id/revisions/:revId/restore', (req: Request, res: Res
     return res.status(404).json({ error: 'Archive not found.' });
   }
 
-  if (auth.archiveId && auth.archiveId !== id) {
-    return res.status(403).json({ error: 'Permission denied.' });
+  if (auth.archiveId !== id || auth.role !== 'owner') {
+    return res.status(403).json({ error: 'Only the archive owner can restore revisions.' });
   }
 
   const success = db.restoreRevision(id, revId);
