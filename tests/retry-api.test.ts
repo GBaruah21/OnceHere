@@ -12,6 +12,7 @@ beforeAll(async () => {
   vi.stubEnv('PLATFORM_ADMIN_KEY', 'test-only-platform-key');
   vi.spyOn(db, 'ensureLoaded').mockResolvedValue();
   vi.spyOn(db, 'persist').mockResolvedValue();
+  vi.spyOn(db, 'persistArchive').mockResolvedValue();
   const app = express();
   app.use(cookieParser());
   app.use('/api', apiRouter);
@@ -34,6 +35,9 @@ const patchRequest = (path: string, body: unknown, headers: Record<string, strin
 });
 const putRequest = (path: string, body: unknown, headers: Record<string, string> = {}) => fetch(base + path, {
   method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body)
+});
+const deleteRequest = (path: string, headers: Record<string, string> = {}) => fetch(base + path, {
+  method: 'DELETE', headers
 });
 
 describe.each([1, 2, 3, 4, 5])('Retry regression iteration %i', iteration => {
@@ -160,6 +164,27 @@ describe.each([1, 2, 3, 4, 5])('Retry regression iteration %i', iteration => {
       expect((await patchRequest(`/archives/${result.archive.id}`, { approxPeopleCount: 0 }, { Authorization: `Bearer ${recovered.token}` })).status).toBe(400);
     }
   });
+
+  it('blocks cross-archive destructive actions and keeps revision restore owner-only', async () => {
+    const id = 'demo-marys-2025';
+    const otherOwner = createSignedToken('demo-riverdale-2026', 'owner', 1);
+    const ownOwner = createSignedToken(id, 'owner', 1);
+    const mediaId = db.getMediaItems(id)[0]?.id || 'missing-media';
+    const wallId = db.getWallPosts(id)[0]?.id || 'missing-wall';
+    const revisionId = db.getRevisions(id)[0]?.id || 'missing-revision';
+    try {
+      expect((await deleteRequest(`/archives/${id}/media/${mediaId}`, { Authorization: `Bearer ${otherOwner}` })).status).toBe(403);
+      expect((await deleteRequest(`/archives/${id}/media/${mediaId}/notes/fake-note`, { Authorization: `Bearer ${otherOwner}` })).status).toBe(403);
+      expect((await patchRequest(`/archives/${id}/wall/${wallId}`, { isHidden: true }, { Authorization: `Bearer ${otherOwner}` })).status).toBe(403);
+      expect((await deleteRequest(`/archives/${id}/wall/${wallId}`, { Authorization: `Bearer ${otherOwner}` })).status).toBe(403);
+      expect((await request(`/archives/${id}/revisions`)).status).toBe(403);
+      expect((await request(`/archives/${id}/revisions`, undefined, { Authorization: `Bearer ${ownOwner}` })).status).toBe(200);
+      expect((await request(`/archives/${id}/revisions/${revisionId}/restore`, {})).status).toBe(403);
+    } finally {
+      db.sessions.delete(otherOwner);
+      db.sessions.delete(ownOwner);
+    }
+  });
 });
 
 describe('Durable save acknowledgement', () => {
@@ -171,5 +196,19 @@ describe('Durable save acknowledgement', () => {
       error: 'The change could not be saved to durable storage. Retry without closing this page.',
       storageCode: 'storage-unavailable'
     });
+  });
+
+  it('rolls an archive mutation back when durable storage rejects it', async () => {
+    const id = 'demo-marys-2025';
+    const owner = createSignedToken(id, 'owner', 1);
+    const originalTitle = db.findById(id)!.title;
+    vi.mocked(db.persistArchive).mockRejectedValueOnce(new Error('simulated tenant save failure'));
+    try {
+      const response = await patchRequest(`/archives/${id}`, { title: 'Must not remain in memory' }, { Authorization: `Bearer ${owner}` });
+      expect(response.status).toBe(503);
+      expect(db.findById(id)!.title).toBe(originalTitle);
+    } finally {
+      db.sessions.delete(owner);
+    }
   });
 });
