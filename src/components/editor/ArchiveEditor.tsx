@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Section,
   Archive,
@@ -89,11 +89,98 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
   const [isRevisionsModalOpen, setIsRevisionsModalOpen] = useState(false);
   const [isAccessHistoryModalOpen, setIsAccessHistoryModalOpen] = useState(false);
   const [isImageAnalyzerOpen, setIsImageAnalyzerOpen] = useState(false);
+  const [aiAvailable, setAiAvailable] = useState(false);
 
   // Save states
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [saveError, setSaveError] = useState('');
+  const [retryCount, setRetryCount] = useState(0);
   const didMountAutosave = useRef(false);
-  const retrySaveRef = useRef<null | (() => void)>(null);
+  const retrySaveRef = useRef<null | (() => Promise<void>)>(null);
+  const archiveDraftKey = `oncehere-unsaved-${initialArchive.id}`;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/ai/status', { signal: controller.signal })
+      .then((response) => response.ok ? response.json() : { available: false })
+      .then((result) => setAiAvailable(Boolean(result.available)))
+      .catch(() => setAiAvailable(false));
+    return () => controller.abort();
+  }, []);
+
+  const responseError = async (response: Response, fallback: string) => {
+    const data = await response.json().catch(() => ({}));
+    return data.error || fallback;
+  };
+
+  const runRetry = useCallback(async () => {
+    const retry = retrySaveRef.current;
+    if (!retry) return;
+    setSaveStatus('saving');
+    setSaveError('');
+    setRetryCount((count) => count + 1);
+    try {
+      await retry();
+      retrySaveRef.current = null;
+      setSaveStatus('saved');
+      localStorage.removeItem(archiveDraftKey);
+    } catch (error) {
+      setSaveStatus('error');
+      setSaveError(error instanceof Error ? error.message : 'The save still failed. Your changes remain on this screen.');
+    }
+  }, [archiveDraftKey]);
+
+  const saveWithRetry = async (operation: () => Promise<void>) => {
+    retrySaveRef.current = operation;
+    setSaveStatus('saving');
+    setSaveError('');
+    try {
+      await operation();
+      retrySaveRef.current = null;
+      setSaveStatus('saved');
+    } catch (error) {
+      setSaveStatus('error');
+      setSaveError(error instanceof Error ? error.message : 'The change could not be saved.');
+      throw error;
+    }
+  };
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(archiveDraftKey);
+      if (!stored) return;
+      const recovered = JSON.parse(stored) as { archive?: Archive };
+      if (recovered.archive && window.confirm('OnceHere found archive settings that were not confirmed as saved. Restore them on this device?')) {
+        setArchive((current) => ({ ...current, ...recovered.archive, id: current.id }));
+      }
+    } catch {
+      localStorage.removeItem(archiveDraftKey);
+    }
+  }, [archiveDraftKey]);
+
+  useEffect(() => {
+    if (!didMountAutosave.current || saveStatus === 'saved') return;
+    try {
+      localStorage.setItem(archiveDraftKey, JSON.stringify({ archive, savedAt: new Date().toISOString() }));
+    } catch {
+      // The server remains the source of truth; device recovery is best effort.
+    }
+  }, [archive, archiveDraftKey, saveStatus]);
+
+  useEffect(() => {
+    const warnBeforeRefresh = (event: BeforeUnloadEvent) => {
+      if (saveStatus === 'saved') return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    const retryWhenOnline = () => { if (saveStatus === 'error') void runRetry(); };
+    window.addEventListener('beforeunload', warnBeforeRefresh);
+    window.addEventListener('online', retryWhenOnline);
+    return () => {
+      window.removeEventListener('beforeunload', warnBeforeRefresh);
+      window.removeEventListener('online', retryWhenOnline);
+    };
+  }, [runRetry, saveStatus]);
 
   // Debounced Autosave to backend
   useEffect(() => {
@@ -114,21 +201,22 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
           body: JSON.stringify(archive)
         });
 
-        if (res.ok) {
-          retrySaveRef.current = null;
-          setSaveStatus('saved');
-        } else {
-          setSaveStatus('error');
-        }
-      } catch {
+        if (!res.ok) throw new Error(await responseError(res, 'Archive settings could not be saved.'));
+        retrySaveRef.current = null;
+        setSaveError('');
+        setSaveStatus('saved');
+        localStorage.removeItem(archiveDraftKey);
+      } catch (error) {
+        retrySaveRef.current = saveArchive;
+        setSaveError(error instanceof Error ? error.message : 'Archive settings could not be saved.');
         setSaveStatus('error');
       }
     };
-    retrySaveRef.current = () => { void saveArchive(); };
+    retrySaveRef.current = saveArchive;
     const timer = setTimeout(() => { void saveArchive(); }, 500);
 
     return () => clearTimeout(timer);
-  }, [archive, ownerToken]);
+  }, [archive, archiveDraftKey, ownerToken]);
 
   const handleUpdateSections = async (updated: Section[]) => {
     setSections(updated);
@@ -143,15 +231,19 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
           },
           body: JSON.stringify({ sections: updated })
         });
-        if (!response.ok) throw new Error('Section save failed.');
+        if (!response.ok) throw new Error(await responseError(response, 'Section save failed.'));
         retrySaveRef.current = null;
+        setSaveError('');
         setSaveStatus('saved');
-      } catch {
+      } catch (error) {
+        retrySaveRef.current = saveSections;
+        setSaveError(error instanceof Error ? error.message : 'Section save failed.');
         setSaveStatus('error');
+        throw error;
       }
     };
-    retrySaveRef.current = () => { void saveSections(); };
-    await saveSections();
+    retrySaveRef.current = saveSections;
+    await saveSections().catch(() => undefined);
   };
 
   // Section operations
@@ -173,9 +265,8 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
 
   // Sub-entity mutations
   const handleAddTimelineEvent = async (eventData: Partial<TimelineEvent>) => {
-    let res: Response;
-    try {
-      res = await fetch(`/api/archives/${archive.id}/timeline`, {
+    const saveTimelineEvent = async () => {
+      const res = await fetch(`/api/archives/${archive.id}/timeline`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -183,116 +274,129 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
         },
         body: JSON.stringify(eventData)
       });
-    } catch {
-      throw new Error('Network error while saving the milestone. Check your connection and retry.');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success || !data.event) throw new Error(data.error || 'Could not save the milestone. Your details have not been cleared.');
+      setTimeline((current) => current.some((item) => item.id === data.event.id) ? current : [...current, data.event]);
+    };
+    try {
+      setSaveStatus('saving');
+      await saveTimelineEvent();
+      retrySaveRef.current = null;
+      setSaveError('');
+      setSaveStatus('saved');
+    } catch (error) {
+      retrySaveRef.current = saveTimelineEvent;
+      setSaveStatus('error');
+      setSaveError(error instanceof Error ? error.message : 'Network error while saving the milestone.');
+      throw error;
     }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.success || !data.event) throw new Error(data.error || 'Could not save the milestone. Your details have not been cleared.');
-    setTimeline((current) => [...current, data.event]);
   };
 
   const handleUpdateTimelineEvent = async (id: string, updates: Partial<TimelineEvent>) => {
     const previous = timeline;
     setTimeline((current) => current.map((event) => (event.id === id ? { ...event, ...updates } : event)));
-    const res = await fetch(`/api/archives/${archive.id}/timeline/${id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ownerToken || ''}`
-      },
-      body: JSON.stringify(updates)
-    });
-    if (!res.ok) {
+    const operation = async () => {
+      const res = await fetch(`/api/archives/${archive.id}/timeline/${id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken || ''}`
+        },
+        body: JSON.stringify(updates)
+      });
+      if (!res.ok) throw new Error(await responseError(res, 'Could not save the milestone change.'));
+      const data = await res.json();
+      if (data.event) setTimeline((current) => current.map((event) => (event.id === id ? data.event : event)));
+    };
+    try {
+      await saveWithRetry(operation);
+    } catch {
       setTimeline(previous);
-      setSaveStatus('error');
-      return;
     }
-    const data = await res.json();
-    if (data.event) setTimeline((current) => current.map((event) => (event.id === id ? data.event : event)));
-    setSaveStatus('saved');
   };
 
   const handleReorderTimeline = async (ordered: TimelineEvent[]) => {
     const previous = timeline;
     const normalized = ordered.map((event, position) => ({ ...event, position }));
     setTimeline(normalized);
-    setSaveStatus('saving');
     try {
-      const response = await fetch(`/api/archives/${archive.id}/timeline/reorder`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${ownerToken || ''}`
-        },
-        body: JSON.stringify({ orderedIds: normalized.map((event) => event.id) })
+      await saveWithRetry(async () => {
+        const response = await fetch(`/api/archives/${archive.id}/timeline/reorder`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken || ''}`
+          },
+          body: JSON.stringify({ orderedIds: normalized.map((event) => event.id) })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) throw new Error(data.error || 'Could not save milestone order.');
+        if (Array.isArray(data.events)) setTimeline(data.events);
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data.success) throw new Error(data.error || 'Could not save milestone order.');
-      if (Array.isArray(data.events)) setTimeline(data.events);
-      setSaveStatus('saved');
-    } catch (error) {
+    } catch {
       setTimeline(previous);
-      setSaveStatus('error');
-      throw error;
+      throw new Error('Could not save milestone order. Use Retry save to try again.');
     }
   };
 
   const handleDeleteTimelineEvent = async (id: string) => {
-    await fetch(`/api/archives/${archive.id}/timeline/${id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${ownerToken || ''}` }
-    });
-    setTimeline(timeline.filter((e) => e.id !== id));
+    await saveWithRetry(async () => {
+      const response = await fetch(`/api/archives/${archive.id}/timeline/${id}`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${ownerToken || ''}` }
+      });
+      if (!response.ok) throw new Error(await responseError(response, 'Could not delete the milestone.'));
+      setTimeline((current) => current.filter((event) => event.id !== id));
+    }).catch(() => undefined);
   };
 
   const handleAddMember = async (memberData: Partial<Member>) => {
-    const res = await fetch(`/api/archives/${archive.id}/members`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ownerToken || ''}`
-      },
-      body: JSON.stringify(memberData)
+    await saveWithRetry(async () => {
+      const res = await fetch(`/api/archives/${archive.id}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken || ''}` },
+        body: JSON.stringify(memberData)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success || !data.member) throw new Error(data.error || 'Could not save this member.');
+      setMembers((current) => current.some((member) => member.id === data.member.id) ? current : [...current, data.member]);
     });
-    const data = await res.json();
-    if (data.success && data.member) {
-      setMembers((current) => [...current, data.member]);
-    }
   };
 
   const handleUpdateMember = async (id: string, updates: Partial<Member>) => {
     const previous = members;
     setMembers((current) => current.map((member) => (member.id === id ? { ...member, ...updates } : member)));
-    const res = await fetch(`/api/archives/${archive.id}/members/${id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ownerToken || ''}`
-      },
-      body: JSON.stringify(updates)
-    });
-    if (!res.ok) {
+    try {
+      await saveWithRetry(async () => {
+        const res = await fetch(`/api/archives/${archive.id}/members/${id}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken || ''}`
+          },
+          body: JSON.stringify(updates)
+        });
+        if (!res.ok) throw new Error(await responseError(res, 'Could not save this member.'));
+        const data = await res.json();
+        if (data.member) setMembers((current) => current.map((member) => (member.id === id ? data.member : member)));
+      });
+    } catch {
       setMembers(previous);
-      setSaveStatus('error');
-      return;
     }
-    const data = await res.json();
-    if (data.member) setMembers((current) => current.map((member) => (member.id === id ? data.member : member)));
-    setSaveStatus('saved');
   };
 
   const handleDeleteMember = async (id: string) => {
-    await fetch(`/api/archives/${archive.id}/members/${id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${ownerToken || ''}` }
-    });
-    setMembers(members.filter((m) => m.id !== id));
+    await saveWithRetry(async () => {
+      const response = await fetch(`/api/archives/${archive.id}/members/${id}`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${ownerToken || ''}` }
+      });
+      if (!response.ok) throw new Error(await responseError(response, 'Could not delete this member.'));
+      setMembers((current) => current.filter((member) => member.id !== id));
+    }).catch(() => undefined);
   };
 
   const handleAddMedia = async (mediaData: Partial<MediaItem>) => {
-    let res: Response;
-    try {
-      res = await fetch(`/api/archives/${archive.id}/media`, {
+    const registerMedia = async () => {
+      const res = await fetch(`/api/archives/${archive.id}/media`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -300,89 +404,104 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
         },
         body: JSON.stringify(mediaData)
       });
-    } catch {
-      throw new Error('Network error while uploading. Check your connection and retry.');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success || !data.item) throw new Error(data.error || 'Upload failed. Your selected media has not been removed.');
+      setMedia((current) => current.some((item) => item.id === data.item.id) ? current : [data.item, ...current]);
+    };
+    try {
+      setSaveStatus('saving');
+      await registerMedia();
+      retrySaveRef.current = null;
+      setSaveError('');
+      setSaveStatus('saved');
+    } catch (error) {
+      retrySaveRef.current = registerMedia;
+      setSaveStatus('error');
+      setSaveError(error instanceof Error ? error.message : 'Network error while registering the upload.');
+      throw error;
     }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.success || !data.item) throw new Error(data.error || 'Upload failed. Your selected media has not been removed.');
-    setMedia((current) => [data.item, ...current]);
   };
 
   const handleUpdateMedia = async (id: string, updates: Partial<MediaItem>) => {
     const previous = media;
     setMedia((current) => current.map((item) => (item.id === id ? { ...item, ...updates } : item)));
-    const res = await fetch(`/api/archives/${archive.id}/media/${id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ownerToken || ''}`
-      },
-      body: JSON.stringify(updates)
-    });
-    if (!res.ok) {
+    try {
+      await saveWithRetry(async () => {
+        const res = await fetch(`/api/archives/${archive.id}/media/${id}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken || ''}`
+          },
+          body: JSON.stringify(updates)
+        });
+        if (!res.ok) throw new Error(await responseError(res, 'Could not save this media item.'));
+        const data = await res.json();
+        if (data.item) setMedia((current) => current.map((item) => (item.id === id ? data.item : item)));
+      });
+    } catch {
       setMedia(previous);
-      setSaveStatus('error');
-      return;
     }
-    const data = await res.json();
-    if (data.item) setMedia((current) => current.map((item) => (item.id === id ? data.item : item)));
-    setSaveStatus('saved');
   };
 
   const handleDeleteMedia = async (id: string) => {
-    await fetch(`/api/archives/${archive.id}/media/${id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${ownerToken || ''}` }
-    });
-    setMedia(media.filter((m) => m.id !== id));
+    await saveWithRetry(async () => {
+      const response = await fetch(`/api/archives/${archive.id}/media/${id}`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${ownerToken || ''}` }
+      });
+      if (!response.ok) throw new Error(await responseError(response, 'Could not delete this media item.'));
+      setMedia((current) => current.filter((item) => item.id !== id));
+    }).catch(() => undefined);
   };
 
   const handleAddWallPost = async (wallData: Partial<WallPost>) => {
-    const res = await fetch(`/api/archives/${archive.id}/wall`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ownerToken || ''}`
-      },
-      body: JSON.stringify(wallData)
+    await saveWithRetry(async () => {
+      const res = await fetch(`/api/archives/${archive.id}/wall`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken || ''}` },
+        body: JSON.stringify(wallData)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success || !data.post) throw new Error(data.error || 'Could not post this memory.');
+      setWall((current) => current.some((post) => post.id === data.post.id) ? current : [data.post, ...current]);
     });
-    const data = await res.json();
-    if (data.success && data.post) {
-      setWall([data.post, ...wall]);
-    }
   };
 
   const handleDeleteWallPost = async (id: string) => {
-    await fetch(`/api/archives/${archive.id}/wall/${id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${ownerToken || ''}` }
-    });
-    setWall(wall.filter((w) => w.id !== id));
+    await saveWithRetry(async () => {
+      const response = await fetch(`/api/archives/${archive.id}/wall/${id}`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${ownerToken || ''}` }
+      });
+      if (!response.ok) throw new Error(await responseError(response, 'Could not delete this wall post.'));
+      setWall((current) => current.filter((post) => post.id !== id));
+    }).catch(() => undefined);
   };
 
   const handleToggleHideWallPost = async (id: string, isHidden: boolean) => {
-    await fetch(`/api/archives/${archive.id}/wall/${id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ownerToken || ''}`
-      },
-      body: JSON.stringify({ isHidden })
-    });
-    setWall(wall.map((w) => (w.id === id ? { ...w, isHidden } : w)));
+    await saveWithRetry(async () => {
+      const response = await fetch(`/api/archives/${archive.id}/wall/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken || ''}` },
+        body: JSON.stringify({ isHidden })
+      });
+      if (!response.ok) throw new Error(await responseError(response, 'Could not update this wall post.'));
+      setWall((current) => current.map((post) => (post.id === id ? { ...post, isHidden } : post)));
+    }).catch(() => undefined);
   };
 
   const updateAccessPin = async (field: 'editorPin' | 'viewerPin', pin: string) => {
-    const response = await fetch(`/api/archives/${archive.id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ownerToken || ''}`
-      },
-      body: JSON.stringify({ [field]: pin })
+    await saveWithRetry(async () => {
+      const response = await fetch(`/api/archives/${archive.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken || ''}`
+        },
+        body: JSON.stringify({ [field]: pin })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Could not update PIN.');
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'Could not update PIN.');
   };
 
   return (
@@ -422,11 +541,11 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
                 {saveStatus === 'error' && (
                   <button
                     type="button"
-                    onClick={() => retrySaveRef.current?.()}
-                    className="min-h-7 px-2 rounded-md text-amber-300 bg-amber-400/10 hover:bg-amber-400/20 underline underline-offset-2"
+                    onClick={() => void runRetry()}
+                    className="min-h-8 px-2.5 rounded-md text-amber-200 bg-amber-400/15 hover:bg-amber-400/25 border border-amber-400/30 font-semibold"
                     title="Retry the last failed save"
                   >
-                    Save failed · Retry now
+                    Save failed · Retry{retryCount ? ` (${retryCount})` : ''}
                   </button>
                 )}
               </span>
@@ -467,7 +586,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
 
         {/* Right: AI Analyzer, History & Choose Domain / Deploy button */}
         <div className="flex items-center gap-1.5 sm:gap-2.5 flex-shrink-0">
-          <button
+          {aiAvailable && <button
             type="button"
             onClick={() => setIsImageAnalyzerOpen(true)}
             className="hidden lg:flex p-2 rounded-xl text-purple-200 hover:text-white bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/40 text-xs font-semibold items-center gap-1.5 cursor-pointer shadow-sm transition-all"
@@ -475,7 +594,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
           >
             <Camera className="w-4 h-4 text-purple-400" />
             <span className="hidden md:inline">AI Analyzer</span>
-          </button>
+          </button>}
 
           <button
             onClick={() => setIsAccessHistoryModalOpen(true)}
@@ -524,6 +643,23 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
         </div>
 
       </header>
+
+      {saveStatus === 'error' && (
+        <div role="alert" aria-live="assertive" className="z-40 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-rose-400/30 bg-rose-950/95 px-4 py-2.5 text-sm text-rose-100">
+          <div>
+            <span className="font-semibold">Not saved yet.</span>{' '}
+            {saveError || 'The server did not confirm durable storage.'} Your work remains open on this screen. Do not close this tab.
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button type="button" onClick={() => void runRetry()} className="min-h-11 rounded-xl bg-amber-400 px-4 font-bold text-neutral-950 hover:brightness-110 disabled:opacity-50">
+              Retry save now
+            </button>
+            <button type="button" onClick={() => window.location.reload()} className="min-h-11 rounded-xl border border-white/20 px-4 font-semibold text-white hover:bg-white/10" title="Reload only after retrying; the browser will warn if changes are still unsaved">
+              Refresh page
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Mobile / Tablet Studio Navigation Switcher Tab Bar */}
       <nav aria-label="Mobile editor" className="lg:hidden fixed inset-x-0 bottom-0 flex items-center justify-around bg-neutral-900/95 border-t border-white/10 px-2 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] z-50 backdrop-blur-xl shadow-[0_-12px_30px_rgba(0,0,0,.45)]">
@@ -817,6 +953,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
             media={media}
             wall={wall}
             ownerToken={ownerToken}
+            aiAvailable={aiAvailable}
             onOpenAccessHistory={() => setIsAccessHistoryModalOpen(true)}
             onChangeEditorPin={(pin) => updateAccessPin('editorPin', pin)}
             onChangeViewerPin={(pin) => updateAccessPin('viewerPin', pin)}
@@ -887,7 +1024,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
       />
 
       {/* Multimodal AI Image & Note Analyzer Modal */}
-      {isImageAnalyzerOpen && (
+      {aiAvailable && isImageAnalyzerOpen && (
         <ImageAnalyzerModal
           isOpen={isImageAnalyzerOpen}
           onClose={() => setIsImageAnalyzerOpen(false)}
