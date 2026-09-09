@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, lazy, useState, useEffect } from 'react';
 import { resolveTenantContext } from './lib/tenant';
 import { Archive, Section, TimelineEvent, Member, MediaItem, WallPost, Album, ThemeId, ArchiveType } from './types';
 import { PlatformNavbar } from './components/PlatformNavbar';
@@ -9,14 +9,15 @@ import { FeaturesSection } from './components/landing/FeaturesSection';
 import { HowItWorksSection } from './components/landing/HowItWorksSection';
 import { ExploreArchivesSection } from './components/landing/ExploreArchivesSection';
 import { AttributionFooter } from './components/AttributionFooter';
-import { CreateArchiveFlow } from './components/creation/CreateArchiveFlow';
-import { DemoSelectorModal } from './components/common/DemoSelectorModal';
-import { KeyAccessModal } from './components/common/KeyAccessModal';
-import { ArchiveEditor } from './components/editor/ArchiveEditor';
-import { ArchivePublicView } from './components/archive/ArchivePublicView';
-import { OwnerTools } from './components/owner/OwnerTools';
 import { SessionStorage } from './lib/security';
 import { AlertCircle, Lock, ArrowLeft } from 'lucide-react';
+
+const ArchiveEditor = lazy(() => import('./components/editor/ArchiveEditor').then((module) => ({ default: module.ArchiveEditor })));
+const ArchivePublicView = lazy(() => import('./components/archive/ArchivePublicView').then((module) => ({ default: module.ArchivePublicView })));
+const CreateArchiveFlow = lazy(() => import('./components/creation/CreateArchiveFlow').then((module) => ({ default: module.CreateArchiveFlow })));
+const DemoSelectorModal = lazy(() => import('./components/common/DemoSelectorModal').then((module) => ({ default: module.DemoSelectorModal })));
+const KeyAccessModal = lazy(() => import('./components/common/KeyAccessModal').then((module) => ({ default: module.KeyAccessModal })));
+const OwnerTools = lazy(() => import('./components/owner/OwnerTools').then((module) => ({ default: module.OwnerTools })));
 
 export default function App() {
   // Platform navigation & routing state
@@ -247,6 +248,7 @@ export default function App() {
       || undefined;
 
     return (
+      <Suspense fallback={<div className="h-screen w-full bg-neutral-950 flex items-center justify-center text-sm text-neutral-300">Opening the studio…</div>}>
       <ArchiveEditor
         initialArchive={activeArchiveData.archive}
         initialSections={activeArchiveData.sections}
@@ -258,6 +260,7 @@ export default function App() {
         ownerToken={ownerToken}
         onExitToPlatform={() => navigateTo('/')}
       />
+      </Suspense>
     );
   }
 
@@ -385,6 +388,7 @@ export default function App() {
     const currentOwnerToken = activeArchiveData ? (SessionStorage.getOwnerToken(activeArchiveData.archive.id) || undefined) : undefined;
 
     return (
+      <Suspense fallback={<div className="h-screen w-full bg-neutral-950 flex items-center justify-center text-sm text-neutral-300">Opening the archive…</div>}>
       <ArchivePublicView
         archive={activeArchiveData.archive}
         sections={activeArchiveData.sections}
@@ -400,13 +404,14 @@ export default function App() {
           setIsCreateModalOpen(true);
         }}
       />
+      </Suspense>
     );
   }
 
   // 3. MAIN ONCEHERE PLATFORM LANDING PAGE
   if (isPlatformAdminMode) {
     if (platformAdminKey) {
-      return <OwnerTools ownerKey={platformAdminKey} onClose={() => { window.location.href = '/'; }} />;
+      return <Suspense fallback={null}><OwnerTools ownerKey={platformAdminKey} onClose={() => { window.location.href = '/'; }} /></Suspense>;
     }
     return <div className="min-h-screen bg-neutral-950 text-white flex items-center justify-center p-6 text-center"><div><h1 className="font-serif text-2xl font-bold">Owner access locked</h1><p className="text-sm text-neutral-400 mt-2">Reload this private page and enter the correct owner key.</p></div></div>;
   }
@@ -473,25 +478,25 @@ export default function App() {
       <AttributionFooter />
 
       {/* 5-Step Archive Creation Flow Wizard */}
-      <CreateArchiveFlow
+      <Suspense fallback={null}><CreateArchiveFlow
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
         onArchiveCreated={handleArchiveCreated}
         initialType={creationInitialType}
         initialTheme={creationInitialTheme}
-      />
+      /></Suspense>
 
       {/* Interactive Demo Archive Selector Modal */}
-      <DemoSelectorModal
+      <Suspense fallback={null}><DemoSelectorModal
         isOpen={isDemoModalOpen}
         onClose={() => setIsDemoModalOpen(false)}
         onSelectDemo={(slug) => {
           navigateTo(`/s/${slug}`);
         }}
-      />
+      /></Suspense>
 
       {/* Key Access & PIN Recovery Modal */}
-      <KeyAccessModal
+      <Suspense fallback={null}><KeyAccessModal
         isOpen={isKeyAccessModalOpen}
         onClose={() => setIsKeyAccessModalOpen(false)}
         onSuccess={(archive, workspaceSlug, token) => {
@@ -501,7 +506,7 @@ export default function App() {
           }
           navigateTo(`/workspace/${workspaceSlug}`);
         }}
-      />
+      /></Suspense>
 
     </div>
   );
