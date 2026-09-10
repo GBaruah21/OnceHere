@@ -25,7 +25,6 @@ import { sanitizeSlug, validateSlug } from '../src/lib/tenant';
 import { evaluatePin } from '../src/lib/security';
 import { PLATFORM_CONFIG } from '../src/config/platform';
 
-import { analyzeMemoryImage } from './ai';
 import {
   R2_LIMITS,
   createObjectKey,
@@ -510,26 +509,6 @@ apiRouter.get('/archives/by-workspace/:workspaceSlug', (req: Request, res: Respo
     albums,
     accessRole: auth.role
   });
-});
-
-// AI Multimodal Memory Image Analyzer
-apiRouter.get('/ai/status', (_req: Request, res: Response) => {
-  return res.json({ available: Boolean(process.env.GEMINI_API_KEY?.trim()) });
-});
-
-apiRouter.post('/ai/analyze-image', async (req: Request, res: Response) => {
-  try {
-    const { image, contextHint, archiveType } = req.body;
-    if (!image || typeof image !== 'string') {
-      return res.status(400).json({ error: 'Image data or URL is required.' });
-    }
-
-    const analysis = await analyzeMemoryImage(image, contextHint, archiveType);
-    return res.json({ success: true, analysis });
-  } catch (error: any) {
-    console.error('Failed to analyze image with AI:', error);
-    return res.status(500).json({ error: error.message || 'Failed to analyze memory image.' });
-  }
 });
 
 // Lookup archive by ID
