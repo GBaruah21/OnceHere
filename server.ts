@@ -24,6 +24,7 @@ async function startServer() {
     res.json({
       status: 'healthy',
       platform: PLATFORM_CONFIG.name,
+      buildCommit: process.env.RENDER_GIT_COMMIT || process.env.VERCEL_GIT_COMMIT_SHA || process.env.COMMIT_SHA || 'local',
       durableStorage: db.hasDurableStorage() ? 'configured' : 'not-configured',
       timestamp: new Date().toISOString()
     });
