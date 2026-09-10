@@ -153,6 +153,8 @@ export const DeployModal: React.FC<DeployModalProps> = ({
 
   // Perform Final Deployment
   const handleDeploy = async () => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 30_000);
     try {
       setIsDeploying(true);
       setDeployError(null);
@@ -169,7 +171,8 @@ export const DeployModal: React.FC<DeployModalProps> = ({
         body: JSON.stringify({
           finalSlug: clean,
           customDomain: addressType === 'custom' ? customDomainInput : undefined
-        })
+        }),
+        signal: controller.signal
       });
 
       const data = await res.json();
@@ -195,8 +198,11 @@ export const DeployModal: React.FC<DeployModalProps> = ({
       onDeploySuccess(data.archive);
       setModalTab('configure');
     } catch (err: any) {
-      setDeployError(err.message || 'Deployment failed. Please check your slug and try again.');
+      setDeployError(err?.name === 'AbortError'
+        ? 'Deployment took too long. Your archive is still a safe draft; retry when the connection is stable.'
+        : err.message || 'Deployment failed. Your archive is still a safe draft; try again.');
     } finally {
+      window.clearTimeout(timeout);
       setIsDeploying(false);
     }
   };
@@ -465,15 +471,12 @@ export const DeployModal: React.FC<DeployModalProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => setAddressType('custom')}
-                      className={`p-3 rounded-xl border text-left text-xs transition-all cursor-pointer ${
-                        addressType === 'custom'
-                          ? 'bg-amber-500/15 border-amber-400 text-white font-medium'
-                          : 'bg-white/5 border-white/10 text-neutral-400 hover:bg-white/10'
-                      }`}
+                      disabled
+                      title="Custom domains are disabled until verified DNS automation is configured"
+                      className="p-3 rounded-xl border text-left text-xs bg-white/[0.03] border-white/10 text-neutral-500 opacity-70 cursor-not-allowed"
                     >
-                      <div className="font-bold text-white mb-0.5">3. Custom Domain</div>
-                      <div className="font-mono text-[11px] text-emerald-400">memories.school.edu</div>
+                      <div className="font-bold text-neutral-300 mb-0.5">3. Custom Domain</div>
+                      <div className="font-mono text-[11px]">Not configured yet</div>
                     </button>
                   </div>
                 </div>
@@ -581,9 +584,21 @@ export const DeployModal: React.FC<DeployModalProps> = ({
 
                 {/* Error banner if deploy failed */}
                 {deployError && (
-                  <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2.5">
+                  <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-3">
                     <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                    <span>{deployError}</span>
+                    <div className="flex-1">
+                      <div>{deployError}</div>
+                      <div className="mt-1 text-rose-200/75">Nothing was published and this window can stay open.</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeploy()}
+                      disabled={isDeploying || !isSlugAvailable}
+                      className="min-h-11 px-3 rounded-xl bg-rose-400/15 hover:bg-rose-400/25 border border-rose-300/30 font-semibold disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isDeploying ? 'animate-spin' : ''}`} />
+                      Retry deploy
+                    </button>
                   </div>
                 )}
 

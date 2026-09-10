@@ -14,7 +14,6 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1127.0",
     "@aws-sdk/s3-request-presigner": "^3.1127.0",
-    "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "bcryptjs": "^3.0.3",
@@ -41,5 +40,8 @@
     "typescript": "~5.8.2",
     "vite": "^6.2.3",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "qs": "^6.16.0"
   }
 }

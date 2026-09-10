@@ -16,7 +16,6 @@ import { AttributionFooter } from '../AttributionFooter';
 import { SocialShareModal } from './SocialShareModal';
 import { PreConfiguredShareBar } from './PreConfiguredShareBar';
 import { InstagramStoryModal } from './InstagramStoryModal';
-import { ImageAnalyzerModal } from '../common/ImageAnalyzerModal';
 import { LazyImage } from '../common/LazyImage';
 import { TimelineSectionView } from './TimelineSectionView';
 import { useDynamicArchiveMeta } from '../../hooks/useDynamicArchiveMeta';
@@ -50,7 +49,6 @@ import {
   ArrowUpDown,
   Clock,
   Flame,
-  Camera,
   LayoutGrid,
   Grid3X3,
   SlidersHorizontal,
@@ -598,7 +596,6 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   });
   const [likedPosts, setLikedPosts] = useState<Set<string>>(new Set());
   const [isAddingNote, setIsAddingNote] = useState(false);
-  const [isImageAnalyzerOpen, setIsImageAnalyzerOpen] = useState(false);
   const [newNoteAuthor, setNewNoteAuthor] = useState('');
   const [newNoteText, setNewNoteText] = useState('');
   const [newNoteRole, setNewNoteRole] = useState('');
@@ -2835,25 +2832,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
         defaultMode={instagramMode}
       />
 
-      {/* 9. AI MULTIMODAL IMAGE & NOTE ANALYZER MODAL */}
-      {isImageAnalyzerOpen && (
-        <ImageAnalyzerModal
-          isOpen={isImageAnalyzerOpen}
-          onClose={() => setIsImageAnalyzerOpen(false)}
-          archiveType={archive.archiveType}
-          themeId={archive.themeId}
-          onApplyToWall={(text) => {
-            setNewNoteText(text);
-            setIsImageAnalyzerOpen(false);
-          }}
-          onApplyToVault={(url, caption) => {
-            setNewNoteText(caption ? `${caption}` : 'A photo memory!');
-            setIsImageAnalyzerOpen(false);
-          }}
-        />
-      )}
-
-      {/* 10. CENTRALIZED MANDATORY ATTRIBUTION FOOTER */}
+      {/* 9. CENTRALIZED MANDATORY ATTRIBUTION FOOTER */}
       <AttributionFooter themeId={archive.themeId} />
 
     </div>

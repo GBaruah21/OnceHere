@@ -5,8 +5,26 @@ import { compressImageForUpload, IMAGE_SOURCE_LIMIT_BYTES, VIDEO_SOURCE_LIMIT_BY
 
 type UploadPhase = 'optimizing' | 'authorizing' | 'direct' | 'fallback';
 
+const DIRECT_UPLOAD_COOLDOWN_KEY = 'oncehere-direct-upload-cooldown-until';
+
+function directUploadIsCoolingDown(): boolean {
+  try {
+    return Number(sessionStorage.getItem(DIRECT_UPLOAD_COOLDOWN_KEY) || 0) > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+function pauseDirectUploads(): void {
+  try {
+    sessionStorage.setItem(DIRECT_UPLOAD_COOLDOWN_KEY, String(Date.now() + 5 * 60_000));
+  } catch {
+    // Storage may be disabled; the upload fallback still remains available.
+  }
+}
+
 export function directUploadTimeoutMs(file: Pick<File, 'size' | 'type'>): number {
-  if (file.type.startsWith('image/')) return 8_000;
+  if (file.type.startsWith('image/')) return 4_000;
   // Videos get more time, scaled for slower mobile connections, but a stalled
   // storage request must still hand off to the same-origin fallback promptly.
   return Math.min(90_000, Math.max(30_000, Math.ceil(file.size / (256 * 1024)) * 1_000));
@@ -30,9 +48,13 @@ function uploadBytes(
     // This is an inactivity deadline, not a total transfer deadline. Progressing
     // mobile uploads must not be discarded and uploaded a second time.
     let idleTimer: ReturnType<typeof setTimeout>;
+    let timedOut = false;
     const resetDeadline = () => {
       clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => xhr.abort(), timeoutMs);
+      idleTimer = setTimeout(() => {
+        timedOut = true;
+        xhr.abort();
+      }, timeoutMs);
     };
     xhr.onloadend = () => clearTimeout(idleTimer);
     Object.entries(headers).forEach(([name, value]) => xhr.setRequestHeader(name, value));
@@ -43,7 +65,7 @@ function uploadBytes(
     xhr.onload = () => resolve({ status: xhr.status, responseText: xhr.responseText });
     xhr.onerror = () => reject(new Error('The upload connection failed.'));
     xhr.ontimeout = () => reject(new Error('The upload connection timed out.'));
-    xhr.onabort = () => reject(new Error('The upload was cancelled.'));
+    xhr.onabort = () => reject(new Error(timedOut ? 'The upload connection timed out.' : 'The upload was cancelled.'));
     resetDeadline();
     xhr.send(file);
   });
@@ -229,10 +251,18 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         // through Render. If bucket CORS is not ready, retain the same-origin proxy
         // as a compatibility fallback instead of losing the user's selection.
         let completed;
-        try {
-          completed = await uploadDirectly(uploadFile);
-        } catch {
+        if (directUploadIsCoolingDown()) {
           completed = await uploadThroughServer(uploadFile);
+        } else {
+          try {
+            completed = await uploadDirectly(uploadFile);
+          } catch {
+            // Browser-to-storage failures normally affect every file in the tab.
+            // Remember the failure briefly instead of imposing the same wait on
+            // every following file before switching to the compatible path.
+            pauseDirectUploads();
+            completed = await uploadThroughServer(uploadFile);
+          }
         }
         const analysisDataUrl = await analysisDataUrlPromise;
         onChange(completed.url, completed.type, {

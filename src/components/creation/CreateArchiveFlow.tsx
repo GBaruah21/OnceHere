@@ -14,7 +14,6 @@ import {
   EyeOff,
   Wand2,
   Lightbulb,
-  Camera,
   Layers,
   Palette,
   Check
@@ -24,7 +23,6 @@ import { THEMES, getTheme } from '../../config/themes';
 import { evaluatePin, generateRecoveryKey, downloadRecoveryKeyFile, SessionStorage } from '../../lib/security';
 import { ARCHIVE_SUGGESTIONS } from '../../config/suggestions';
 import { PLATFORM_CONFIG } from '../../config/platform';
-import { ImageAnalyzerModal } from '../common/ImageAnalyzerModal';
 import { ThemeInteractiveBackdrop } from '../common/ThemeInteractiveBackdrop';
 
 interface CreateArchiveFlowProps {
@@ -66,9 +64,6 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
   const [showPin, setShowPin] = useState(false);
   const [viewerPin, setViewerPin] = useState('');
   const [confirmViewerPin, setConfirmViewerPin] = useState('');
-
-  // Image Analyzer Modal State
-  const [isImageAnalyzerOpen, setIsImageAnalyzerOpen] = useState(false);
 
   // Generated Recovery Key
   const [recoveryKey, setRecoveryKey] = useState<string>(() => generateRecoveryKey());
@@ -278,17 +273,9 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
                 <div className="p-3 sm:p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
                   <div className="flex items-center gap-2 text-xs text-amber-300">
                     <Lightbulb className="w-4 h-4 text-amber-400 flex-shrink-0" />
-                    <span>Click any suggestion below, auto-fill samples, or analyze a photo!</span>
+                    <span>Choose a suggestion below or auto-fill a sample you can edit.</span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setIsImageAnalyzerOpen(true)}
-                      className="flex-1 sm:flex-none px-3 py-1.5 rounded-xl bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 border border-purple-400/40 text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
-                    >
-                      <Camera className="w-3.5 h-3.5 text-purple-400" />
-                      <span>📸 AI Photo Analyzer</span>
-                    </button>
                     <button
                       type="button"
                       onClick={handleApplySampleProfile}
@@ -1035,23 +1022,6 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
         </div>
       </div>
 
-      {/* AI Image Analyzer Modal Launcher from Step 2 */}
-      {isImageAnalyzerOpen && (
-        <ImageAnalyzerModal
-          isOpen={isImageAnalyzerOpen}
-          onClose={() => setIsImageAnalyzerOpen(false)}
-          archiveType={archiveType}
-          onApplyToVault={(url, caption) => {
-            if (!title) setTitle(caption.slice(0, 40));
-            if (!subtitle) setSubtitle(caption);
-            setIsImageAnalyzerOpen(false);
-          }}
-          onApplyToWall={(text) => {
-            if (!subtitle) setSubtitle(text);
-            setIsImageAnalyzerOpen(false);
-          }}
-        />
-      )}
     </>
   );
 };
