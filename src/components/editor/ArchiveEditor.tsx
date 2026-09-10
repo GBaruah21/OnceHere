@@ -27,7 +27,6 @@ import {
   ArrowLeft,
   Layout,
   Plus,
-  Camera,
   Edit3,
   SlidersHorizontal,
   ShieldCheck
@@ -36,7 +35,6 @@ import { SectionSettingsPanel } from './SectionSettingsPanel';
 import { DeployModal } from './DeployModal';
 import { RevisionsModal } from './RevisionsModal';
 import { AccessHistoryModal } from './AccessHistoryModal';
-import { ImageAnalyzerModal } from '../common/ImageAnalyzerModal';
 import { ArchivePublicView } from '../archive/ArchivePublicView';
 import { AttributionFooter } from '../AttributionFooter';
 import { PLATFORM_CONFIG } from '../../config/platform';
@@ -71,6 +69,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
   const [members, setMembers] = useState<Member[]>(initialMembers);
   const [media, setMedia] = useState<MediaItem[]>(initialMedia);
   const [wall, setWall] = useState<WallPost[]>(initialWall);
+  const [albums, setAlbums] = useState<Album[]>(initialAlbums);
 
   // Active section or settings tab in right inspector
   const [activeTab, setActiveTab] = useState<string>(() => initialSections[0]?.id || 'theme');
@@ -88,8 +87,6 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
   const [deployModalInitialTab, setDeployModalInitialTab] = useState<'configure' | 'preview'>('configure');
   const [isRevisionsModalOpen, setIsRevisionsModalOpen] = useState(false);
   const [isAccessHistoryModalOpen, setIsAccessHistoryModalOpen] = useState(false);
-  const [isImageAnalyzerOpen, setIsImageAnalyzerOpen] = useState(false);
-  const [aiAvailable, setAiAvailable] = useState(false);
 
   // Save states
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
@@ -98,15 +95,6 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
   const didMountAutosave = useRef(false);
   const retrySaveRef = useRef<null | (() => Promise<void>)>(null);
   const archiveDraftKey = `oncehere-unsaved-${initialArchive.id}`;
-
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch('/api/ai/status', { signal: controller.signal })
-      .then((response) => response.ok ? response.json() : { available: false })
-      .then((result) => setAiAvailable(Boolean(result.available)))
-      .catch(() => setAiAvailable(false));
-    return () => controller.abort();
-  }, []);
 
   const responseError = async (response: Response, fallback: string) => {
     const data = await response.json().catch(() => ({}));
@@ -149,9 +137,23 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
     try {
       const stored = localStorage.getItem(archiveDraftKey);
       if (!stored) return;
-      const recovered = JSON.parse(stored) as { archive?: Archive };
+      const recovered = JSON.parse(stored) as {
+        archive?: Archive;
+        sections?: Section[];
+        timeline?: TimelineEvent[];
+        members?: Member[];
+        media?: MediaItem[];
+        wall?: WallPost[];
+        albums?: Album[];
+      };
       if (recovered.archive && window.confirm('OnceHere found archive settings that were not confirmed as saved. Restore them on this device?')) {
         setArchive((current) => ({ ...current, ...recovered.archive, id: current.id }));
+        if (Array.isArray(recovered.sections)) setSections(recovered.sections);
+        if (Array.isArray(recovered.timeline)) setTimeline(recovered.timeline);
+        if (Array.isArray(recovered.members)) setMembers(recovered.members);
+        if (Array.isArray(recovered.media)) setMedia(recovered.media);
+        if (Array.isArray(recovered.wall)) setWall(recovered.wall);
+        if (Array.isArray(recovered.albums)) setAlbums(recovered.albums);
       }
     } catch {
       localStorage.removeItem(archiveDraftKey);
@@ -161,11 +163,20 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
   useEffect(() => {
     if (!didMountAutosave.current || saveStatus === 'saved') return;
     try {
-      localStorage.setItem(archiveDraftKey, JSON.stringify({ archive, savedAt: new Date().toISOString() }));
+      localStorage.setItem(archiveDraftKey, JSON.stringify({
+        archive,
+        sections,
+        timeline,
+        members,
+        media,
+        wall,
+        albums,
+        savedAt: new Date().toISOString()
+      }));
     } catch {
       // The server remains the source of truth; device recovery is best effort.
     }
-  }, [archive, archiveDraftKey, saveStatus]);
+  }, [albums, archive, archiveDraftKey, media, members, saveStatus, sections, timeline, wall]);
 
   useEffect(() => {
     const warnBeforeRefresh = (event: BeforeUnloadEvent) => {
@@ -545,7 +556,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
                     className="min-h-8 px-2.5 rounded-md text-amber-200 bg-amber-400/15 hover:bg-amber-400/25 border border-amber-400/30 font-semibold"
                     title="Retry the last failed save"
                   >
-                    Save failed · Retry{retryCount ? ` (${retryCount})` : ''}
+                    Save failed · Retry or refresh{retryCount ? ` (${retryCount})` : ''}
                   </button>
                 )}
               </span>
@@ -584,18 +595,8 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
           </button>
         </div>
 
-        {/* Right: AI Analyzer, History & Choose Domain / Deploy button */}
+        {/* Right: History & Choose Domain / Deploy button */}
         <div className="flex items-center gap-1.5 sm:gap-2.5 flex-shrink-0">
-          {aiAvailable && <button
-            type="button"
-            onClick={() => setIsImageAnalyzerOpen(true)}
-            className="hidden lg:flex p-2 rounded-xl text-purple-200 hover:text-white bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/40 text-xs font-semibold items-center gap-1.5 cursor-pointer shadow-sm transition-all"
-            title="AI Multimodal Photo & Note Analyzer"
-          >
-            <Camera className="w-4 h-4 text-purple-400" />
-            <span className="hidden md:inline">AI Analyzer</span>
-          </button>}
-
           <button
             onClick={() => setIsAccessHistoryModalOpen(true)}
             className="hidden lg:flex p-2 rounded-xl text-emerald-300 hover:text-white bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-xs font-medium items-center gap-1.5 cursor-pointer shadow-sm transition-all"
@@ -648,13 +649,15 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
         <div role="alert" aria-live="assertive" className="z-40 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-rose-400/30 bg-rose-950/95 px-4 py-2.5 text-sm text-rose-100">
           <div>
             <span className="font-semibold">Not saved yet.</span>{' '}
-            {saveError || 'The server did not confirm durable storage.'} Your work remains open on this screen. Do not close this tab.
+            {saveError || 'The server did not confirm durable storage.'} Retry once. If it still fails, refresh the page. A recovery copy of the editor state is saved on this device.
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button type="button" onClick={() => void runRetry()} className="min-h-11 rounded-xl bg-amber-400 px-4 font-bold text-neutral-950 hover:brightness-110 disabled:opacity-50">
               Retry save now
             </button>
-            <button type="button" onClick={() => window.location.reload()} className="min-h-11 rounded-xl border border-white/20 px-4 font-semibold text-white hover:bg-white/10" title="Reload only after retrying; the browser will warn if changes are still unsaved">
+            <button type="button" onClick={() => {
+              if (window.confirm('Refresh OnceHere now? The editor recovery copy will be offered after the page reloads.')) window.location.reload();
+            }} className="min-h-11 rounded-xl border border-white/20 px-4 font-semibold text-white hover:bg-white/10" title="Refresh the page and restore the on-device recovery copy">
               Refresh page
             </button>
           </div>
@@ -814,8 +817,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
 
           {/* Footer of left sidebar */}
           <div className="p-4 pb-6 border-t border-white/10 bg-neutral-950/60 text-[11px] text-neutral-400 space-y-3">
-            <div className="grid grid-cols-3 gap-2 lg:hidden">
-              <button type="button" onClick={() => setIsImageAnalyzerOpen(true)} className="min-h-11 rounded-xl bg-purple-500/15 border border-purple-400/30 text-purple-200 flex flex-col items-center justify-center gap-1"><Camera className="w-4 h-4" /><span>AI</span></button>
+            <div className="grid grid-cols-2 gap-2 lg:hidden">
               <button type="button" onClick={() => setIsAccessHistoryModalOpen(true)} className="min-h-11 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-200 flex flex-col items-center justify-center gap-1"><ShieldCheck className="w-4 h-4" /><span>Access</span></button>
               <button type="button" onClick={() => setIsRevisionsModalOpen(true)} className="min-h-11 rounded-xl bg-white/5 border border-white/10 text-neutral-200 flex flex-col items-center justify-center gap-1"><History className="w-4 h-4" /><span>History</span></button>
             </div>
@@ -927,7 +929,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
                 members={members}
                 media={media}
                 wall={wall}
-                albums={initialAlbums}
+                albums={albums}
                 ownerToken={ownerToken}
                 isPreviewMode={true}
                 focusedSectionId={activeTab}
@@ -953,7 +955,6 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
             media={media}
             wall={wall}
             ownerToken={ownerToken}
-            aiAvailable={aiAvailable}
             onOpenAccessHistory={() => setIsAccessHistoryModalOpen(true)}
             onChangeEditorPin={(pin) => updateAccessPin('editorPin', pin)}
             onChangeViewerPin={(pin) => updateAccessPin('viewerPin', pin)}
@@ -997,7 +998,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
         members={members}
         media={media}
         wall={wall}
-        albums={initialAlbums}
+        albums={albums}
         ownerToken={ownerToken}
         onDeploySuccess={(updated) => setArchive(updated)}
       />
@@ -1022,46 +1023,6 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
             });
         }}
       />
-
-      {/* Multimodal AI Image & Note Analyzer Modal */}
-      {aiAvailable && isImageAnalyzerOpen && (
-        <ImageAnalyzerModal
-          isOpen={isImageAnalyzerOpen}
-          onClose={() => setIsImageAnalyzerOpen(false)}
-          archiveType={archive.archiveType}
-          themeId={archive.themeId}
-          onApplyToVault={(url, caption, tags) => {
-            handleAddMedia({
-              url,
-              caption: caption || undefined,
-              tags: tags || undefined
-            });
-            setIsImageAnalyzerOpen(false);
-          }}
-          onApplyToMember={(quote, role, url) => {
-            handleAddMember({
-              name: 'Classmate',
-              imageUrl: url,
-              groupLabel: role || undefined,
-              quote: quote || undefined
-            });
-            setIsImageAnalyzerOpen(false);
-          }}
-          onApplyToTimeline={(title, desc, url, icon) => {
-            handleAddTimelineEvent({
-              title,
-              yearLabel: String(new Date().getFullYear()),
-              description: desc,
-              mediaUrl: url || undefined,
-              icon: icon || '📸'
-            });
-            setIsImageAnalyzerOpen(false);
-          }}
-          onApplyToWall={(text) => {
-            setIsImageAnalyzerOpen(false);
-          }}
-        />
-      )}
 
     </div>
   );
