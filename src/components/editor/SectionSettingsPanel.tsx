@@ -28,7 +28,6 @@ import {
   Download,
   Lightbulb,
   Wand2,
-  Camera,
   RefreshCw,
   Clock,
   Laptop,
@@ -58,7 +57,6 @@ import {
   MEDIA_CAPTION_SUGGESTIONS,
   CLOSING_SUGGESTIONS
 } from '../../config/suggestions';
-import { ImageAnalyzerModal, ImageAnalysisData } from '../common/ImageAnalyzerModal';
 import { MediaUploader } from '../common/MediaUploader';
 
 interface SectionSettingsPanelProps {
@@ -183,7 +181,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
 
   const [newMediaUrl, setNewMediaUrl] = useState('');
-  const [newMediaAnalysisSource, setNewMediaAnalysisSource] = useState('');
   const [newMediaCaption, setNewMediaCaption] = useState('');
   const [newMediaType, setNewMediaType] = useState<'image' | 'video'>('image');
   const [newMediaStorage, setNewMediaStorage] = useState<{
@@ -193,15 +190,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
     thumbnailUrl?: string;
     thumbnailStorageKey?: string;
   }>({});
-  const [newMediaHint, setNewMediaHint] = useState('');
   const [newMediaTags, setNewMediaTags] = useState('');
-  const [autoAiOnUpload, setAutoAiOnUpload] = useState(false);
-  const mediaAnalysisRequest = useRef(0);
-  const [isAiAnalyzingMedia, setIsAiAnalyzingMedia] = useState(false);
-  const [aiSuggestedNotes, setAiSuggestedNotes] = useState<Array<{ id: string; authorName: string; text: string; selected: boolean }>>([]);
-  const [aiDetectedMood, setAiDetectedMood] = useState<string | null>(null);
-  const [aiTags, setAiTags] = useState<string[]>([]);
-  const [aiAnalysisError, setAiAnalysisError] = useState<string | null>(null);
   const [mediaSaveError, setMediaSaveError] = useState<string | null>(null);
   const [isSavingMedia, setIsSavingMedia] = useState(false);
   const [editingMediaId, setEditingMediaId] = useState<string | null>(null);
@@ -216,11 +205,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   const [newWallRole, setNewWallRole] = useState('');
   const [newWallText, setNewWallText] = useState('');
   const [newWallImg, setNewWallImg] = useState('');
-
-  // Image Analyzer Modal State & Target
-  const [isAnalyzerOpen, setIsAnalyzerOpen] = useState(false);
-  const [analyzerTarget, setAnalyzerTarget] = useState<'media' | 'member' | 'timeline' | 'wall'>('media');
-  const [analyzerEditingMediaId, setAnalyzerEditingMediaId] = useState<string | null>(null);
 
   const parseTags = (value: string) => Array.from(new Set(
     value.split(',').map((tag) => tag.trim().replace(/^#/, '')).filter(Boolean)
@@ -271,60 +255,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
       await onReorderTimeline(ordered);
     } catch (error) {
       setTimelineSaveError(error instanceof Error ? error.message : 'Could not save milestone order.');
-    }
-  };
-
-  // Automatic Gemini AI analysis for media uploads
-  const handleAnalyzeMediaItem = async (mediaSource: string, customHint?: string) => {
-    const requestId = ++mediaAnalysisRequest.current;
-    if (!mediaSource || mediaSource.startsWith('data:video') || mediaSource.endsWith('.mp4')) {
-      return;
-    }
-
-    try {
-      setIsAiAnalyzingMedia(true);
-      setAiAnalysisError(null);
-
-      const res = await fetch('/api/ai/analyze-image', {
-        method: 'POST',
-        signal: AbortSignal.timeout(60000),
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image: mediaSource,
-          contextHint: [customHint || newMediaHint || `${archive.title} · ${archive.organizationName}`, newMediaCaption ? `Current draft: ${newMediaCaption}. Write a genuinely different version while following the creator's requested changes.` : ''].filter(Boolean).join('\n'),
-          archiveType: archive.archiveType
-        })
-      });
-
-      const data = await res.json();
-      if (requestId !== mediaAnalysisRequest.current) return;
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to generate AI captions and notes.');
-      }
-
-      if (data.analysis) {
-        if (!data.analysis.caption?.trim()) throw new Error('AI returned an empty caption. Your draft is unchanged.');
-        if (data.analysis.caption.trim() === newMediaCaption.trim()) throw new Error('AI repeated the previous caption. Try a more specific change; your draft is unchanged.');
-        setNewMediaCaption(data.analysis.caption || '');
-        setAiDetectedMood(data.analysis.detectedMood || null);
-        setAiTags(data.analysis.tags || []);
-        
-        const rawNotes = data.analysis.suggestedNotes || [];
-        const formattedNotes = rawNotes.map((n: any, idx: number) => ({
-          id: `ai-note-${Date.now()}-${idx}`,
-          authorName: n.authorName || 'Classmate',
-          text: n.text || '',
-          selected: idx === 0 // Select first note by default
-        }));
-
-        setAiSuggestedNotes(formattedNotes);
-      }
-    } catch (err: any) {
-      if (requestId !== mediaAnalysisRequest.current) return;
-      console.warn('AI analysis notice:', err);
-      setAiAnalysisError(err.message || 'Could not reach Gemini service.');
-    } finally {
-      if (requestId === mediaAnalysisRequest.current) setIsAiAnalyzingMedia(false);
     }
   };
 
@@ -881,17 +811,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 {editingEventId ? <Edit2 className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
                 <span>{editingEventId ? 'Edit Milestone' : 'Add New Milestone'}</span>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setAnalyzerTarget('timeline');
-                  setIsAnalyzerOpen(true);
-                }}
-                className="px-2.5 py-1 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 border border-purple-400/30 text-[11px] font-medium flex items-center gap-1 cursor-pointer transition-colors"
-              >
-                <Camera className="w-3 h-3 text-purple-400" />
-                <span>AI Milestone Photo</span>
-              </button>
             </div>
 
             {/* Quick Preset Milestones Chips */}
@@ -1083,17 +1002,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 {editingMemberId ? <Edit2 className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
                 <span>{editingMemberId ? 'Edit Member' : 'Add Classmate / Member'}</span>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setAnalyzerTarget('member');
-                  setIsAnalyzerOpen(true);
-                }}
-                className="px-2.5 py-1 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 border border-purple-400/30 text-[11px] font-medium flex items-center gap-1 cursor-pointer transition-colors"
-              >
-                <Camera className="w-3 h-3 text-purple-400" />
-                <span>AI Analyze Portrait</span>
-              </button>
             </div>
 
             {/* Quick Profile Samples Chips */}
@@ -1175,10 +1083,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               onChange={(url) => setNewMemberImg(url)}
               label="Portrait Photo / Avatar"
               placeholder="Paste portrait image URL or choose file from device..."
-              onOpenAnalyzer={() => {
-                setAnalyzerTarget('member');
-                setIsAnalyzerOpen(true);
-              }}
             />
 
             <div className="space-y-1">
@@ -1289,7 +1193,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             <p className="text-[10px] text-neutral-500">Visitors can still filter categories or open the remaining memories.</p>
           </div>
 
-          {/* Add media with Gemini AI integration */}
+          {/* Add media */}
           <div className="p-4 rounded-2xl bg-neutral-950 border border-white/10 space-y-3.5">
             <div className="flex items-center justify-between">
               <div className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
@@ -1297,31 +1201,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 <span>Add Photo or Video to Vault</span>
               </div>
 
-              {/* Gemini AI Auto-Describe Toggle */}
-              <label className="flex items-center gap-1.5 text-[11px] text-purple-300 font-medium cursor-pointer bg-purple-500/10 hover:bg-purple-500/20 px-2.5 py-1 rounded-lg border border-purple-400/30 transition-colors">
-                <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                <span>Gemini AI Auto-Caption</span>
-                <input
-                  type="checkbox"
-                  checked={autoAiOnUpload}
-                  onChange={(e) => setAutoAiOnUpload(e.target.checked)}
-                  className="rounded border-purple-400 text-purple-600 focus:ring-0 ml-1 cursor-pointer"
-                />
-              </label>
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-neutral-300 flex items-center gap-1.5">
-                <Lightbulb className="w-3.5 h-3.5 text-purple-400" /> Tell AI what this memory is
-              </label>
-              <input
-                type="text"
-                value={newMediaHint}
-                onChange={(e) => setNewMediaHint(e.target.value)}
-                placeholder="e.g. Teachers’ Day celebration, farewell group photo, first college trip"
-                className="w-full px-3 py-2 rounded-xl bg-neutral-900 border border-purple-400/25 text-xs text-white focus:outline-none focus:border-purple-400"
-              />
-              <p className="text-[10px] text-neutral-500">This clue is combined with the image and anything you type in the caption.</p>
             </div>
 
             <MediaUploader
@@ -1329,11 +1208,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               value={newMediaUrl}
               directUpload={{ archiveId: archive.id, token: ownerToken }}
               onChange={(url, type, meta) => {
-                mediaAnalysisRequest.current += 1;
-                setIsAiAnalyzingMedia(false);
-                setAiAnalysisError(null);
                 setNewMediaUrl(url);
-                setNewMediaAnalysisSource(meta?.analysisDataUrl || '');
                 setNewMediaStorage({
                   storageKey: meta?.storageKey,
                   fileSize: meta?.size,
@@ -1342,58 +1217,15 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                   thumbnailStorageKey: meta?.thumbnailStorageKey
                 });
                 if (type) setNewMediaType(type);
-                if (url && type !== 'video' && autoAiOnUpload) {
-                  handleAnalyzeMediaItem(meta?.analysisDataUrl || url, newMediaHint);
-                }
               }}
               label="Select Media File or Link"
               placeholder="Paste image/video URL or upload local file..."
-              onOpenAnalyzer={() => {
-                setAnalyzerTarget('media');
-                setIsAnalyzerOpen(true);
-              }}
             />
-
-            {/* Manual AI Trigger Button if photo is present */}
-            {newMediaUrl && newMediaType !== 'video' && (
-              <div className="flex items-center justify-between gap-2 pt-0.5">
-                <button
-                  type="button"
-                  onClick={() => handleAnalyzeMediaItem(newMediaAnalysisSource || newMediaUrl, [newMediaHint, newMediaCaption && `Creator draft: ${newMediaCaption}`].filter(Boolean).join('. '))}
-                  disabled={isAiAnalyzingMedia}
-                  className="w-full py-1.5 px-3 rounded-xl bg-gradient-to-r from-purple-500/20 via-pink-500/15 to-amber-500/20 hover:from-purple-500/30 hover:to-amber-500/30 border border-purple-400/30 text-purple-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-50"
-                >
-                  <Sparkles className={`w-3.5 h-3.5 text-purple-400 ${isAiAnalyzingMedia ? 'animate-spin' : ''}`} />
-                  <span>{isAiAnalyzingMedia ? 'Gemini is Analyzing Photo & Generating Memories...' : '✨ Generate Captions & Suggested Notes with Gemini'}</span>
-                </button>
-              </div>
-            )}
-
-            {/* AI Loading indicator */}
-            {aiAnalysisError && <p role="alert" className="text-sm text-rose-300">{aiAnalysisError}</p>}
-            {isAiAnalyzingMedia && (
-              <div className="p-3 rounded-xl bg-purple-500/10 border border-purple-400/20 text-purple-200 text-xs flex items-center gap-2.5 animate-pulse">
-                <Sparkles className="w-4 h-4 text-purple-400 animate-spin" />
-                <div>
-                  <div className="font-semibold">Gemini Vision Intelligence Active</div>
-                  <div className="text-[10px] text-purple-300/80">Extracting emotion, writing vivid captions, and suggesting classmate notes...</div>
-                </div>
-              </div>
-            )}
-
-            {/* AI Atmosphere Mood Badge */}
-            {aiDetectedMood && (
-              <div className="flex items-center gap-2 px-3 py-1 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
-                <span className="text-[10px] font-mono uppercase tracking-wider text-amber-400">Atmosphere:</span>
-                <span className="font-semibold">{aiDetectedMood}</span>
-              </div>
-            )}
 
             {/* Caption Input */}
             <div className="space-y-1">
               <label className="text-[11px] font-semibold text-neutral-300 flex items-center justify-between">
                 <span>Descriptive Caption</span>
-                {aiDetectedMood && <span className="text-[10px] text-purple-400">✨ Gemini Generated</span>}
               </label>
               <input
                 type="text"
@@ -1402,16 +1234,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 placeholder="Caption (e.g. Late night canteen memories and chai debates)"
                 className="w-full px-3 py-2 rounded-xl bg-neutral-900 border border-white/10 text-xs text-white focus:outline-none focus:border-amber-400"
               />
-              {newMediaUrl && newMediaType !== 'video' && newMediaCaption.trim() && (
-                <button
-                  type="button"
-                  onClick={() => handleAnalyzeMediaItem(newMediaAnalysisSource || newMediaUrl, [newMediaHint, `Keep the creator's meaning and improve this draft caption: ${newMediaCaption}`].filter(Boolean).join('. '))}
-                  disabled={isAiAnalyzingMedia}
-                  className="w-full mt-1.5 py-1.5 rounded-lg bg-purple-500/10 border border-purple-400/25 text-[11px] text-purple-200 hover:bg-purple-500/20 disabled:opacity-50 flex items-center justify-center gap-1.5"
-                >
-                  <RefreshCw className="w-3 h-3" /> Improve using my words
-                </button>
-              )}
             </div>
 
             <div className="space-y-1">
@@ -1425,43 +1247,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               />
               <p className="text-[10px] text-neutral-500">Separate tags with commas. Each tag becomes a visitor filter.</p>
             </div>
-
-            {/* Suggested Classmate Notes & Scribbles */}
-            {aiSuggestedNotes.length > 0 && (
-              <div className="space-y-2 p-3 rounded-xl bg-white/5 border border-purple-400/20">
-                <div className="text-[11px] font-bold text-purple-300 flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                  <span>AI Suggested Memory Notes (Select to attach):</span>
-                </div>
-                <div className="space-y-1.5">
-                  {aiSuggestedNotes.map((note, idx) => (
-                    <label
-                      key={note.id}
-                      className={`flex items-start gap-2.5 p-2 rounded-lg border text-xs cursor-pointer transition-all ${
-                        note.selected
-                          ? 'bg-purple-500/15 border-purple-400/40 text-purple-100'
-                          : 'bg-neutral-900/60 border-white/5 text-neutral-400 hover:bg-white/5'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={note.selected}
-                        onChange={(e) => {
-                          const updated = [...aiSuggestedNotes];
-                          updated[idx].selected = e.target.checked;
-                          setAiSuggestedNotes(updated);
-                        }}
-                        className="mt-0.5 rounded border-purple-400 text-purple-600 focus:ring-0 cursor-pointer"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <span className="font-semibold text-amber-300 mr-1.5">{note.authorName}:</span>
-                        <span className="italic">{note.text}</span>
-                      </div>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
 
             {/* Caption suggestions */}
             <div className="flex flex-wrap gap-1">
@@ -1488,24 +1273,14 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                   return;
                 }
                 
-                // Formulate notes from AI suggestions if selected
-                const attachedNotes = aiSuggestedNotes
-                  .filter((n) => n.selected && n.text.trim())
-                  .map((n) => ({
-                    id: `mn-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-                    authorName: n.authorName,
-                    text: n.text,
-                    createdAt: new Date().toISOString()
-                  }));
-
                 setIsSavingMedia(true);
                 try {
                   await onAddMedia({
                     url: newMediaUrl.trim(),
                     caption: newMediaCaption.trim() || undefined,
                     type: newMediaType,
-                    tags: parseTags(newMediaTags).length > 0 ? parseTags(newMediaTags) : (aiTags.length > 0 ? aiTags : ['Memories']),
-                    notes: attachedNotes,
+                    tags: parseTags(newMediaTags).length > 0 ? parseTags(newMediaTags) : ['Memories'],
+                    notes: [],
                     storageKey: newMediaStorage.storageKey,
                     fileSize: newMediaStorage.fileSize,
                     contentType: newMediaStorage.contentType,
@@ -1513,14 +1288,9 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                     thumbnailStorageKey: newMediaStorage.thumbnailStorageKey
                   });
                   setNewMediaUrl('');
-                  setNewMediaAnalysisSource('');
                   setNewMediaStorage({});
                   setNewMediaCaption('');
                   setNewMediaType('image');
-                  setAiSuggestedNotes([]);
-                  setAiDetectedMood(null);
-                  setAiTags([]);
-                  setNewMediaHint('');
                   setNewMediaTags('');
                 } catch (error) {
                   setMediaSaveError(error instanceof Error ? `${error.message} Press “Upload to Memory Vault” to retry this same file.` : 'Upload failed. Your selected media is still here. Press “Upload to Memory Vault” to retry it.');
@@ -1549,16 +1319,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 <input type="checkbox" checked={editMediaFeatured} onChange={(e) => setEditMediaFeatured(e.target.checked)} className="rounded border-white/20" />
                 <Star className="w-3.5 h-3.5 text-amber-400" /> Feature this memory in Highlights
               </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => {
-                  const item = media.find((entry) => entry.id === editingMediaId);
-                  if (!item || item.type === 'video') return;
-                  setAnalyzerTarget('media');
-                  setAnalyzerEditingMediaId(item.id);
-                  setIsAnalyzerOpen(true);
-                }} className="py-2 rounded-xl bg-purple-500/15 border border-purple-400/30 text-purple-200 text-xs font-semibold flex items-center justify-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5" /> Improve with AI
-                </button>
+              <div className="grid grid-cols-1 gap-2">
                 <button type="button" onClick={() => {
                   onUpdateMedia(editingMediaId, {
                     caption: editMediaCaption.trim() || undefined,
@@ -1605,25 +1366,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                       >
                         <Edit2 className="w-3.5 h-3.5" />
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingMediaId(item.id);
-                          setEditMediaCaption(item.caption || '');
-                          setEditMediaTags((item.tags || []).join(', '));
-                          setEditMediaAltText(item.altText || '');
-                          setEditMediaDate(item.eventDate || '');
-                          setEditMediaFeatured(Boolean(item.isFeatured));
-                          setAnalyzerTarget('media');
-                          setAnalyzerEditingMediaId(item.id);
-                          setIsAnalyzerOpen(true);
-                        }}
-                        title="Analyze or rewrite with AI"
-                        className="p-1 rounded-md bg-purple-500/80 text-white hover:bg-purple-500 transition-colors cursor-pointer"
-                      >
-                        <Sparkles className="w-3.5 h-3.5" />
-                      </button>
-                      
                       <button
                         type="button"
                         onClick={() => onDeleteMedia(item.id)}
@@ -1708,10 +1450,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               onChange={(url) => setNewWallImg(url)}
               label="Attach Photo to Scribble (Optional)"
               placeholder="Paste image link or upload photo from device..."
-              onOpenAnalyzer={() => {
-                setAnalyzerTarget('wall');
-                setIsAnalyzerOpen(true);
-              }}
             />
 
             <button
@@ -1906,63 +1644,6 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
         </div>
       )}
 
-      {/* Multimodal AI Image Analyzer Modal */}
-      {isAnalyzerOpen && (
-        <ImageAnalyzerModal
-          isOpen={isAnalyzerOpen}
-          onClose={() => {
-            setIsAnalyzerOpen(false);
-            setAnalyzerEditingMediaId(null);
-          }}
-          archiveType={archive.archiveType}
-          themeId={archive.themeId}
-          initialImageUrl={analyzerEditingMediaId ? (media.find((item) => item.id === analyzerEditingMediaId)?.url || '') : (
-            analyzerTarget === 'media' ? newMediaUrl : analyzerTarget === 'member' ? newMemberImg : analyzerTarget === 'timeline' ? newEventImg : newWallImg
-          )}
-          initialContextHint={analyzerEditingMediaId
-            ? [editMediaTags, editMediaCaption].filter(Boolean).join('. ')
-            : analyzerTarget === 'media'
-              ? [newMediaHint, newMediaCaption].filter(Boolean).join('. ')
-              : analyzerTarget === 'member'
-                ? [newMemberRole, newMemberQuote].filter(Boolean).join('. ')
-                : analyzerTarget === 'timeline'
-                  ? [newEventYear, newEventTitle, newEventDesc].filter(Boolean).join('. ')
-                  : newWallText}
-          onApplyToVault={(url, caption, tags) => {
-            if (analyzerEditingMediaId) {
-              onUpdateMedia(analyzerEditingMediaId, { caption: caption || undefined, tags: tags || undefined });
-              setEditMediaCaption(caption || '');
-              setEditMediaTags((tags || []).join(', '));
-              setEditingMediaId(analyzerEditingMediaId);
-              setAnalyzerEditingMediaId(null);
-            } else {
-              setNewMediaUrl(url);
-              setNewMediaCaption(caption || '');
-              setNewMediaTags((tags || []).join(', '));
-            }
-            setIsAnalyzerOpen(false);
-          }}
-          onApplyToMember={(quote, role, url) => {
-            setNewMemberImg(url || newMemberImg);
-            setNewMemberRole(role || '');
-            setNewMemberQuote(quote || '');
-            setIsAnalyzerOpen(false);
-          }}
-          onApplyToTimeline={(title, desc, url, icon) => {
-            setNewEventTitle(title);
-            setNewEventDesc(desc);
-            setNewEventImg(url || newEventImg);
-            setNewEventIcon(icon || '📸');
-            setIsAnalyzerOpen(false);
-          }}
-          onApplyToWall={(text, authorName, url) => {
-            setNewWallText(text);
-            if (authorName) setNewWallAuthor(authorName);
-            if (url) setNewWallImg(url);
-            setIsAnalyzerOpen(false);
-          }}
-        />
-      )}
     </div>
   );
 };
