@@ -50,6 +50,20 @@ describe('Direct-only media uploads', () => {
     expect(response.status).toBe(410);
     expect(await response.json()).toMatchObject({ directUploadRequired: true });
   });
+
+  it('rejects base64 media registration from stale clients', async () => {
+    const owner = createSignedToken('demo-marys-2025', 'owner', 1);
+    try {
+      const response = await request('/archives/demo-marys-2025/media', {
+        type: 'image',
+        url: 'data:image/jpeg;base64,/9j/2Q=='
+      }, { Authorization: `Bearer ${owner}` });
+      expect(response.status).toBe(410);
+      expect(await response.json()).toMatchObject({ directUploadRequired: true });
+    } finally {
+      db.sessions.delete(owner);
+    }
+  });
 });
 
 describe.each([1, 2, 3, 4, 5])('Retry regression iteration %i', iteration => {
