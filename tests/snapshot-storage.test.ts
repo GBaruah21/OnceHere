@@ -59,4 +59,38 @@ describe('chunked durable snapshots', () => {
       else process.env.SUPABASE_SERVICE_ROLE_KEY = previousKey;
     }
   });
+
+  it('loads tenant snapshots independently and skips an unreadable row', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const snapshot = encodeSnapshot({ archive: { id: 'archive-good' } });
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('select=id&')) {
+        return Response.json([{ id: 'tenant-good' }, { id: 'tenant-broken' }]);
+      }
+      if (url.includes('tenant-good')) {
+        return Response.json([{
+          id: 'tenant-good',
+          data: {
+            format: 1,
+            chunks: snapshot.chunks,
+            compression: snapshot.compression,
+            sha256: snapshot.sha256
+          }
+        }]);
+      }
+      return new Response('temporary storage failure', { status: 503 });
+    }));
+
+    try {
+      const rows = await (db as unknown as {
+        fetchTenantRows(config: { url: string; key: string }): Promise<Array<{ id: string }>>;
+      }).fetchTenantRows({ url: 'https://storage.test', key: 'test-service-role' });
+
+      expect(rows.map((row) => row.id)).toEqual(['tenant-good']);
+      expect(consoleError).toHaveBeenCalledOnce();
+    } finally {
+      consoleError.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
 });
