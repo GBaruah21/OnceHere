@@ -107,6 +107,35 @@ describe('chunked durable snapshots', () => {
     }
   });
 
+  it('does not rewrite tenant rows that already exist during index migration', async () => {
+    const previousUrl = process.env.SUPABASE_URL;
+    const previousKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    process.env.SUPABASE_URL = 'https://storage.test';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role';
+    const database = new MemoryDatabase();
+    const internals = database as unknown as {
+      loadedTenantIds: Set<string>;
+      migrateToTenantIndex(): Promise<void>;
+    };
+    for (const id of database.archives.keys()) internals.loadedTenantIds.add(id);
+    const postedIds: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      postedIds.push(...JSON.parse(String(init?.body || '[]')).map((row: { id: string }) => row.id));
+      return new Response(null, { status: 201 });
+    }));
+
+    try {
+      await internals.migrateToTenantIndex();
+      expect(postedIds).toEqual(['tenant-index']);
+    } finally {
+      vi.unstubAllGlobals();
+      if (previousUrl === undefined) delete process.env.SUPABASE_URL;
+      else process.env.SUPABASE_URL = previousUrl;
+      if (previousKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+      else process.env.SUPABASE_SERVICE_ROLE_KEY = previousKey;
+    }
+  });
+
   it('loads tenant snapshots independently and skips an unreadable row', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const snapshot = encodeSnapshot({ archive: { id: 'archive-good' } });
