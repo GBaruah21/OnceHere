@@ -1296,7 +1296,15 @@ apiRouter.put(
       const quotaError = checkMediaQuota(id, kind, body.length);
       if (quotaError) return res.status(413).json({ error: quotaError });
       const key = createObjectKey(id, contentType);
-      await uploadObject(key, contentType, body);
+      try {
+        await uploadObject(key, contentType, body);
+      } catch (error) {
+        console.error('Object-storage upload failed:', error);
+        return res.status(503).json({
+          error: 'Storage could not accept the file. Retry the upload. If it still fails, refresh the page.',
+          retryable: true
+        });
+      }
       return res.json({
         success: true,
         url: publicObjectUrl(key),
@@ -1320,10 +1328,15 @@ apiRouter.post('/archives/:id/media/upload-url', async (req: Request, res: Respo
 
   const parsed = r2UploadSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Invalid upload request.' });
+  let kind: 'image' | 'video';
   try {
-    const kind = validateUpload(parsed.data.contentType, parsed.data.size);
-    const quotaError = checkMediaQuota(id, kind, parsed.data.size);
-    if (quotaError) return res.status(413).json({ error: quotaError });
+    kind = validateUpload(parsed.data.contentType, parsed.data.size);
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid upload request.' });
+  }
+  const quotaError = checkMediaQuota(id, kind, parsed.data.size);
+  if (quotaError) return res.status(413).json({ error: quotaError });
+  try {
     const key = createObjectKey(id, parsed.data.contentType);
     const uploadUrl = await createUploadUrl(key, parsed.data.contentType, parsed.data.size);
     return res.json({
@@ -1337,7 +1350,11 @@ apiRouter.post('/archives/:id/media/upload-url', async (req: Request, res: Respo
       expiresIn: 600
     });
   } catch (error) {
-    return res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to authorize upload.' });
+    console.error('Upload authorization failed:', error);
+    return res.status(503).json({
+      error: 'Storage upload could not be prepared. Retry the upload. If it still fails, refresh the page.',
+      retryable: true
+    });
   }
 });
 
@@ -1349,10 +1366,15 @@ apiRouter.post('/archives/:id/media/upload-complete', async (req: Request, res: 
   if (!parsed.success || !parsed.data.key.startsWith(`archives/${id}/`)) {
     return res.status(400).json({ error: 'Invalid upload completion request.' });
   }
+  let kind: 'image' | 'video';
   try {
-    const kind = validateUpload(parsed.data.contentType, parsed.data.size);
-    const quotaError = checkMediaQuota(id, kind, parsed.data.size);
-    if (quotaError) return res.status(413).json({ error: quotaError });
+    kind = validateUpload(parsed.data.contentType, parsed.data.size);
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid upload completion request.' });
+  }
+  const quotaError = checkMediaQuota(id, kind, parsed.data.size);
+  if (quotaError) return res.status(413).json({ error: quotaError });
+  try {
     await verifyObject(parsed.data.key, parsed.data.contentType, parsed.data.size);
     return res.json({
       success: true,
@@ -1363,7 +1385,11 @@ apiRouter.post('/archives/:id/media/upload-complete', async (req: Request, res: 
       type: kind
     });
   } catch (error) {
-    return res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to verify upload.' });
+    console.error('Uploaded object verification failed:', error);
+    return res.status(503).json({
+      error: 'The uploaded file could not be verified yet. Retry the upload. If it still fails, refresh the page.',
+      retryable: true
+    });
   }
 });
 
@@ -1796,4 +1822,30 @@ apiRouter.post('/analytics', (req: Request, res: Response) => {
   // Privacy safe logging - no sensitive strings recorded
   console.log(`[Analytics] Event: ${eventName} | Archive: ${archiveId || 'platform'} | Time: ${new Date().toISOString()}`);
   return res.json({ recorded: true });
+});
+
+// API consumers must always receive JSON. Without an explicit fallback,
+// unknown API paths fall through to the SPA and return index.html with a 200.
+apiRouter.use((_req: Request, res: Response) => {
+  return res.status(404).json({ error: 'API route not found.' });
+});
+
+// Keep infrastructure and parsing details out of responses. This also catches
+// malformed percent-encoded route segments and durable-storage load failures.
+apiRouter.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('API request failed:', error);
+  if (res.headersSent) return;
+
+  if (error instanceof URIError) {
+    res.status(400).json({ error: 'The request address is invalid.' });
+    return;
+  }
+
+  const storageUnavailable = error instanceof Error
+    && /archive data|durable storage|supabase|storage unavailable/i.test(error.message);
+  res.status(storageUnavailable ? 503 : 500).json({
+    error: storageUnavailable
+      ? 'Archive storage is temporarily unavailable. Please retry.'
+      : 'Unexpected server error. Please retry.'
+  });
 });

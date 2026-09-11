@@ -16,7 +16,8 @@ import {
   Lightbulb,
   Layers,
   Palette,
-  Check
+  Check,
+  RefreshCw
 } from 'lucide-react';
 import { ArchiveType, ThemeId, Visibility, ContributionMode, Archive } from '../../types';
 import { THEMES, getTheme } from '../../config/themes';
@@ -223,9 +224,25 @@ export const CreateArchiveFlow: React.FC<CreateArchiveFlowProps> = ({
           {/* Body content per step */}
           <div className="p-4 sm:p-8 space-y-5 sm:space-y-6 overflow-y-auto flex-1 scroll-touch">
             {errorMsg && (
-              <div className="p-3.5 sm:p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-400" />
-                <span>{errorMsg}</span>
+              <div role="alert" aria-live="assertive" className="p-3.5 sm:p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-200 text-xs">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-400 mt-0.5" />
+                  <div>
+                    {step === 5 && <><span className="font-bold">Workspace was not created.</span>{' '}</>}
+                    {errorMsg}
+                    {step === 5 && ' Retry now. If it fails again, refresh the page.'}
+                  </div>
+                </div>
+                {step === 5 && (
+                  <div className="mt-3 flex flex-wrap gap-2 pl-6">
+                    <button type="button" onClick={() => void handleCreateWorkspace()} disabled={isSubmitting} className="min-h-11 rounded-lg bg-amber-400 px-3 font-bold text-neutral-950 hover:brightness-110 disabled:opacity-50 inline-flex items-center gap-1.5">
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSubmitting ? 'animate-spin' : ''}`} /> Retry creation
+                    </button>
+                    <button type="button" onClick={() => {
+                      if (window.confirm('Refresh OnceHere? The details in this creation form may need to be entered again.')) window.location.reload();
+                    }} className="min-h-11 rounded-lg border border-white/20 px-3 font-semibold text-white hover:bg-white/10">Refresh page</button>
+                  </div>
+                )}
               </div>
             )}
 

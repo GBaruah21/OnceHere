@@ -212,3 +212,29 @@ describe('Durable save acknowledgement', () => {
     }
   });
 });
+
+describe('API error responses', () => {
+  it('returns a JSON 404 instead of the frontend document for an unknown API route', async () => {
+    const response = await request('/route-that-does-not-exist');
+    expect(response.status).toBe(404);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    expect(await response.json()).toEqual({ error: 'API route not found.' });
+  });
+
+  it('returns a sanitized JSON error for a malformed archive address', async () => {
+    const response = await request('/archives/by-slug/%E0%A4%A');
+    expect(response.status).toBe(400);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    expect(await response.json()).toEqual({ error: 'The request address is invalid.' });
+  });
+
+  it('does not expose storage error details when archive loading fails', async () => {
+    vi.mocked(db.ensureLoaded).mockRejectedValueOnce(new Error('Supabase secret endpoint failed'));
+    const response = await request('/archives');
+    expect(response.status).toBe(503);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    expect(await response.json()).toEqual({
+      error: 'Archive storage is temporarily unavailable. Please retry.'
+    });
+  });
+});

@@ -10,7 +10,7 @@ import { HowItWorksSection } from './components/landing/HowItWorksSection';
 import { ExploreArchivesSection } from './components/landing/ExploreArchivesSection';
 import { AttributionFooter } from './components/AttributionFooter';
 import { SessionStorage } from './lib/security';
-import { AlertCircle, Lock, ArrowLeft } from 'lucide-react';
+import { AlertCircle, Lock, ArrowLeft, RefreshCw } from 'lucide-react';
 
 const ArchiveEditor = lazy(() => import('./components/editor/ArchiveEditor').then((module) => ({ default: module.ArchiveEditor })));
 const ArchivePublicView = lazy(() => import('./components/archive/ArchivePublicView').then((module) => ({ default: module.ArchivePublicView })));
@@ -29,6 +29,7 @@ export default function App() {
   // Platform data
   const [allArchives, setAllArchives] = useState<Archive[]>([]);
   const [loadingArchives, setLoadingArchives] = useState(true);
+  const [archivesError, setArchivesError] = useState<string | null>(null);
   const [platformAdminKey, setPlatformAdminKey] = useState('');
   const isPlatformAdminMode = new URLSearchParams(window.location.search).get('owner') === '1';
 
@@ -44,6 +45,7 @@ export default function App() {
   } | null>(null);
   const [loadingActiveArchive, setLoadingActiveArchive] = useState(false);
   const [activeArchiveError, setActiveArchiveError] = useState<string | null>(null);
+  const [activeArchiveLoadAttempt, setActiveArchiveLoadAttempt] = useState(0);
 
   // Creation Wizard Modal State
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -88,13 +90,14 @@ export default function App() {
   const fetchArchives = async () => {
     try {
       setLoadingArchives(true);
+      setArchivesError(null);
       const res = await fetch('/api/archives');
-      const data = await res.json();
-      if (res.ok) {
-        setAllArchives(data.archives || []);
-      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not load the archive list.');
+      setAllArchives(data.archives || []);
     } catch (err) {
       console.error('Failed to fetch archives:', err);
+      setArchivesError(err instanceof Error ? err.message : 'Could not load the archive list.');
     } finally {
       setLoadingArchives(false);
     }
@@ -164,7 +167,7 @@ export default function App() {
     }
 
     loadArchive();
-  }, [tenantContext]);
+  }, [tenantContext, activeArchiveLoadAttempt]);
 
   // Navigate helper
   const navigateTo = (path: string) => {
@@ -230,15 +233,17 @@ export default function App() {
         <div className="h-screen w-full bg-neutral-950 flex flex-col items-center justify-center p-6 text-center space-y-4">
           <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 max-w-md">
             <AlertCircle className="w-8 h-8 mx-auto mb-2 text-rose-400" />
-            <h3 className="font-bold text-base text-white">Workspace Not Found</h3>
+            <h3 className="font-bold text-base text-white">Could not open this workspace</h3>
             <p className="text-xs mt-1 opacity-80">{activeArchiveError || 'This workspace may have expired or been moved.'}</p>
+            <p className="text-xs mt-2 text-neutral-300">Retry first. If the connection or session still fails, refresh the page.</p>
           </div>
-          <button
-            onClick={() => navigateTo('/')}
-            className="px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold text-white transition-colors"
-          >
-            Return to OnceHere Platform
-          </button>
+          <div className="flex flex-wrap justify-center gap-2">
+            <button onClick={() => setActiveArchiveLoadAttempt((attempt) => attempt + 1)} className="min-h-11 px-5 py-2.5 rounded-xl bg-amber-400 text-neutral-950 text-xs font-bold hover:brightness-110 inline-flex items-center gap-2">
+              <RefreshCw className="w-4 h-4" /> Retry
+            </button>
+            <button onClick={() => window.location.reload()} className="min-h-11 px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold text-white transition-colors">Refresh page</button>
+            <button onClick={() => navigateTo('/')} className="min-h-11 px-5 py-2.5 rounded-xl border border-white/10 hover:bg-white/10 text-xs font-semibold text-neutral-300 transition-colors">Return to platform</button>
+          </div>
         </div>
       );
     }
@@ -279,17 +284,17 @@ export default function App() {
       return (
         <div className="h-screen w-full bg-neutral-950 flex flex-col items-center justify-center p-6 text-center space-y-4">
           <div className="p-4 rounded-2xl bg-white/5 border border-white/10 text-neutral-300 max-w-md">
-            <h3 className="font-bold text-base text-white">Memory Archive Not Found</h3>
+            <h3 className="font-bold text-base text-white">Could not open this archive</h3>
             <p className="text-xs mt-1 text-neutral-400">
-              The archive at <strong>/s/{tenantContext.slug}</strong> does not exist or has not been deployed yet.
+              {activeArchiveError || <>The archive at <strong>/s/{tenantContext.slug}</strong> does not exist or has not been deployed yet.</>}
             </p>
+            <p className="text-xs mt-2 text-neutral-300">Retry first. If it still does not open, refresh the page.</p>
           </div>
-          <button
-            onClick={() => navigateTo('/')}
-            className="px-5 py-2.5 rounded-xl bg-amber-400 text-neutral-950 text-xs font-semibold transition-transform hover:scale-105"
-          >
-            Explore Other Archives
-          </button>
+          <div className="flex flex-wrap justify-center gap-2">
+            <button onClick={() => setActiveArchiveLoadAttempt((attempt) => attempt + 1)} className="min-h-11 px-5 py-2.5 rounded-xl bg-amber-400 text-neutral-950 text-xs font-bold hover:brightness-110 inline-flex items-center gap-2"><RefreshCw className="w-4 h-4" /> Retry</button>
+            <button onClick={() => window.location.reload()} className="min-h-11 px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold text-white">Refresh page</button>
+            <button onClick={() => navigateTo('/')} className="min-h-11 px-5 py-2.5 rounded-xl border border-white/10 hover:bg-white/10 text-xs font-semibold text-neutral-300">Explore other archives</button>
+          </div>
         </div>
       );
     }
@@ -433,6 +438,21 @@ export default function App() {
           setIsKeyAccessModalOpen(true);
         }}
       />
+
+      {archivesError && (
+        <div role="alert" aria-live="assertive" className="sticky top-0 z-40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-rose-400/30 bg-rose-950/95 px-4 sm:px-6 py-3 text-sm text-rose-100 shadow-xl">
+          <div>
+            <span className="font-bold">Archive list did not load.</span>{' '}
+            {archivesError} Retry now. If it fails again, refresh the page.
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <button type="button" onClick={() => void fetchArchives()} disabled={loadingArchives} className="min-h-11 rounded-xl bg-amber-400 px-4 font-bold text-neutral-950 hover:brightness-110 disabled:opacity-50 inline-flex items-center gap-2">
+              <RefreshCw className={`w-4 h-4 ${loadingArchives ? 'animate-spin' : ''}`} /> Retry
+            </button>
+            <button type="button" onClick={() => window.location.reload()} className="min-h-11 rounded-xl border border-white/20 px-4 font-semibold text-white hover:bg-white/10">Refresh page</button>
+          </div>
+        </div>
+      )}
 
       {/* Main Landing Sections */}
       <main className="flex-grow">

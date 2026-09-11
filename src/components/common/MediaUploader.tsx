@@ -23,6 +23,20 @@ function pauseDirectUploads(): void {
   }
 }
 
+function uploadErrorMessage(error: unknown): string {
+  const detail = error instanceof Error ? error.message : '';
+  if (/unauthori[sz]ed|forbidden|session|401|403/i.test(detail)) {
+    return 'Upload access expired. Refresh the page, unlock the workspace again, and retry this file.';
+  }
+  if (/too large|unsupported|image file|video file/i.test(detail)) return detail;
+  if (/timed out|abort/i.test(detail)) {
+    return 'The upload stopped because the connection was inactive for too long. Retry this file on a stable connection.';
+  }
+  return detail
+    ? `${detail} Retry this file. If it fails again, refresh the page and sign in again.`
+    : 'Upload failed. Retry this file. If it fails again, refresh the page and sign in again.';
+}
+
 export function directUploadTimeoutMs(file: Pick<File, 'size' | 'type'>): number {
   if (file.type.startsWith('image/')) return 4_000;
   // Videos get more time, scaled for slower mobile connections, but a stalled
@@ -277,7 +291,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         });
         pendingFileRef.current = null;
       } catch (error) {
-        setFileError(error instanceof Error ? error.message : 'Cloud upload failed. Please retry.');
+        setFileError(uploadErrorMessage(error));
         // Keep the File object and its local preview alive. A failed network or
         // expired session must be retryable without making the user reselect it.
       } finally {
@@ -513,10 +527,26 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
             </div>
           )}
 
-          {fileError && <p className="text-[11px] text-rose-400">{fileError}</p>}
+          {fileError && <p role="alert" className="text-[11px] text-rose-400">{fileError}</p>}
         </div>
       )}
-      {fileError && previewValue && <p role="alert" className="text-rose-300">{fileError}</p>}
+      {fileError && previewValue && (
+        <div role="alert" aria-live="assertive" className="rounded-xl border border-rose-400/30 bg-rose-500/10 p-3 text-rose-200">
+          <p className="leading-5">{fileError}</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {pendingFileRef.current && (
+              <button type="button" onClick={() => { if (pendingFileRef.current) void handleFile(pendingFileRef.current); }} disabled={isProcessing} className="min-h-11 rounded-lg bg-amber-400 px-3 font-bold text-neutral-950 hover:brightness-110 disabled:opacity-50 inline-flex items-center gap-1.5">
+                <RefreshCw className={`w-3.5 h-3.5 ${isProcessing ? 'animate-spin' : ''}`} /> Retry upload
+              </button>
+            )}
+            <button type="button" onClick={() => {
+              if (window.confirm('Refresh OnceHere? You will need to select this file again after the page reloads.')) window.location.reload();
+            }} className="min-h-11 rounded-lg border border-white/20 px-3 font-semibold text-white hover:bg-white/10">
+              Refresh page
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Hidden Native File Input */}
       <input
