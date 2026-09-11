@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { db, decodeSnapshot, encodeSnapshot } from '../server/db';
+import { db, decodeSnapshot, encodeSnapshot, MemoryDatabase } from '../server/db';
 
 describe('chunked durable snapshots', () => {
   it('compresses and round-trips Unicode archive data', () => {
@@ -45,12 +45,59 @@ describe('chunked durable snapshots', () => {
 
     try {
       await db.persistArchive('demo-marys-2025');
-      expect(posted).toHaveLength(1);
-      expect(posted[0].id).toBe('tenant-demo-marys-2025');
-      expect(posted[0].id).not.toBe('manifest');
-      const data = posted[0].data;
+      expect(posted).toHaveLength(2);
+      expect(posted.map((row) => row.id)).toEqual(['tenant-demo-marys-2025', 'tenant-index']);
+      const tenantPost = (fetch as any).mock.calls
+        .map((call: any[]) => JSON.parse(String(call[1]?.body || '[]')))
+        .flat()
+        .find((row: any) => row.id === 'tenant-demo-marys-2025');
+      expect(tenantPost).toBeTruthy();
+      const data = tenantPost.data;
       const restored = decodeSnapshot(data.chunks, data.sha256, data.compression);
       expect((restored.archive as { id: string }).id).toBe('demo-marys-2025');
+    } finally {
+      vi.unstubAllGlobals();
+      if (previousUrl === undefined) delete process.env.SUPABASE_URL;
+      else process.env.SUPABASE_URL = previousUrl;
+      if (previousKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+      else process.env.SUPABASE_SERVICE_ROLE_KEY = previousKey;
+    }
+  });
+
+  it('boots from the compact index and lazily loads only the requested tenant', async () => {
+    const previousUrl = process.env.SUPABASE_URL;
+    const previousKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    process.env.SUPABASE_URL = 'https://storage.test';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role';
+    const database = new MemoryDatabase();
+    const archive = database.archives.get('demo-marys-2025')!;
+    const tenant = encodeSnapshot({
+      archive,
+      sections: [], timelineEvents: [], members: [], memberMessages: [], mediaItems: [],
+      albums: [], wallPosts: [], revisions: [], accessLogs: [], shareActivity: [], sessions: []
+    });
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.includes('tenant-index')) return Response.json([{
+        id: 'tenant-index',
+        data: { format: 1, archives: [[archive.id, archive]], platformSettings: {} }
+      }]);
+      if (url.includes(`tenant-${archive.id}`)) return Response.json([{
+        id: `tenant-${archive.id}`,
+        data: { format: 1, chunks: tenant.chunks, compression: tenant.compression, sha256: tenant.sha256 }
+      }]);
+      return Response.json([]);
+    }));
+
+    try {
+      await database.ensureLoaded();
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain('tenant-index');
+      await database.ensureArchiveLoaded(archive.id);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]).toContain(`tenant-${archive.id}`);
+      expect(calls.some((url) => url.includes('manifest'))).toBe(false);
     } finally {
       vi.unstubAllGlobals();
       if (previousUrl === undefined) delete process.env.SUPABASE_URL;
