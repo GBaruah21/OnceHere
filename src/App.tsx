@@ -104,8 +104,10 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchArchives();
-  }, []);
+    // The Explore list is needed only on the platform landing page. Archive and
+    // editor routes already fetch their own tenant, so avoid a second API call.
+    if (tenantContext.type === 'platform') void fetchArchives();
+  }, [tenantContext.type]);
 
   // Fetch full details when entering an archive or workspace
   useEffect(() => {
@@ -184,7 +186,6 @@ export default function App() {
       SessionStorage.setWorkspaceToken(workspaceSlug, ownerToken);
     }
     setIsCreateModalOpen(false);
-    fetchArchives(); // Refresh platform archives list
     navigateTo(`/workspace/${workspaceSlug}`);
   };
 
