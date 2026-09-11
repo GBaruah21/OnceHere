@@ -564,7 +564,11 @@ export class MemoryDatabase {
   private async migrateToTenantIndex(): Promise<void> {
     const config = this.storageConfig;
     if (!config) return;
-    const ids = Array.from(this.archives.keys());
+    // Tenant rows successfully loaded above are already the durable source of
+    // truth. Rewriting them here can exceed storage/request limits for media-
+    // heavy archives and is unnecessary. Only backfill archives that existed
+    // solely in the legacy global snapshot, then publish the index last.
+    const ids = Array.from(this.archives.keys()).filter((id) => !this.loadedTenantIds.has(id));
     let next = 0;
     await Promise.all(Array.from({ length: Math.min(SNAPSHOT_WRITE_CONCURRENCY, ids.length) }, async () => {
       while (next < ids.length) await this.writeTenantRow(config, ids[next++]);
