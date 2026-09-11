@@ -20,6 +20,7 @@ import { PLATFORM_CONFIG } from '../src/config/platform';
 
 const SNAPSHOT_FORMAT = 3;
 const SNAPSHOT_CHUNK_SIZE = 64 * 1024;
+const SNAPSHOT_READ_CONCURRENCY = 6;
 const SNAPSHOT_WRITE_CONCURRENCY = 6;
 const TENANT_SNAPSHOT_FORMAT = 1;
 const STORAGE_REQUEST_TIMEOUT_MS = 20_000;
@@ -376,10 +377,21 @@ class MemoryDatabase {
           { length: Number(manifest.chunkCount) },
           (_, index) => `snapshot-${manifest.generation}-${String(index).padStart(6, '0')}`
         );
-        const chunkRows: StoredStateRow[] = [];
+        const batches: string[][] = [];
         for (let offset = 0; offset < chunkIds.length; offset += 50) {
-          chunkRows.push(...await this.fetchRows(config, chunkIds.slice(offset, offset + 50)));
+          batches.push(chunkIds.slice(offset, offset + 50));
         }
+        const chunkRows: StoredStateRow[] = [];
+        let nextBatch = 0;
+        await Promise.all(Array.from(
+          { length: Math.min(SNAPSHOT_READ_CONCURRENCY, batches.length) },
+          async () => {
+            while (nextBatch < batches.length) {
+              const batch = batches[nextBatch++];
+              chunkRows.push(...await this.fetchRows(config, batch));
+            }
+          }
+        ));
         const chunksById = new Map(chunkRows.map((row) => [row.id, row.data?.payload]));
         const chunks = chunkIds.map((id) => chunksById.get(id));
         if (chunks.some((chunk) => typeof chunk !== 'string')) {
