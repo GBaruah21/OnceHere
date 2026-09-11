@@ -39,6 +39,10 @@ interface StoredStateRow {
   data?: Record<string, unknown>;
 }
 
+interface StoredStateIdRow {
+  id: string;
+}
+
 export function encodeSnapshot(snapshot: Record<string, unknown>) {
   const json = JSON.stringify(snapshot);
   const compressed = gzipSync(Buffer.from(json, 'utf8'), { level: 6 });
@@ -235,10 +239,30 @@ class MemoryDatabase {
     let rejected: Response | undefined;
     for (const candidate of this.storageCandidates(config)) {
       const response = await fetch(
-        `${candidate.url}/rest/v1/oncehere_state?id=like.tenant-*&select=id,data&order=id.asc`,
+        `${candidate.url}/rest/v1/oncehere_state?id=like.tenant-*&select=id&order=id.asc`,
         { headers: this.storageHeaders(candidate), signal: AbortSignal.timeout(10_000) }
       );
-      if (response.ok) return response.json() as Promise<StoredStateRow[]>;
+      if (response.ok) {
+        const ids = await response.json() as StoredStateIdRow[];
+        const rows: StoredStateRow[] = [];
+        // Tenant snapshots may contain media metadata and become large. Fetching
+        // every JSONB payload in one response made cold starts fragile and could
+        // take the whole API offline when one tenant row was damaged.
+        for (let offset = 0; offset < ids.length; offset += 4) {
+          const batch = ids.slice(offset, offset + 4);
+          const settled = await Promise.allSettled(
+            batch.map(({ id }) => this.fetchRows(config, [id]))
+          );
+          settled.forEach((result, index) => {
+            if (result.status === 'fulfilled') {
+              rows.push(...result.value);
+            } else {
+              console.error(`Skipping unreadable tenant snapshot ${batch[index].id}:`, result.reason);
+            }
+          });
+        }
+        return rows;
+      }
       rejected = response;
       if (response.status !== 401 && response.status !== 403) break;
     }
@@ -361,7 +385,17 @@ class MemoryDatabase {
         if (chunks.some((chunk) => typeof chunk !== 'string')) {
           throw new Error('Stored archive snapshot is incomplete.');
         }
-        this.restore(decodeSnapshot(chunks as string[], manifest.sha256, manifest.compression));
+        try {
+          this.restore(decodeSnapshot(chunks as string[], manifest.sha256, manifest.compression));
+        } catch (error) {
+          // Keep the platform recoverable if a previously interrupted or
+          // corrupted generation becomes the active manifest. The legacy row
+          // is retained specifically as a last-known-good recovery copy.
+          const fallback = (await this.fetchRows(config, ['primary']))[0]?.data;
+          if (!fallback) throw error;
+          console.error('Active archive snapshot failed validation; loading the recovery copy:', error);
+          this.restore(fallback);
+        }
       } else if (legacySnapshot) {
         // Existing deployments used one large row. Load it unchanged, then
         // migrate it to the chunked format without deleting the legacy copy.
@@ -375,11 +409,17 @@ class MemoryDatabase {
         const stored = row.data;
         if (stored?.format !== TENANT_SNAPSHOT_FORMAT || !Array.isArray(stored.chunks)
           || typeof stored.sha256 !== 'string') continue;
-        this.restoreTenant(decodeSnapshot(
-          stored.chunks as string[],
-          stored.sha256,
-          stored.compression === 'gzip' ? 'gzip' : undefined
-        ));
+        try {
+          this.restoreTenant(decodeSnapshot(
+            stored.chunks as string[],
+            stored.sha256,
+            stored.compression === 'gzip' ? 'gzip' : undefined
+          ));
+        } catch (error) {
+          // One broken tenant override must not make unrelated archives and
+          // built-in demos unavailable. The base snapshot remains untouched.
+          console.error(`Skipping invalid tenant snapshot ${row.id}:`, error);
+        }
       }
       this.loadedFromStorage = true;
 
