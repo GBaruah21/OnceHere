@@ -3,25 +3,7 @@ import { ImageCropPreview } from './ImageCropPreview';
 import { Upload, Link as LinkIcon, Image as ImageIcon, Video, X, Check, Camera, RefreshCw, Eye } from 'lucide-react';
 import { compressImageForUpload, IMAGE_SOURCE_LIMIT_BYTES, VIDEO_SOURCE_LIMIT_BYTES } from '../../lib/imageCompression';
 
-type UploadPhase = 'optimizing' | 'authorizing' | 'direct' | 'fallback';
-
-const DIRECT_UPLOAD_COOLDOWN_KEY = 'oncehere-direct-upload-cooldown-until';
-
-function directUploadIsCoolingDown(): boolean {
-  try {
-    return Number(sessionStorage.getItem(DIRECT_UPLOAD_COOLDOWN_KEY) || 0) > Date.now();
-  } catch {
-    return false;
-  }
-}
-
-function pauseDirectUploads(): void {
-  try {
-    sessionStorage.setItem(DIRECT_UPLOAD_COOLDOWN_KEY, String(Date.now() + 5 * 60_000));
-  } catch {
-    // Storage may be disabled; the upload fallback still remains available.
-  }
-}
+type UploadPhase = 'optimizing' | 'authorizing' | 'direct';
 
 function uploadErrorMessage(error: unknown): string {
   const detail = error instanceof Error ? error.message : '';
@@ -32,6 +14,9 @@ function uploadErrorMessage(error: unknown): string {
   if (/timed out|abort/i.test(detail)) {
     return 'The upload stopped because the connection was inactive for too long. Retry this file on a stable connection.';
   }
+  if (/connection failed|storage upload failed|failed to fetch|network/i.test(detail)) {
+    return 'Direct storage upload failed. Check the object-storage CORS/configuration, then retry this file. The file was not relayed through the website server.';
+  }
   return detail
     ? `${detail} Retry this file. If it fails again, refresh the page and sign in again.`
     : 'Upload failed. Retry this file. If it fails again, refresh the page and sign in again.';
@@ -39,14 +24,9 @@ function uploadErrorMessage(error: unknown): string {
 
 export function directUploadTimeoutMs(file: Pick<File, 'size' | 'type'>): number {
   if (file.type.startsWith('image/')) return 4_000;
-  // Videos get more time, scaled for slower mobile connections, but a stalled
-  // storage request must still hand off to the same-origin fallback promptly.
+  // Videos get more time, scaled for slower mobile connections. Uploads never
+  // fall back through the application server, protecting hosting bandwidth.
   return Math.min(90_000, Math.max(30_000, Math.ceil(file.size / (256 * 1024)) * 1_000));
-}
-
-export function fallbackUploadTimeoutMs(file: Pick<File, 'size' | 'type'>): number {
-  if (file.type.startsWith('image/')) return 20_000;
-  return Math.min(120_000, Math.max(45_000, Math.ceil(file.size / (192 * 1024)) * 1_000));
 }
 
 function uploadBytes(
@@ -162,30 +142,6 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     return authorized;
   };
 
-  const uploadThroughServer = async (file: File) => {
-    if (!directUpload) throw new Error('Server upload is unavailable.');
-    setUploadPhase('fallback');
-    setUploadProgress(0);
-    const upload = await uploadBytes(
-      `/api/archives/${directUpload.archiveId}/media/upload`,
-      file,
-      {
-        'Content-Type': file.type,
-        'X-File-Name': encodeURIComponent(file.name),
-        Authorization: `Bearer ${directUpload.token || ''}`
-      },
-      fallbackUploadTimeoutMs(file),
-      setUploadProgress
-    );
-    const completed = (() => {
-      try { return JSON.parse(upload.responseText || '{}'); } catch { return {}; }
-    })();
-    if (upload.status < 200 || upload.status >= 300 || !completed.url) {
-      throw new Error(completed.error || `Upload failed (${upload.status}).`);
-    }
-    setUploadProgress(100);
-    return completed;
-  };
   useEffect(() => () => { fileReaderRef.current?.abort(); }, []);
 
   useEffect(() => {
@@ -261,30 +217,15 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
             reader.readAsDataURL(uploadFile);
           })
           : Promise.resolve(undefined);
-        // Sending the bytes straight to object storage avoids relaying every image
-        // through Render. If bucket CORS is not ready, retain the same-origin proxy
-        // as a compatibility fallback instead of losing the user's selection.
-        let completed;
-        if (directUploadIsCoolingDown()) {
-          completed = await uploadThroughServer(uploadFile);
-        } else {
-          try {
-            completed = await uploadDirectly(uploadFile);
-          } catch {
-            // Browser-to-storage failures normally affect every file in the tab.
-            // Remember the failure briefly instead of imposing the same wait on
-            // every following file before switching to the compatible path.
-            pauseDirectUploads();
-            completed = await uploadThroughServer(uploadFile);
-          }
-        }
+        // Upload bytes only to object storage. A failed direct upload remains
+        // retryable, but is never relayed through Render/application bandwidth.
+        const completed = await uploadDirectly(uploadFile);
         const analysisDataUrl = await analysisDataUrlPromise;
         onChange(completed.url, completed.type, {
           name: uploadFile.name,
           size: completed.fileSize,
-          // Presigned-upload authorization returns `key`, while the same-origin
-          // fallback returns `storageKey`. Preserve either receipt so the media
-          // record always points at the exact object the user selected.
+          // Preserve the signed-upload receipt so the media record always points
+          // at the exact object the user selected.
           storageKey: completed.storageKey || completed.key,
           contentType: completed.contentType,
           analysisDataUrl
@@ -396,9 +337,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
                     ? 'Optimizing image…'
                     : uploadPhase === 'authorizing'
                       ? 'Preparing secure upload…'
-                      : uploadPhase === 'fallback'
-                        ? `Using secure backup upload${uploadProgress !== null ? ` · ${uploadProgress}%` : '…'}`
-                        : `Uploading directly${uploadProgress !== null ? ` · ${uploadProgress}%` : '…'}`
+                      : `Uploading directly${uploadProgress !== null ? ` · ${uploadProgress}%` : '…'}`
                   : isVideo(previewValue) ? 'Video ready to save' : 'Image ready to save'}
               </span>
             </div>
