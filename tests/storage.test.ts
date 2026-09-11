@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createUploadUrl, R2_LIMITS, validateUpload } from '../server/r2';
+import { createDownloadUrl, createUploadUrl, R2_LIMITS, validateUpload } from '../server/r2';
 
 describe('S3-compatible object storage uploads', () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -34,6 +34,19 @@ describe('S3-compatible object storage uploads', () => {
     const signedUrl = new URL(await createUploadUrl('archives/archive-123/photo.jpg', 'image/jpeg', 1024));
     expect(signedUrl.protocol).toBe('https:');
     expect(signedUrl.hostname).toBe('oncehere-media.s3.us-east-005.backblazeb2.com');
+  });
+
+  it('creates a direct browser download URL so media bytes bypass the app server', async () => {
+    vi.stubEnv('OBJECT_STORAGE_ENDPOINT', 'https://s3.us-east-005.backblazeb2.com');
+    vi.stubEnv('OBJECT_STORAGE_REGION', 'us-east-005');
+    vi.stubEnv('OBJECT_STORAGE_ACCESS_KEY_ID', 'example-access-key');
+    vi.stubEnv('OBJECT_STORAGE_SECRET_ACCESS_KEY', 'example-secret-key');
+    vi.stubEnv('OBJECT_STORAGE_BUCKET', 'oncehere-media');
+
+    const signedUrl = new URL(await createDownloadUrl('archives/archive-123/photo.jpg'));
+    expect(signedUrl.hostname).toBe('oncehere-media.s3.us-east-005.backblazeb2.com');
+    expect(signedUrl.pathname).toBe('/archives/archive-123/photo.jpg');
+    expect(signedUrl.searchParams.get('X-Amz-Expires')).toBe('300');
   });
 
   it('enforces storage-saving source and per-archive limits', () => {
