@@ -40,6 +40,18 @@ const deleteRequest = (path: string, headers: Record<string, string> = {}) => fe
   method: 'DELETE', headers
 });
 
+describe('Direct-only media uploads', () => {
+  it('rejects the retired server-relay endpoint', async () => {
+    const response = await fetch(`${base}/archives/demo-marys-2025/media/upload`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
+    });
+    expect(response.status).toBe(410);
+    expect(await response.json()).toMatchObject({ directUploadRequired: true });
+  });
+});
+
 describe.each([1, 2, 3, 4, 5])('Retry regression iteration %i', iteration => {
   it('enforces private subresource isolation, viewer read-only access and session revocation', async () => {
     const original = db.archives.get('demo-marys-2025')!;
