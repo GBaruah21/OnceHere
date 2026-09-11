@@ -15,8 +15,10 @@ const HOST = hostFlag >= 0 ? process.argv[hostFlag + 1] : '0.0.0.0';
 async function startServer() {
   const app = express();
 
-  app.use(express.json({ limit: '40mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+  // Files use signed object-storage URLs. API bodies contain metadata and text
+  // only, so large payloads are rejected before they consume server resources.
+  app.use(express.json({ limit: '2mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '256kb' }));
   app.use(cookieParser());
 
   // Health check
@@ -35,7 +37,7 @@ async function startServer() {
   app.use('/api', apiRouter);
 
   // Serve public static folder (favicon, icons, etc.)
-  app.use(express.static(path.join(process.cwd(), 'public')));
+  app.use(express.static(path.join(process.cwd(), 'public'), { maxAge: '1d' }));
 
   // Vite development middleware or production static serving
   if (process.env.NODE_ENV !== 'production') {
@@ -46,7 +48,19 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    // Vite asset names are content-hashed and safe to cache permanently. This
+    // prevents repeat page loads from downloading the same JS/CSS from Render.
+    app.use('/assets', express.static(path.join(distPath, 'assets'), {
+      immutable: true,
+      maxAge: '1y',
+      index: false
+    }));
+    app.use(express.static(distPath, {
+      maxAge: '1h',
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+      }
+    }));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
