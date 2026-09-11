@@ -96,16 +96,6 @@ export async function createUploadUrl(key: string, contentType: string, _size: n
   }), { expiresIn: 10 * 60 });
 }
 
-export async function uploadObject(key: string, contentType: string, body: Buffer): Promise<void> {
-  await client().send(new PutObjectCommand({
-    Bucket: bucketName(),
-    Key: key,
-    ContentType: contentType,
-    ContentLength: body.length,
-    Body: body
-  }));
-}
-
 export async function verifyObject(key: string, expectedType: string, expectedSize: number) {
   const result = await inspectObject(key);
   if (result.ContentLength !== expectedSize || result.ContentType !== expectedType) {
@@ -127,18 +117,4 @@ export async function createDownloadUrl(key: string): Promise<string> {
     Bucket: bucketName(),
     Key: key
   }), { expiresIn: 5 * 60 });
-}
-
-export async function downloadObject(key: string): Promise<{ body: Uint8Array; contentType: string; contentLength: number }> {
-  const result = await client().send(new GetObjectCommand({
-    Bucket: bucketName(),
-    Key: key
-  }));
-  if (!result.Body) throw new Error('Stored media has no response body.');
-  const body = await result.Body.transformToByteArray();
-  return {
-    body,
-    contentType: result.ContentType || 'application/octet-stream',
-    contentLength: result.ContentLength || body.byteLength
-  };
 }
