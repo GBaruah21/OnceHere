@@ -1,5 +1,5 @@
 import bcrypt from 'bcryptjs';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import {
   Archive,
@@ -23,6 +23,8 @@ const SNAPSHOT_CHUNK_SIZE = 64 * 1024;
 const SNAPSHOT_READ_CONCURRENCY = 6;
 const SNAPSHOT_WRITE_CONCURRENCY = 6;
 const TENANT_SNAPSHOT_FORMAT = 1;
+const TENANT_INDEX_FORMAT = 1;
+const TENANT_INDEX_ID = 'tenant-index';
 const STORAGE_REQUEST_TIMEOUT_MS = 20_000;
 const STORAGE_RETRY_DELAYS_MS = [0, 250, 750];
 
@@ -78,7 +80,7 @@ export function decodeSnapshot(
  * the application, while saving a complete state snapshot to Supabase when
  * the server is configured with SUPABASE_URL and SUPABASE_SECRET_KEY.
  */
-class MemoryDatabase {
+export class MemoryDatabase {
   archives: Map<string, Archive> = new Map();
   sections: Map<string, Section[]> = new Map(); // archiveId -> sections
   timelineEvents: Map<string, TimelineEvent[]> = new Map(); // archiveId -> events
@@ -95,10 +97,10 @@ class MemoryDatabase {
   platformSettings: { instagram?: string; email?: string; displayHandle?: string } = {};
   private loadedFromStorage = false;
   private loadingPromise?: Promise<void>;
-  private writing = false;
-  private pendingWrites: Array<{ resolve: () => void; reject: (error: unknown) => void }> = [];
   private tenantWriting = new Set<string>();
   private tenantPending = new Map<string, Array<{ resolve: () => void; reject: (error: unknown) => void }>>();
+  private loadedTenantIds = new Set<string>();
+  private tenantLoading = new Map<string, Promise<void>>();
 
   constructor() {
     this.seedSampleData();
@@ -179,6 +181,25 @@ class MemoryDatabase {
     };
   }
 
+  private tenantIndexSnapshot(): Record<string, unknown> {
+    return {
+      format: TENANT_INDEX_FORMAT,
+      archives: Array.from(this.archives.entries()),
+      platformSettings: this.platformSettings
+    };
+  }
+
+  private restoreTenantIndex(snapshot: Record<string, unknown>): boolean {
+    if (snapshot.format !== TENANT_INDEX_FORMAT || !Array.isArray(snapshot.archives)) return false;
+    for (const [id, archive] of snapshot.archives as [string, Archive][]) {
+      if (id && archive?.id === id) this.archives.set(id, archive);
+    }
+    this.platformSettings = snapshot.platformSettings && typeof snapshot.platformSettings === 'object'
+      ? snapshot.platformSettings as { instagram?: string; email?: string; displayHandle?: string }
+      : {};
+    return true;
+  }
+
   private restoreTenant(snapshot: Record<string, unknown>) {
     const archive = snapshot.archive as Archive | undefined;
     if (!archive?.id) return;
@@ -197,6 +218,7 @@ class MemoryDatabase {
     if (Array.isArray(snapshot.sessions)) {
       for (const entry of snapshot.sessions as [string, UserSession][]) this.sessions.set(entry[0], entry[1]);
     }
+    this.loadedTenantIds.add(id);
   }
 
   private restoreMap<T>(value: unknown): Map<string, T> {
@@ -355,6 +377,15 @@ class MemoryDatabase {
       const config = this.storageConfig;
       // Keep AI Studio and local development working without any cloud setup.
       if (!config) {
+        for (const id of this.archives.keys()) this.loadedTenantIds.add(id);
+        this.loadedFromStorage = true;
+        return;
+      }
+
+      // Current deployments start from a compact archive index. Full media,
+      // revisions and session data are fetched only for the requested tenant.
+      const index = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0]?.data;
+      if (index && this.restoreTenantIndex(index)) {
         this.loadedFromStorage = true;
         return;
       }
@@ -435,8 +466,10 @@ class MemoryDatabase {
       }
       this.loadedFromStorage = true;
 
-      // First production request stores the built-in demo data as the initial state.
-      if (!manifest) await this.persist();
+      // One-time migration from the legacy global snapshot. Write every tenant
+      // first and publish the compact index last, so future cold starts never
+      // need to reconstruct the historical whole-platform snapshot.
+      await this.migrateToTenantIndex();
     })();
 
     try {
@@ -446,18 +479,104 @@ class MemoryDatabase {
     }
   }
 
-  /** Queues writes so a newer archive edit cannot be overwritten by an older one. */
+  /** Loads one archive's full data on demand after the compact index is ready. */
+  async ensureArchiveLoaded(archiveId: string): Promise<void> {
+    await this.ensureLoaded();
+    if (this.loadedTenantIds.has(archiveId)) return;
+    const pending = this.tenantLoading.get(archiveId);
+    if (pending) return pending;
+
+    const loading = (async () => {
+      const config = this.storageConfig;
+      if (!config) {
+        this.loadedTenantIds.add(archiveId);
+        return;
+      }
+      const row = (await this.fetchRows(config, [`tenant-${archiveId}`]))[0];
+      if (!row?.data) {
+        // Built-in demos remain recoverable from the bundled seed. For a real
+        // archive, refusing the request is safer than saving an empty tenant.
+        if (archiveId.startsWith('demo-')) {
+          this.loadedTenantIds.add(archiveId);
+          return;
+        }
+        throw new Error('The archive data is temporarily unavailable.');
+      }
+      const stored = row.data;
+      if (stored.format !== TENANT_SNAPSHOT_FORMAT || !Array.isArray(stored.chunks)
+        || typeof stored.sha256 !== 'string') {
+        throw new Error('The archive data is temporarily unavailable.');
+      }
+      this.restoreTenant(decodeSnapshot(
+        stored.chunks as string[],
+        stored.sha256,
+        stored.compression === 'gzip' ? 'gzip' : undefined
+      ));
+    })();
+    this.tenantLoading.set(archiveId, loading);
+    try {
+      await loading;
+    } finally {
+      this.tenantLoading.delete(archiveId);
+    }
+  }
+
+  async ensureAllArchivesLoaded(): Promise<void> {
+    await this.ensureLoaded();
+    const ids = Array.from(this.archives.keys());
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(SNAPSHOT_READ_CONCURRENCY, ids.length) }, async () => {
+      while (next < ids.length) await this.ensureArchiveLoaded(ids[next++]);
+    }));
+  }
+
+  private tenantStorageRow(archiveId: string) {
+    const encoded = encodeSnapshot(this.tenantSnapshot(archiveId));
+    return {
+      id: `tenant-${archiveId}`,
+      data: {
+        format: TENANT_SNAPSHOT_FORMAT,
+        chunks: encoded.chunks,
+        compression: encoded.compression,
+        sha256: encoded.sha256
+      },
+      updated_at: new Date().toISOString()
+    };
+  }
+
+  private tenantIndexRow() {
+    return {
+      id: TENANT_INDEX_ID,
+      data: this.tenantIndexSnapshot(),
+      updated_at: new Date().toISOString()
+    };
+  }
+
+  private async writeTenantRow(config: { url: string; key: string }, archiveId: string): Promise<void> {
+    await this.upsertRows(config, [this.tenantStorageRow(archiveId)]);
+    this.loadedTenantIds.add(archiveId);
+  }
+
+  private async writeTenantIndex(config: { url: string; key: string }): Promise<void> {
+    await this.upsertRows(config, [this.tenantIndexRow()]);
+  }
+
+  private async migrateToTenantIndex(): Promise<void> {
+    const config = this.storageConfig;
+    if (!config) return;
+    const ids = Array.from(this.archives.keys());
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(SNAPSHOT_WRITE_CONCURRENCY, ids.length) }, async () => {
+      while (next < ids.length) await this.writeTenantRow(config, ids[next++]);
+    }));
+    await this.writeTenantIndex(config);
+  }
+
+  /** Persists the compact platform settings and archive lookup index. */
   persist(): Promise<void> {
     const config = this.storageConfig;
     if (!config) return Promise.resolve();
-    const result = new Promise<void>((resolve, reject) => {
-      this.pendingWrites.push({ resolve, reject });
-    });
-    if (!this.writing) {
-      this.writing = true;
-      queueMicrotask(() => { void this.flushWrites(); });
-    }
-    return result;
+    return this.writeTenantIndex(config);
   }
 
   /** Persist only one tenant. Ordinary edits must never rewrite every archive. */
@@ -483,17 +602,10 @@ class MemoryDatabase {
         try {
           const config = this.storageConfig;
           if (!config) throw new Error('Durable storage configuration disappeared.');
-          const encoded = encodeSnapshot(this.tenantSnapshot(archiveId));
-          await this.upsertRows(config, [{
-            id: `tenant-${archiveId}`,
-            data: {
-              format: TENANT_SNAPSHOT_FORMAT,
-              chunks: encoded.chunks,
-              compression: encoded.compression,
-              sha256: encoded.sha256
-            },
-            updated_at: new Date().toISOString()
-          }]);
+          // One PostgREST upsert keeps tenant content and its lookup metadata
+          // atomic while also avoiding a second network round trip per edit.
+          await this.upsertRows(config, [this.tenantStorageRow(archiveId), this.tenantIndexRow()]);
+          this.loadedTenantIds.add(archiveId);
           waiters.forEach(({ resolve }) => resolve());
         } catch (error) {
           waiters.forEach(({ reject }) => reject(error));
@@ -503,68 +615,6 @@ class MemoryDatabase {
       this.tenantPending.delete(archiveId);
       this.tenantWriting.delete(archiveId);
     }
-  }
-
-  private async flushWrites(): Promise<void> {
-    try {
-      while (this.pendingWrites.length) {
-        const waiters = this.pendingWrites.splice(0);
-        try {
-          // Encode immediately: in-flight edits cannot change this generation.
-          await this.writeSnapshot(encodeSnapshot(this.snapshot()));
-          waiters.forEach(({ resolve }) => resolve());
-        } catch (error) {
-          waiters.forEach(({ reject }) => reject(error));
-        }
-      }
-    } finally {
-      this.writing = false;
-    }
-  }
-
-  private async writeSnapshot(encoded: ReturnType<typeof encodeSnapshot>): Promise<void> {
-      const config = this.storageConfig;
-      if (!config) throw new Error('Durable storage configuration disappeared.');
-      const generation = `${Date.now().toString(36)}${randomBytes(6).toString('hex')}`;
-      const updatedAt = new Date().toISOString();
-      const chunkRows = encoded.chunks.map((payload, index) => ({
-        id: `snapshot-${generation}-${String(index).padStart(6, '0')}`,
-        data: { format: SNAPSHOT_FORMAT, payload },
-        updated_at: updatedAt
-      }));
-      const manifestRow = {
-        id: 'manifest',
-        data: { format: SNAPSHOT_FORMAT, generation, chunkCount: chunkRows.length,
-          sha256: encoded.sha256, compression: encoded.compression, updatedAt },
-        updated_at: updatedAt
-      };
-      // A single PostgREST upsert is transactional: small snapshots need only
-      // one round trip, with chunks and manifest becoming visible together.
-      if (chunkRows.length <= 4) {
-        await this.upsertRows(config, [...chunkRows, manifestRow]);
-        return;
-      }
-
-      // Each statement stays small enough for Supabase's statement timeout.
-      // Independent generation rows are written concurrently so a save takes
-      // roughly one storage round trip instead of one round trip per chunk.
-      // The manifest is committed last, so readers see either the complete old
-      // generation or the complete new generation, never a partial snapshot.
-      const batches: typeof chunkRows[] = [];
-      for (let offset = 0; offset < chunkRows.length; offset += 4) {
-        batches.push(chunkRows.slice(offset, offset + 4));
-      }
-      let nextBatch = 0;
-      await Promise.all(Array.from(
-        { length: Math.min(SNAPSHOT_WRITE_CONCURRENCY, batches.length) },
-        async () => {
-          while (nextBatch < batches.length) {
-            const batch = batches[nextBatch++];
-            await this.upsertRows(config, batch);
-          }
-        }
-      ));
-      await this.upsertRows(config, [manifestRow]);
   }
 
   // --- Slug & Tenant Lookups ---

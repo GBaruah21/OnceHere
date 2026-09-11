@@ -85,6 +85,17 @@ function limitRecoveryAttempts(req: Request, res: Response, next: NextFunction) 
 apiRouter.use(async (req, res, next) => {
   try {
     await db.ensureLoaded();
+    const directArchiveMatch = req.path.match(/^\/(?:admin\/)?archives\/([^/]+)/);
+    let archiveToLoad = directArchiveMatch?.[1] && !['auth', 'by-slug', 'by-workspace'].includes(directArchiveMatch[1])
+      ? directArchiveMatch[1]
+      : undefined;
+    const slugMatch = req.path.match(/^\/archives\/(?:by-slug|by-workspace)\/([^/]+)/);
+    if (!archiveToLoad && slugMatch?.[1]) archiveToLoad = db.findBySlug(decodeURIComponent(slugMatch[1]))?.id;
+    if (!archiveToLoad && req.path === '/analytics' && typeof req.body?.archiveId === 'string') {
+      archiveToLoad = req.body.archiveId;
+    }
+    if (archiveToLoad && db.findById(archiveToLoad)) await db.ensureArchiveLoaded(archiveToLoad);
+
     const methodCanMutate = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
     const isTransientOperation = req.path.includes('/media/upload')
       || req.path.startsWith('/ai/');
@@ -396,17 +407,22 @@ apiRouter.get('/admin/archives', (req: Request, res: Response) => {
   return res.json({ archives });
 });
 
-apiRouter.get('/admin/share-activity', (req: Request, res: Response) => {
+apiRouter.get('/admin/share-activity', async (req: Request, res: Response, next: NextFunction) => {
   if (!hasPlatformAdminAccess(req)) return res.status(403).json({ error: 'Platform owner access required.' });
-  const activity = db.getShareActivity(undefined, 100).map((entry) => {
-    const archive = db.findById(entry.archiveId);
-    return {
-      ...entry,
-      archiveTitle: archive?.title || 'Deleted archive',
-      archiveSlug: archive?.slug || archive?.workspaceSlug || ''
-    };
-  });
-  return res.json({ activity });
+  try {
+    await db.ensureAllArchivesLoaded();
+    const activity = db.getShareActivity(undefined, 100).map((entry) => {
+      const archive = db.findById(entry.archiveId);
+      return {
+        ...entry,
+        archiveTitle: archive?.title || 'Deleted archive',
+        archiveSlug: archive?.slug || archive?.workspaceSlug || ''
+      };
+    });
+    return res.json({ activity });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 // Read-only platform-owner preview for every archive, including drafts and
@@ -925,6 +941,8 @@ apiRouter.post('/archives/auth/key-access', limitRecoveryAttempts, async (req: R
       error: result.error || 'Invalid recovery key. Please check the complete key and try again.'
     });
   }
+
+  await db.ensureArchiveLoaded(result.archive.id);
 
   // Log access in archive's access history
   const clientInfo = extractClientInfo(req);
