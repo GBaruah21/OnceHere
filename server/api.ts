@@ -1270,55 +1270,15 @@ function checkMediaQuota(archiveId: string, kind: 'image' | 'video', incomingByt
   return null;
 }
 
-// Same-origin upload proxy. This avoids browser-to-storage CORS failures while
-// keeping storage credentials and the bucket private. The 21 MB parser ceiling
-// is deliberately just above OnceHere's 20 MB public video limit.
-apiRouter.put(
-  '/archives/:id/media/upload',
-  express.raw({ type: ['image/*', 'video/*'], limit: '21mb' }),
-  async (req: Request, res: Response) => {
-    const { id } = req.params;
-    const access = requireArchiveEditor(req, id, true);
-    if ('error' in access) return res.status(access.status).json({ error: access.error });
-    if (!isR2Configured()) return res.status(503).json({ error: 'Object storage is not configured yet.' });
-
-    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    const contentType = String(req.header('content-type') || '').split(';')[0].trim().toLowerCase();
-    let fileName = 'memory';
-    try {
-      fileName = decodeURIComponent(String(req.header('x-file-name') || 'memory')).slice(0, 255);
-    } catch {
-      return res.status(400).json({ error: 'Invalid file name.' });
-    }
-
-    try {
-      const kind = validateUpload(contentType, body.length);
-      const quotaError = checkMediaQuota(id, kind, body.length);
-      if (quotaError) return res.status(413).json({ error: quotaError });
-      const key = createObjectKey(id, contentType);
-      try {
-        await uploadObject(key, contentType, body);
-      } catch (error) {
-        console.error('Object-storage upload failed:', error);
-        return res.status(503).json({
-          error: 'Storage could not accept the file. Retry the upload. If it still fails, refresh the page.',
-          retryable: true
-        });
-      }
-      return res.json({
-        success: true,
-        url: publicObjectUrl(key),
-        storageKey: key,
-        fileSize: body.length,
-        contentType,
-        fileName,
-        type: kind
-      });
-    } catch (error) {
-      return res.status(400).json({ error: error instanceof Error ? error.message : 'Upload failed.' });
-    }
-  }
-);
+// Never relay media bytes through the application server. Older cached clients
+// may still call this endpoint, so reject them without parsing or forwarding the
+// request body. Clients must use the signed object-storage upload flow below.
+apiRouter.put('/archives/:id/media/upload', (_req: Request, res: Response) => {
+  return res.status(410).json({
+    error: 'Server-relayed uploads are disabled. Refresh the page and retry the direct storage upload.',
+    directUploadRequired: true
+  });
+});
 
 apiRouter.post('/archives/:id/media/upload-url', async (req: Request, res: Response) => {
   const { id } = req.params;
