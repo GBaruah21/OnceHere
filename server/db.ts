@@ -21,7 +21,6 @@ import { PLATFORM_CONFIG } from '../src/config/platform';
 const SNAPSHOT_FORMAT = 3;
 const SNAPSHOT_CHUNK_SIZE = 64 * 1024;
 const SNAPSHOT_READ_CONCURRENCY = 6;
-const SNAPSHOT_WRITE_CONCURRENCY = 6;
 const TENANT_SNAPSHOT_FORMAT = 1;
 const TENANT_INDEX_FORMAT = 1;
 const TENANT_INDEX_ID = 'tenant-index';
@@ -101,6 +100,7 @@ export class MemoryDatabase {
   private tenantPending = new Map<string, Array<{ resolve: () => void; reject: (error: unknown) => void }>>();
   private loadedTenantIds = new Set<string>();
   private tenantLoading = new Map<string, Promise<void>>();
+  private legacyArchiveIds = new Set<string>();
 
   constructor() {
     this.seedSampleData();
@@ -185,6 +185,7 @@ export class MemoryDatabase {
     return {
       format: TENANT_INDEX_FORMAT,
       archives: Array.from(this.archives.entries()),
+      legacyArchiveIds: Array.from(this.legacyArchiveIds),
       platformSettings: this.platformSettings
     };
   }
@@ -194,6 +195,9 @@ export class MemoryDatabase {
     for (const [id, archive] of snapshot.archives as [string, Archive][]) {
       if (id && archive?.id === id) this.archives.set(id, archive);
     }
+    this.legacyArchiveIds = new Set(Array.isArray(snapshot.legacyArchiveIds)
+      ? snapshot.legacyArchiveIds.filter((id): id is string => typeof id === 'string')
+      : []);
     this.platformSettings = snapshot.platformSettings && typeof snapshot.platformSettings === 'object'
       ? snapshot.platformSettings as { instagram?: string; email?: string; displayHandle?: string }
       : {};
@@ -368,6 +372,73 @@ export class MemoryDatabase {
     return this.getPlatformSettings();
   }
 
+  private async fetchGlobalSnapshot(config: { url: string; key: string }): Promise<Record<string, unknown> | undefined> {
+    const rows = await this.fetchRows(config, ['manifest']);
+    const manifest = rows.find((row) => row.id === 'manifest')?.data as Partial<SnapshotManifest> | undefined;
+    const legacySnapshot = !manifest
+      ? (await this.fetchRows(config, ['primary']))[0]?.data
+      : undefined;
+
+    if (
+      (manifest?.format === 2 || manifest?.format === SNAPSHOT_FORMAT)
+      && typeof manifest.generation === 'string'
+      && Number.isInteger(manifest.chunkCount)
+      && Number(manifest.chunkCount) > 0
+      && typeof manifest.sha256 === 'string'
+    ) {
+      const chunkIds = Array.from(
+        { length: Number(manifest.chunkCount) },
+        (_, index) => `snapshot-${manifest.generation}-${String(index).padStart(6, '0')}`
+      );
+      const batches: string[][] = [];
+      for (let offset = 0; offset < chunkIds.length; offset += 50) batches.push(chunkIds.slice(offset, offset + 50));
+      const chunkRows: StoredStateRow[] = [];
+      let nextBatch = 0;
+      await Promise.all(Array.from({ length: Math.min(SNAPSHOT_READ_CONCURRENCY, batches.length) }, async () => {
+        while (nextBatch < batches.length) chunkRows.push(...await this.fetchRows(config, batches[nextBatch++]));
+      }));
+      const chunksById = new Map(chunkRows.map((row) => [row.id, row.data?.payload]));
+      const chunks = chunkIds.map((id) => chunksById.get(id));
+      if (chunks.some((chunk) => typeof chunk !== 'string')) throw new Error('Stored archive snapshot is incomplete.');
+      try {
+        return decodeSnapshot(chunks as string[], manifest.sha256, manifest.compression);
+      } catch (error) {
+        const fallback = (await this.fetchRows(config, ['primary']))[0]?.data;
+        if (!fallback) throw error;
+        console.error('Active archive snapshot failed validation; loading the recovery copy:', error);
+        return fallback;
+      }
+    }
+    return legacySnapshot;
+  }
+
+  private tenantFromGlobalSnapshot(snapshot: Record<string, unknown>, archiveId: string): Record<string, unknown> | undefined {
+    const valueFor = (key: string) => {
+      const entries = snapshot[key];
+      if (!Array.isArray(entries)) return undefined;
+      return (entries as [string, unknown][]).find(([id]) => id === archiveId)?.[1];
+    };
+    const archive = valueFor('archives') as Archive | undefined;
+    if (!archive) return undefined;
+    const sessions = Array.isArray(snapshot.sessions)
+      ? (snapshot.sessions as [string, UserSession][]).filter(([, session]) => session.archiveId === archiveId)
+      : [];
+    return {
+      archive,
+      sections: valueFor('sections') || [],
+      timelineEvents: valueFor('timelineEvents') || [],
+      members: valueFor('members') || [],
+      memberMessages: valueFor('memberMessages') || [],
+      mediaItems: valueFor('mediaItems') || [],
+      albums: valueFor('albums') || [],
+      wallPosts: valueFor('wallPosts') || [],
+      revisions: valueFor('revisions') || [],
+      accessLogs: valueFor('accessLogs') || [],
+      shareActivity: valueFor('shareActivity') || [],
+      sessions
+    };
+  }
+
   /** Loads the durable state once per server start, before any API route runs. */
   async ensureLoaded(): Promise<void> {
     if (this.loadedFromStorage) return;
@@ -390,60 +461,8 @@ export class MemoryDatabase {
         return;
       }
 
-      const rows = await this.fetchRows(config, ['manifest']);
-      const manifest = rows.find((row) => row.id === 'manifest')?.data as Partial<SnapshotManifest> | undefined;
-      // Do not download the potentially enormous legacy row on every cold start.
-      const legacySnapshot = !manifest
-        ? (await this.fetchRows(config, ['primary']))[0]?.data
-        : undefined;
-
-      if (
-        (manifest?.format === 2 || manifest?.format === SNAPSHOT_FORMAT)
-        && typeof manifest.generation === 'string'
-        && Number.isInteger(manifest.chunkCount)
-        && Number(manifest.chunkCount) > 0
-        && typeof manifest.sha256 === 'string'
-      ) {
-        const chunkIds = Array.from(
-          { length: Number(manifest.chunkCount) },
-          (_, index) => `snapshot-${manifest.generation}-${String(index).padStart(6, '0')}`
-        );
-        const batches: string[][] = [];
-        for (let offset = 0; offset < chunkIds.length; offset += 50) {
-          batches.push(chunkIds.slice(offset, offset + 50));
-        }
-        const chunkRows: StoredStateRow[] = [];
-        let nextBatch = 0;
-        await Promise.all(Array.from(
-          { length: Math.min(SNAPSHOT_READ_CONCURRENCY, batches.length) },
-          async () => {
-            while (nextBatch < batches.length) {
-              const batch = batches[nextBatch++];
-              chunkRows.push(...await this.fetchRows(config, batch));
-            }
-          }
-        ));
-        const chunksById = new Map(chunkRows.map((row) => [row.id, row.data?.payload]));
-        const chunks = chunkIds.map((id) => chunksById.get(id));
-        if (chunks.some((chunk) => typeof chunk !== 'string')) {
-          throw new Error('Stored archive snapshot is incomplete.');
-        }
-        try {
-          this.restore(decodeSnapshot(chunks as string[], manifest.sha256, manifest.compression));
-        } catch (error) {
-          // Keep the platform recoverable if a previously interrupted or
-          // corrupted generation becomes the active manifest. The legacy row
-          // is retained specifically as a last-known-good recovery copy.
-          const fallback = (await this.fetchRows(config, ['primary']))[0]?.data;
-          if (!fallback) throw error;
-          console.error('Active archive snapshot failed validation; loading the recovery copy:', error);
-          this.restore(fallback);
-        }
-      } else if (legacySnapshot) {
-        // Existing deployments used one large row. Load it unchanged, then
-        // migrate it to the chunked format without deleting the legacy copy.
-        this.restore(legacySnapshot);
-      }
+      const globalSnapshot = await this.fetchGlobalSnapshot(config);
+      if (globalSnapshot) this.restore(globalSnapshot);
 
       // New writes are stored independently per archive. They overlay the
       // legacy global snapshot, preserving old data while making edits small.
@@ -498,6 +517,20 @@ export class MemoryDatabase {
         // archive, refusing the request is safer than saving an empty tenant.
         if (archiveId.startsWith('demo-')) {
           this.loadedTenantIds.add(archiveId);
+          return;
+        }
+        if (this.legacyArchiveIds.has(archiveId)) {
+          const globalSnapshot = await this.fetchGlobalSnapshot(config);
+          const tenant = globalSnapshot && this.tenantFromGlobalSnapshot(globalSnapshot, archiveId);
+          if (!tenant) throw new Error('The archive data is temporarily unavailable.');
+          this.restoreTenant(tenant);
+          try {
+            await this.writeTenantRow(config, archiveId);
+            this.legacyArchiveIds.delete(archiveId);
+            await this.writeTenantIndex(config);
+          } catch (error) {
+            console.error(`Archive ${archiveId} loaded from recovery storage but could not be migrated:`, error);
+          }
           return;
         }
         throw new Error('The archive data is temporarily unavailable.');
@@ -564,15 +597,12 @@ export class MemoryDatabase {
   private async migrateToTenantIndex(): Promise<void> {
     const config = this.storageConfig;
     if (!config) return;
-    // Tenant rows successfully loaded above are already the durable source of
-    // truth. Rewriting them here can exceed storage/request limits for media-
-    // heavy archives and is unnecessary. Only backfill archives that existed
-    // solely in the legacy global snapshot, then publish the index last.
-    const ids = Array.from(this.archives.keys()).filter((id) => !this.loadedTenantIds.has(id));
-    let next = 0;
-    await Promise.all(Array.from({ length: Math.min(SNAPSHOT_WRITE_CONCURRENCY, ids.length) }, async () => {
-      while (next < ids.length) await this.writeTenantRow(config, ids[next++]);
-    }));
+    // Publish lookup metadata immediately. Legacy-only tenants are recovered
+    // and migrated individually when requested, never inside the Explore path.
+    this.legacyArchiveIds = new Set(Array.from(this.archives.keys()).filter(
+      (id) => !id.startsWith('demo-') && !this.loadedTenantIds.has(id)
+    ));
+    for (const id of this.archives.keys()) this.loadedTenantIds.add(id);
     await this.writeTenantIndex(config);
   }
 
