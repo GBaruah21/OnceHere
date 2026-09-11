@@ -1,6 +1,17 @@
 # OnceHere retry: changes and verification
 
-Date: 4 September 2026. This is a tested repair candidate, not a complete production certification. No live deployment was performed.
+Date: 11 September 2026. This remains a targeted repair report, not a complete production certification.
+
+## Production persistence recovery — 11 September 2026
+
+- Removed obsolete AI route imports that prevented the Render production build.
+- Made tenant snapshot reads independent so one damaged row cannot make every archive unavailable.
+- Added a compact archive index and lazy tenant hydration. Explore no longer reconstructs every archive's media, revisions and sessions during each server start.
+- Existing global snapshots remain a recovery source. Legacy-only archives are migrated individually when requested; large demo and tenant snapshots are never rewritten inside the Explore request path.
+- Tenant content and compact metadata are saved in one PostgREST upsert, avoiding a partial-save window.
+- The one-time production migration completed with all four public archives present and no PIN, recovery-key or owner-token fields in the response.
+- Five subsequent live `/api/archives` requests returned HTTP 200. External timings were 18.4–21.3 seconds; the same environment observed comparable delay on `/api/health`, so these figures do not isolate application processing or establish the Core Web Vitals targets.
+- Automated verification now passes 55 tests across five files. Strict TypeScript and the full production build pass.
 
 ## Security follow-up — 4 September 2026
 
