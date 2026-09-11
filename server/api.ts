@@ -31,17 +31,17 @@ import {
   createDownloadUrl,
   createUploadUrl,
   inspectObject,
-  downloadObject,
   deleteObject,
   isR2Configured,
   publicObjectUrl,
-  uploadObject,
   validateUpload,
   verifyObject
 } from './r2';
 
 export const apiRouter = express.Router();
-apiRouter.use(express.json({ limit: '40mb' }));
+// Media bytes never belong in JSON. Keeping this limit small prevents stale or
+// abusive clients from consuming Render bandwidth and memory with base64 files.
+apiRouter.use(express.json({ limit: '2mb' }));
 
 const archiveMutationTails = new Map<string, Promise<void>>();
 
@@ -392,6 +392,7 @@ apiRouter.post('/archives', (req: Request, res: Response) => {
 // List public archives for the Explore page
 apiRouter.get('/archives', (_req: Request, res: Response) => {
   const archives = db.listPublicArchives().map(sanitizeArchive);
+  res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=120');
   return res.json({ archives });
 });
 
@@ -484,6 +485,12 @@ apiRouter.get('/archives/by-slug/:slug', (req: Request, res: Response) => {
   const wall = db.getWallPosts(archive.id);
   const albums = db.getAlbums(archive.id);
 
+  if (archive.visibility === 'public' && auth.role === 'none') {
+    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=120');
+  } else {
+    res.setHeader('Cache-Control', 'private, no-store');
+  }
+
   return res.json({
     archive: sanitizeArchive(archive),
     sections,
@@ -514,6 +521,8 @@ apiRouter.get('/archives/by-workspace/:workspaceSlug', (req: Request, res: Respo
   const media = db.getMediaItems(archive.id);
   const wall = db.getWallPosts(archive.id);
   const albums = db.getAlbums(archive.id);
+
+  res.setHeader('Cache-Control', 'private, no-store');
 
   return res.json({
     archive: sanitizeArchive(archive),
@@ -546,6 +555,12 @@ apiRouter.get('/archives/:id', (req: Request, res: Response) => {
   const media = db.getMediaItems(archive.id);
   const wall = db.getWallPosts(archive.id);
   const albums = db.getAlbums(archive.id);
+
+  if (archive.visibility === 'public' && archive.deploymentStatus === 'deployed' && auth.role === 'none') {
+    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=120');
+  } else {
+    res.setHeader('Cache-Control', 'private, no-store');
+  }
 
   return res.json({
     archive: sanitizeArchive(archive),
@@ -1379,13 +1394,14 @@ apiRouter.get('/archives/:id/media-object/:fileName', async (req: Request, res: 
   ));
   if (!item) return res.status(404).json({ error: 'Media not found.' });
   try {
-    const stored = await downloadObject(requestedStorageKey);
-    res.setHeader('Content-Type', stored.contentType);
-    res.setHeader('Content-Length', String(stored.contentLength));
-    res.setHeader('Content-Disposition', 'inline');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Cache-Control', archive.visibility === 'public' ? 'public, max-age=300' : 'private, no-store');
-    return res.status(200).send(Buffer.from(stored.body));
+    // Authorize here, but send the browser straight to object storage. Render
+    // transfers only this small redirect—not the image or video bytes.
+    const downloadUrl = await createDownloadUrl(requestedStorageKey);
+    res.setHeader('Cache-Control', archive.visibility === 'public'
+      ? 'public, max-age=240'
+      : 'private, no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    return res.redirect(302, downloadUrl);
   } catch {
     return res.status(503).json({ error: 'Media is temporarily unavailable.' });
   }
@@ -1415,27 +1431,13 @@ apiRouter.post('/archives/:id/media', async (req: Request, res: Response) => {
     if (match) storageKey = `archives/${id}/${match[1]}`;
   }
 
-  // Compatibility path for a client that finished reading the local file but
-  // lost the separate object-storage receipt. Persist the bytes now instead of
-  // rejecting a valid selection as an "incomplete file reference".
+  // Refuse old cached clients that try to put file bytes into JSON. The direct
+  // signed-upload flow is the only supported path and never relays via Render.
   if (!storageKey && typeof url === 'string' && url.startsWith('data:')) {
-    if (!isR2Configured()) return res.status(503).json({ error: 'Object storage is not configured yet.' });
-    const match = url.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/);
-    if (!match) return res.status(400).json({ error: 'The selected media could not be decoded. Select it again and retry.' });
-    try {
-      contentType = match[1].toLowerCase();
-      const body = Buffer.from(match[2], 'base64');
-      fileSize = body.length;
-      const kind = validateUpload(contentType, fileSize);
-      if (kind !== (type === 'video' ? 'video' : 'image')) return res.status(400).json({ error: 'Media type does not match the selected file.' });
-      const quotaError = checkMediaQuota(id, kind, fileSize);
-      if (quotaError) return res.status(413).json({ error: quotaError });
-      storageKey = createObjectKey(id, contentType);
-      await uploadObject(storageKey, contentType, body);
-      url = publicObjectUrl(storageKey);
-    } catch (error) {
-      return res.status(400).json({ error: error instanceof Error ? error.message : 'The selected media could not be uploaded.' });
-    }
+    return res.status(410).json({
+      error: 'This upload method is retired. Refresh the page and upload directly to storage.',
+      directUploadRequired: true
+    });
   }
 
   if (storageKey) {
