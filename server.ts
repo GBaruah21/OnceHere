@@ -54,6 +54,12 @@ async function startServer() {
 
   app.listen(PORT, HOST, () => {
     console.log(`✨ ${PLATFORM_CONFIG.name} server running on http://0.0.0.0:${PORT}`);
+    // Warm the compact archive index while Render performs its normal health
+    // checks. Health remains independent and storage failures remain retryable,
+    // but the first visitor no longer has to initiate durable-state loading.
+    void db.ensureLoaded().catch((error) => {
+      console.error('Background archive-index warmup failed; the next API request will retry:', error);
+    });
   });
 }
 
