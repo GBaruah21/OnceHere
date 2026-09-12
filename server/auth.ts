@@ -3,13 +3,21 @@ import crypto from 'crypto';
 import { db } from './db';
 import { UserSession } from '../src/types';
 import { PLATFORM_CONFIG } from '../src/config/platform';
+import { getSessionSecret } from './runtime-config';
 
-// Keep signatures stable across deployments. A random per-process secret made
-// every existing owner session invalid immediately after a server restart.
-const SESSION_SECRET = process.env.SESSION_SECRET
-  || process.env.SUPABASE_SECRET_KEY
-  || process.env.SUPABASE_SERVICE_ROLE_KEY
-  || crypto.randomBytes(32).toString('hex');
+let developmentSessionSecret: string | undefined;
+
+// Resolve lazily so the health endpoint can report a missing deployment secret
+// instead of the entire serverless function crashing during module import.
+function sessionSecret(): string {
+  const configured = getSessionSecret();
+  if (configured) return configured;
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('Production requires SESSION_SECRET (or a stable Supabase secret) so owner sessions survive restarts.');
+  }
+  developmentSessionSecret ||= crypto.randomBytes(32).toString('hex');
+  return developmentSessionSecret;
+}
 
 /** Accept a copied key or the complete downloaded recovery-key receipt. */
 export function normalizeRecoveryKeyInput(value: string): string {
@@ -30,7 +38,7 @@ export function createSignedToken(archiveId: string, role: 'owner' | 'contributo
   const expiresAtMs = Date.now() + durationHours * 60 * 60 * 1000;
   const expiresAt = new Date(expiresAtMs).toISOString();
   const payload = `${archiveId}.${role}.${expiresAtMs}.${crypto.randomBytes(16).toString('hex')}`;
-  const hmac = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
+  const hmac = crypto.createHmac('sha256', sessionSecret()).update(payload).digest('hex');
   const token = `${payload}.${hmac}`;
 
   const session: UserSession = {
@@ -67,7 +75,7 @@ export function verifySignedToken(token: string): { valid: boolean; archiveId?: 
 
     if (session.archiveId !== archiveId || session.role !== role) return { valid: false };
     const payload = parts.slice(0, -1).join('.');
-    const expectedHmac = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
+    const expectedHmac = crypto.createHmac('sha256', sessionSecret()).update(payload).digest('hex');
     const providedBuf = Buffer.from(providedHmac);
     const expectedBuf = Buffer.from(expectedHmac);
 
@@ -143,16 +151,15 @@ export function verifyArchivePin(archiveId: string, inputPin: string, ipAddress:
     db.rateLimits.set(rateKey, currentLimit);
     return {
       success: false,
-      error: `Incorrect PIN. Maximum 5 attempts exceeded. Access locked for 15 minutes.`,
+      error: 'The PIN could not be verified. Please wait and try again later.',
       lockedUntil: currentLimit.lockedUntil
     };
   }
 
   db.rateLimits.set(rateKey, currentLimit);
-  const remaining = PLATFORM_CONFIG.limits.maxFailedPinAttempts - currentLimit.attempts;
   return {
     success: false,
-    error: `Incorrect PIN. ${remaining} attempt${remaining !== 1 ? 's' : ''} remaining.`
+    error: 'The PIN could not be verified. Please check it and try again.'
   };
 }
 

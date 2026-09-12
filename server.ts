@@ -6,6 +6,7 @@ import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './server/api';
 import { PLATFORM_CONFIG } from './src/config/platform';
 import { db } from './server/db';
+import { getRuntimeReadiness } from './server/runtime-config';
 
 const portFlag = process.argv.indexOf('--port');
 const PORT = Number(portFlag >= 0 ? process.argv[portFlag + 1] : process.env.PORT || 3000);
@@ -23,9 +24,12 @@ async function startServer() {
 
   // Health check
   app.get('/api/health', (_req, res) => {
-    res.json({
-      status: 'healthy',
+    const readiness = getRuntimeReadiness();
+    res.status(readiness.ready ? 200 : 503).json({
+      status: readiness.ready ? 'healthy' : 'degraded',
       platform: PLATFORM_CONFIG.name,
+      provider: readiness.provider,
+      services: readiness.services,
       buildCommit: process.env.RENDER_GIT_COMMIT || process.env.VERCEL_GIT_COMMIT_SHA || process.env.COMMIT_SHA || 'local',
       durableStorage: db.hasDurableStorage() ? 'configured' : 'not-configured',
       timestamp: new Date().toISOString()

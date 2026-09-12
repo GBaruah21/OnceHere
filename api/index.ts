@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import { apiRouter } from '../server/api';
 import { PLATFORM_CONFIG } from '../src/config/platform';
 import { db } from '../server/db';
+import { getRuntimeReadiness } from '../server/runtime-config';
 
 // Vercel invokes this exported app for every /api/* request (see vercel.json).
 // The existing router remains the single source of truth for all API behavior.
@@ -17,9 +18,12 @@ app.use(express.urlencoded({ extended: true, limit: '256kb' }));
 app.use(cookieParser());
 
 app.get('/api/health', (_req, res) => {
-  res.json({
-    status: 'healthy',
+  const readiness = getRuntimeReadiness();
+  res.status(readiness.ready ? 200 : 503).json({
+    status: readiness.ready ? 'healthy' : 'degraded',
     platform: PLATFORM_CONFIG.name,
+    provider: readiness.provider,
+    services: readiness.services,
     buildCommit: process.env.VERCEL_GIT_COMMIT_SHA || process.env.RENDER_GIT_COMMIT || process.env.COMMIT_SHA || 'local',
     durableStorage: db.hasDurableStorage() ? 'configured' : 'not-configured',
     timestamp: new Date().toISOString()
