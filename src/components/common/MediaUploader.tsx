@@ -92,6 +92,7 @@ export interface MediaUploaderProps {
   compact?: boolean;
   className?: string;
   directUpload?: { archiveId: string; token?: string; autoRegister?: boolean };
+  onBusyChange?: (busy: boolean) => void;
 }
 
 export const MediaUploader: React.FC<MediaUploaderProps> = ({
@@ -104,7 +105,8 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   onOpenAnalyzer,
   compact = false,
   className = '',
-  directUpload
+  directUpload,
+  onBusyChange
 }) => {
   const [activeTab, setActiveTab] = useState<'upload' | 'url'>('upload');
   const [urlInput, setUrlInput] = useState(value && !value.startsWith('data:') ? value : '');
@@ -120,6 +122,10 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   const pendingFileRef = useRef<File | null>(null);
   const completedUploadRef = useRef<{ file: File; authorized: AuthorizedUpload } | null>(null);
   const [cropOpen, setCropOpen] = useState(false);
+
+  useEffect(() => {
+    onBusyChange?.(isProcessing);
+  }, [isProcessing, onBusyChange]);
   const uploadDirectly = async (file: File) => {
     if (!directUpload) throw new Error('Direct upload is unavailable.');
     let authorized = completedUploadRef.current?.file === file
