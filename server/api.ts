@@ -30,6 +30,7 @@ import {
   createObjectKey,
   createDownloadUrl,
   createUploadUrl,
+  checkStorageConnection,
   inspectObject,
   deleteObject,
   isR2Configured,
@@ -42,6 +43,13 @@ export const apiRouter = express.Router();
 // Media bytes never belong in JSON. Keeping this limit small prevents stale or
 // abusive clients from consuming Render bandwidth and memory with base64 files.
 apiRouter.use(express.json({ limit: '2mb' }));
+
+// Safe diagnostic for deployment configuration. It verifies credentials and
+// bucket reachability only; it never returns keys, object names, or data.
+apiRouter.get('/storage-status', async (_req: Request, res: Response) => {
+  const result = await checkStorageConnection();
+  return res.status(result.connected ? 200 : 503).json({ storage: result });
+});
 
 const archiveMutationTails = new Map<string, Promise<void>>();
 
