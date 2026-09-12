@@ -860,9 +860,15 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
                       } else {
                         setActiveTab(item.id);
                       }
-                      const el = document.getElementById(`section-${item.id}`) || document.getElementById(item.id);
+                      // Resolve within this preview. A public page, modal, or
+                      // stale hidden preview can have the same section IDs.
+                      const stage = document.getElementById('editor-preview-stage');
+                      const el = stage?.querySelector<HTMLElement>(`#section-${item.id}, #${item.id}`) || null;
                       if (el) {
-                        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        const stageBounds = stage?.getBoundingClientRect();
+                        const sectionBounds = el.getBoundingClientRect();
+                        const top = (stage?.scrollTop || 0) + sectionBounds.top - (stageBounds?.top || 0) - 76;
+                        stage?.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
                       }
                     }}
                     className={`px-3 py-1 rounded-xl text-[11px] font-medium transition-all cursor-pointer whitespace-nowrap ${
