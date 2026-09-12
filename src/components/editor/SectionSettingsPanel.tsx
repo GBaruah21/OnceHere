@@ -1083,7 +1083,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             <MediaUploader
               acceptMode="image"
               value={newMemberImg}
-              directUpload={{ archiveId: archive.id, token: ownerToken, autoRegister: true }}
+              directUpload={{ archiveId: archive.id, token: ownerToken }}
               onChange={(url) => setNewMemberImg(url)}
               label="Portrait Photo / Avatar"
               placeholder="Paste portrait image URL or choose file from device..."
@@ -1451,7 +1451,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             <MediaUploader
               acceptMode="image"
               value={newWallImg}
-              directUpload={{ archiveId: archive.id, token: ownerToken, autoRegister: true }}
+              directUpload={{ archiveId: archive.id, token: ownerToken }}
               onChange={(url) => setNewWallImg(url)}
               label="Attach Photo to Scribble (Optional)"
               placeholder="Paste image link or upload photo from device..."
