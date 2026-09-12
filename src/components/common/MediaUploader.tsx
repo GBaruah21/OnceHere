@@ -4,6 +4,7 @@ import { Upload, Link as LinkIcon, Image as ImageIcon, Video, X, Check, Camera, 
 import { compressImageForUpload, IMAGE_SOURCE_LIMIT_BYTES, VIDEO_SOURCE_LIMIT_BYTES } from '../../lib/imageCompression';
 
 type UploadPhase = 'optimizing' | 'authorizing' | 'direct';
+type UploadPurpose = 'vault' | 'portrait' | 'timeline' | 'wall';
 type AuthorizedUpload = {
   uploadUrl: string;
   url: string;
@@ -92,6 +93,7 @@ export interface MediaUploaderProps {
   compact?: boolean;
   className?: string;
   directUpload?: { archiveId: string; token?: string; autoRegister?: boolean };
+  uploadPurpose?: UploadPurpose;
   onBusyChange?: (busy: boolean) => void;
 }
 
@@ -106,6 +108,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   compact = false,
   className = '',
   directUpload,
+  uploadPurpose = 'vault',
   onBusyChange
 }) => {
   const [activeTab, setActiveTab] = useState<'upload' | 'url'>('upload');
@@ -146,7 +149,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${directUpload.token || ''}`
         },
-        body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size }),
+        body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size, purpose: uploadPurpose }),
         signal: authorizationController.signal
       }).finally(() => window.clearTimeout(authorizationTimeout));
       const authorizationBody = await authorization.json().catch(() => ({}));
