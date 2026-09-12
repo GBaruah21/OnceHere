@@ -36,7 +36,8 @@ import {
   isR2Configured,
   publicObjectUrl,
   validateUpload,
-  verifyObject
+  verifyObject,
+  getArchiveStorageUsage
 } from './r2.js';
 
 export const apiRouter = express.Router();
@@ -1068,6 +1069,9 @@ apiRouter.post('/archives/:id/timeline', (req: Request, res: Response) => {
   if (!parsed.success) {
     return res.status(400).json({ error: 'Validation failed', details: parsed.error.format() });
   }
+  if (parsed.data.mediaUrl && db.getTimelineEvents(id).filter((entry) => Boolean(entry.mediaUrl)).length >= R2_LIMITS.maxTimelineAttachments) {
+    return res.status(413).json({ error: 'This archive already has the maximum of 20 Journey attachments.' });
+  }
 
   const event: TimelineEvent = {
     id: `te-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
@@ -1175,6 +1179,9 @@ apiRouter.post('/archives/:id/members', (req: Request, res: Response) => {
   if (!parsed.success) {
     return res.status(400).json({ error: 'Validation failed', details: parsed.error.format() });
   }
+  if (parsed.data.imageUrl && db.getMembers(id).filter((entry) => Boolean(entry.imageUrl)).length >= R2_LIMITS.maxMemberPortraits) {
+    return res.status(413).json({ error: 'This archive already has the maximum of 250 Yearbook portraits.' });
+  }
 
   const member: Member = {
     id: `mem-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
@@ -1270,7 +1277,8 @@ apiRouter.post('/archives/:id/members/:memberId/messages', (req: Request, res: R
 const r2UploadSchema = z.object({
   fileName: z.string().trim().min(1).max(255),
   contentType: z.string().trim().min(1).max(100),
-  size: z.number().int().positive()
+  size: z.number().int().positive(),
+  purpose: z.enum(['vault', 'portrait', 'timeline', 'wall']).default('vault')
 });
 
 function requireArchiveEditor(req: Request, archiveId: string, allowOpen = false) {
@@ -1284,14 +1292,23 @@ function requireArchiveEditor(req: Request, archiveId: string, allowOpen = false
   return { archive, auth };
 }
 
-function checkMediaQuota(archiveId: string, kind: 'image' | 'video', incomingBytes: number) {
+async function checkUploadQuota(
+  archiveId: string,
+  purpose: 'vault' | 'portrait' | 'timeline' | 'wall',
+  kind: 'image' | 'video',
+  incomingBytes: number
+) {
   const media = db.getMediaItems(archiveId);
   const images = media.filter((item) => item.type === 'image').length;
   const videos = media.filter((item) => item.type === 'video').length;
-  const totalBytes = media.reduce((sum, item) => sum + (item.fileSize || 0), 0);
-  if (kind === 'image' && images >= R2_LIMITS.maxImagesPerArchive) return 'This archive already has the maximum of 50 images.';
-  if (kind === 'video' && videos >= R2_LIMITS.maxVideosPerArchive) return 'This archive already has the maximum of 2 videos.';
-  if (totalBytes + incomingBytes > R2_LIMITS.maxTotalBytesPerArchive) return 'This archive would exceed its 100 MB media allowance.';
+  if (purpose !== 'vault' && kind === 'video') return 'Videos can be uploaded only to the Media Vault.';
+  if (purpose === 'vault' && kind === 'image' && images >= R2_LIMITS.maxVaultImages) return 'This archive already has the maximum of 100 Media Vault photos.';
+  if (purpose === 'vault' && kind === 'video' && videos >= R2_LIMITS.maxVaultVideos) return 'This archive already has the maximum of 5 Media Vault videos.';
+  if (purpose === 'portrait' && db.getMembers(archiveId).filter((member) => Boolean(member.imageUrl)).length >= R2_LIMITS.maxMemberPortraits) return 'This archive already has the maximum of 250 Yearbook portraits.';
+  if (purpose === 'timeline' && db.getTimelineEvents(archiveId).filter((event) => Boolean(event.mediaUrl)).length >= R2_LIMITS.maxTimelineAttachments) return 'This archive already has the maximum of 20 Journey attachments.';
+  if (purpose === 'wall' && db.getWallPosts(archiveId, true).filter((post) => Boolean(post.imageUrl)).length >= R2_LIMITS.maxWallImageAttachments) return 'This archive already has the maximum of 15 Memory Wall image attachments.';
+  const storedBytes = await getArchiveStorageUsage(archiveId);
+  if (storedBytes + incomingBytes > R2_LIMITS.maxTotalBytesPerArchive) return 'This archive would exceed its 500 MB total media allowance.';
   return null;
 }
 
@@ -1319,7 +1336,7 @@ apiRouter.post('/archives/:id/media/upload-url', async (req: Request, res: Respo
   } catch (error) {
     return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid upload request.' });
   }
-  const quotaError = checkMediaQuota(id, kind, parsed.data.size);
+  const quotaError = await checkUploadQuota(id, parsed.data.purpose, kind, parsed.data.size);
   if (quotaError) return res.status(413).json({ error: quotaError });
   try {
     const key = createObjectKey(id, parsed.data.contentType);
@@ -1357,8 +1374,7 @@ apiRouter.post('/archives/:id/media/upload-complete', async (req: Request, res: 
   } catch (error) {
     return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid upload completion request.' });
   }
-  const quotaError = checkMediaQuota(id, kind, parsed.data.size);
-  if (quotaError) return res.status(413).json({ error: quotaError });
+  if (parsed.data.purpose !== 'vault' && kind === 'video') return res.status(400).json({ error: 'Videos can be uploaded only to the Media Vault.' });
   try {
     await verifyObject(parsed.data.key, parsed.data.contentType, parsed.data.size);
     return res.json({
@@ -1475,8 +1491,8 @@ apiRouter.post('/archives/:id/media', async (req: Request, res: Response) => {
       }
       const kind = validateUpload(contentType, fileSize);
       if (kind !== (type === 'video' ? 'video' : 'image')) return res.status(400).json({ error: 'Media type does not match the uploaded file.' });
-      const quotaError = checkMediaQuota(id, kind, fileSize);
-      if (quotaError) return res.status(413).json({ error: quotaError });
+      if (kind === 'image' && db.getMediaItems(id).filter((item) => item.type === 'image').length >= R2_LIMITS.maxVaultImages) return res.status(413).json({ error: 'This archive already has the maximum of 100 Media Vault photos.' });
+      if (kind === 'video' && db.getMediaItems(id).filter((item) => item.type === 'video').length >= R2_LIMITS.maxVaultVideos) return res.status(413).json({ error: 'This archive already has the maximum of 5 Media Vault videos.' });
       await verifyObject(storageKey, contentType, fileSize);
       if (url !== publicObjectUrl(storageKey)) return res.status(400).json({ error: 'Invalid media URL.' });
     } catch (error) {
@@ -1639,6 +1655,9 @@ apiRouter.post('/archives/:id/wall', (req: Request, res: Response) => {
 
   if (text.length > PLATFORM_CONFIG.limits.maxWallMessageLength) {
     return res.status(400).json({ error: `Message cannot exceed ${PLATFORM_CONFIG.limits.maxWallMessageLength} characters.` });
+  }
+  if (imageUrl && db.getWallPosts(targetId, true).filter((entry) => Boolean(entry.imageUrl)).length >= R2_LIMITS.maxWallImageAttachments) {
+    return res.status(413).json({ error: 'This archive already has the maximum of 15 Memory Wall image attachments.' });
   }
 
   const post: WallPost = {
