@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client
@@ -106,6 +107,23 @@ export async function verifyObject(key: string, expectedType: string, expectedSi
 
 export async function inspectObject(key: string) {
   return client().send(new HeadObjectCommand({ Bucket: bucketName(), Key: key }));
+}
+
+/**
+ * Checks that the deployed credentials can reach the configured bucket without
+ * exposing its credentials or issuing any write/delete operation.
+ */
+export async function checkStorageConnection(): Promise<{ connected: boolean; code?: string }> {
+  if (!isR2Configured()) return { connected: false, code: 'not-configured' };
+  try {
+    await client().send(new ListObjectsV2Command({ Bucket: bucketName(), MaxKeys: 1 }));
+    return { connected: true };
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'name' in error
+      ? String((error as { name?: unknown }).name || 'connection-failed')
+      : 'connection-failed';
+    return { connected: false, code };
+  }
 }
 
 export async function deleteObject(key: string): Promise<void> {
