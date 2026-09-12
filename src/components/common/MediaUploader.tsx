@@ -4,6 +4,15 @@ import { Upload, Link as LinkIcon, Image as ImageIcon, Video, X, Check, Camera, 
 import { compressImageForUpload, IMAGE_SOURCE_LIMIT_BYTES, VIDEO_SOURCE_LIMIT_BYTES } from '../../lib/imageCompression';
 
 type UploadPhase = 'optimizing' | 'authorizing' | 'direct';
+type AuthorizedUpload = {
+  uploadUrl: string;
+  url: string;
+  storageKey?: string;
+  key?: string;
+  fileSize: number;
+  contentType: string;
+  type: 'image' | 'video';
+};
 
 function uploadErrorMessage(error: unknown): string {
   const detail = error instanceof Error ? error.message : '';
@@ -72,7 +81,8 @@ export interface MediaUploaderProps {
     size?: number;
     storageKey?: string;
     contentType?: string;
-    analysisDataUrl?: string;
+    thumbnailUrl?: string;
+    thumbnailStorageKey?: string;
   }) => void;
   onClear?: () => void;
   acceptMode?: 'image' | 'image-video';
@@ -81,7 +91,7 @@ export interface MediaUploaderProps {
   onOpenAnalyzer?: () => void;
   compact?: boolean;
   className?: string;
-  directUpload?: { archiveId: string; token?: string };
+  directUpload?: { archiveId: string; token?: string; autoRegister?: boolean };
 }
 
 export const MediaUploader: React.FC<MediaUploaderProps> = ({
@@ -108,36 +118,76 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileReaderRef = useRef<FileReader | null>(null);
   const pendingFileRef = useRef<File | null>(null);
+  const completedUploadRef = useRef<{ file: File; authorized: AuthorizedUpload } | null>(null);
   const [cropOpen, setCropOpen] = useState(false);
   const uploadDirectly = async (file: File) => {
     if (!directUpload) throw new Error('Direct upload is unavailable.');
-    setUploadPhase('authorizing');
-    const authorizationController = new AbortController();
-    const authorizationTimeout = window.setTimeout(() => authorizationController.abort(), 10_000);
-    const authorization = await fetch(`/api/archives/${directUpload.archiveId}/media/upload-url`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${directUpload.token || ''}`
-      },
-      body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size }),
-      signal: authorizationController.signal
-    }).finally(() => window.clearTimeout(authorizationTimeout));
-    const authorized = await authorization.json().catch(() => ({}));
-    if (!authorization.ok || !authorized.uploadUrl || !authorized.url) {
-      throw new Error(authorized.error || `Upload authorization failed (${authorization.status}).`);
+    let authorized = completedUploadRef.current?.file === file
+      ? completedUploadRef.current.authorized
+      : undefined;
+
+    // If the object upload succeeded but registration failed, retry only the
+    // small registration request. Re-uploading the same large file would waste
+    // the user's data and leave duplicate orphan objects in storage.
+    if (!authorized) {
+      completedUploadRef.current = null;
+      setUploadPhase('authorizing');
+      const authorizationController = new AbortController();
+      const authorizationTimeout = window.setTimeout(() => authorizationController.abort(), 10_000);
+      const authorization = await fetch(`/api/archives/${directUpload.archiveId}/media/upload-url`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${directUpload.token || ''}`
+        },
+        body: JSON.stringify({ fileName: file.name, contentType: file.type, size: file.size }),
+        signal: authorizationController.signal
+      }).finally(() => window.clearTimeout(authorizationTimeout));
+      const authorizationBody = await authorization.json().catch(() => ({}));
+      if (!authorization.ok || !authorizationBody.uploadUrl || !authorizationBody.url) {
+        throw new Error(authorizationBody.error || `Upload authorization failed (${authorization.status}).`);
+      }
+      authorized = authorizationBody as AuthorizedUpload;
+
+      setUploadPhase('direct');
+      setUploadProgress(0);
+      const upload = await uploadBytes(
+        authorized.uploadUrl,
+        file,
+        { 'Content-Type': file.type },
+        directUploadTimeoutMs(file),
+        setUploadProgress
+      );
+      if (upload.status < 200 || upload.status >= 300) throw new Error(`Storage upload failed (${upload.status}).`);
+      completedUploadRef.current = { file, authorized };
     }
 
-    setUploadPhase('direct');
-    setUploadProgress(0);
-    const upload = await uploadBytes(
-      authorized.uploadUrl,
-      file,
-      { 'Content-Type': file.type },
-      directUploadTimeoutMs(file),
-      setUploadProgress
-    );
-    if (upload.status < 200 || upload.status >= 300) throw new Error(`Storage upload failed (${upload.status}).`);
+    // Attachments used outside the Memory Vault still need a durable media
+    // record. Register them immediately so protected image/video requests work,
+    // they count toward archive quotas, and the upload is not left as an
+    // invisible object that the public renderer cannot authorize.
+    if (directUpload.autoRegister) {
+      setUploadPhase('authorizing');
+      const registration = await fetch(`/api/archives/${directUpload.archiveId}/media`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${directUpload.token || ''}`
+        },
+        body: JSON.stringify({
+          url: authorized.url,
+          storageKey: authorized.storageKey || authorized.key,
+          fileSize: authorized.fileSize,
+          contentType: authorized.contentType,
+          type: authorized.type,
+          caption: file.name,
+          altText: file.name
+        })
+      });
+      const registered = await registration.json().catch(() => ({}));
+      if (!registration.ok) throw new Error(registered.error || `Upload registration failed (${registration.status}).`);
+    }
+    completedUploadRef.current = null;
     setUploadProgress(100);
     return authorized;
   };
@@ -170,6 +220,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     setFileError(null);
     if (!file) return;
     pendingFileRef.current = file;
+    if (completedUploadRef.current?.file !== file) completedUploadRef.current = null;
 
     const isImageFile = file.type.startsWith('image/');
     const isVideoFile = file.type.startsWith('video/');
@@ -206,29 +257,16 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
 
     if (directUpload) {
       try {
-        // Preparing AI input used to block the actual upload. Run it alongside
-        // the network transfer, and never fail a valid upload just because the
-        // optional analyser preview could not be prepared.
-        const analysisDataUrlPromise = isImageFile
-          ? new Promise<string | undefined>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(String(reader.result || ''));
-            reader.onerror = () => resolve(undefined);
-            reader.readAsDataURL(uploadFile);
-          })
-          : Promise.resolve(undefined);
         // Upload bytes only to object storage. A failed direct upload remains
         // retryable, but is never relayed through Render/application bandwidth.
         const completed = await uploadDirectly(uploadFile);
-        const analysisDataUrl = await analysisDataUrlPromise;
         onChange(completed.url, completed.type, {
           name: uploadFile.name,
           size: completed.fileSize,
           // Preserve the signed-upload receipt so the media record always points
           // at the exact object the user selected.
           storageKey: completed.storageKey || completed.key,
-          contentType: completed.contentType,
-          analysisDataUrl
+          contentType: completed.contentType
         });
         pendingFileRef.current = null;
       } catch (error) {
@@ -285,6 +323,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     setUploadProgress(null);
     setUrlInput('');
     pendingFileRef.current = null;
+    completedUploadRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = '';
     if (onClear) onClear();
     else onChange('', 'image');
