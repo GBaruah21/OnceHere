@@ -1400,7 +1400,11 @@ apiRouter.get('/archives/:id/media-object/:fileName', async (req: Request, res: 
     entry.storageKey === requestedStorageKey || entry.url === requestedUrl ||
     entry.thumbnailStorageKey === requestedStorageKey || entry.thumbnailUrl === requestedUrl
   ));
-  if (!item) return res.status(404).json({ error: 'Media not found.' });
+  // Timeline attachments are intentionally not duplicated into the Vault with
+  // a filename as their default caption. They still receive the same protected
+  // object delivery path as Vault media.
+  const timelineAttachment = db.getTimelineEvents(id).some((entry) => entry.mediaUrl === requestedUrl);
+  if (!item && !timelineAttachment) return res.status(404).json({ error: 'Media not found.' });
   try {
     // Authorize here, but send the browser straight to object storage. Render
     // transfers only this small redirect—not the image or video bytes.
