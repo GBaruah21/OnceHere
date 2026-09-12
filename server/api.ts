@@ -1,7 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
-import { db } from './db';
+import { db } from './db.js';
 import {
   createSignedToken,
   verifySignedToken,
@@ -9,7 +9,7 @@ import {
   verifyViewerPin,
   verifyOwnerRecoveryKey,
   findArchiveAndVerifyKey
-} from './auth';
+} from './auth.js';
 import {
   Archive,
   Section,
@@ -20,10 +20,10 @@ import {
   Album,
   WallPost,
   ArchiveSettings
-} from '../src/types';
-import { sanitizeSlug, validateSlug } from '../src/lib/tenant';
-import { evaluatePin } from '../src/lib/security';
-import { PLATFORM_CONFIG } from '../src/config/platform';
+} from '../src/types/index.js';
+import { sanitizeSlug, validateSlug } from '../src/lib/tenant.js';
+import { evaluatePin } from '../src/lib/security.js';
+import { PLATFORM_CONFIG } from '../src/config/platform.js';
 
 import {
   R2_LIMITS,
@@ -36,7 +36,7 @@ import {
   publicObjectUrl,
   validateUpload,
   verifyObject
-} from './r2';
+} from './r2.js';
 
 export const apiRouter = express.Router();
 // Media bytes never belong in JSON. Keeping this limit small prevents stale or

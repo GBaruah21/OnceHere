@@ -1,9 +1,9 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { db } from './db';
-import { UserSession } from '../src/types';
-import { PLATFORM_CONFIG } from '../src/config/platform';
-import { getSessionSecret } from './runtime-config';
+import { db } from './db.js';
+import { UserSession } from '../src/types/index.js';
+import { PLATFORM_CONFIG } from '../src/config/platform.js';
+import { getSessionSecret } from './runtime-config.js';
 
 let developmentSessionSecret: string | undefined;
 

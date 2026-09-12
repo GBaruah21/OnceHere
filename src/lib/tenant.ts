@@ -1,4 +1,4 @@
-import { PLATFORM_CONFIG } from '../config/platform';
+import { PLATFORM_CONFIG } from '../config/platform.js';
 
 export interface TenantResolution {
   type: 'platform' | 'public_archive' | 'workspace_editor' | 'custom_domain';

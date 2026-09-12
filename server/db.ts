@@ -15,9 +15,9 @@ import {
   DomainStatus,
   AccessHistoryEntry,
   ShareActivity
-} from '../src/types';
-import { PLATFORM_CONFIG } from '../src/config/platform';
-import { getSupabaseSecret, getSupabaseUrl } from './runtime-config';
+} from '../src/types/index.js';
+import { PLATFORM_CONFIG } from '../src/config/platform.js';
+import { getSupabaseSecret, getSupabaseUrl } from './runtime-config.js';
 
 const SNAPSHOT_FORMAT = 3;
 const SNAPSHOT_CHUNK_SIZE = 64 * 1024;

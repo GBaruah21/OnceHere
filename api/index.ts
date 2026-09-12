@@ -1,10 +1,10 @@
 import express, { NextFunction, Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 
-import { apiRouter } from '../server/api';
-import { PLATFORM_CONFIG } from '../src/config/platform';
-import { db } from '../server/db';
-import { getRuntimeReadiness } from '../server/runtime-config';
+import { apiRouter } from '../server/api.js';
+import { PLATFORM_CONFIG } from '../src/config/platform.js';
+import { db } from '../server/db.js';
+import { getRuntimeReadiness } from '../server/runtime-config.js';
 
 // Vercel invokes this exported app for every /api/* request (see vercel.json).
 // The existing router remains the single source of truth for all API behavior.
