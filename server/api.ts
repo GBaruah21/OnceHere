@@ -419,7 +419,9 @@ apiRouter.get('/admin/archives', (req: Request, res: Response) => {
 apiRouter.get('/admin/share-activity', async (req: Request, res: Response, next: NextFunction) => {
   if (!hasPlatformAdminAccess(req)) return res.status(403).json({ error: 'Platform owner access required.' });
   try {
-    await db.ensureAllArchivesLoaded();
+    // The owner dashboard must not fan out to every archive snapshot just to
+    // render a non-essential activity feed. That made one slow Supabase row
+    // turn the whole dashboard into a false "0 archives" state.
     const activity = db.getShareActivity(undefined, 100).map((entry) => {
       const archive = db.findById(entry.archiveId);
       return {
