@@ -2,6 +2,27 @@
 
 Date: 11 September 2026. This remains a targeted repair report, not a complete production certification.
 
+## Render bandwidth and attachment-upload repair — 12 September 2026
+
+- Removed the final base64 conversion from the direct object-storage upload path.
+- Timeline, member-portrait, and wall attachments now use signed direct uploads
+  instead of placing file bytes in API JSON.
+- Non-vault attachments are registered as durable media immediately, making
+  protected reads work and ensuring they count toward archive quotas.
+- A failed registration retry reuses the object already uploaded instead of
+  transferring the file a second time.
+- Render and Vercel API entry points now enforce the same 2 MB JSON and 256 KB
+  form limits.
+- Production now fails clearly when no stable session-signing secret exists,
+  instead of silently invalidating sessions after a restart.
+- Contributor PIN failures no longer reveal attempt counts or lockout thresholds.
+- Added `RENDER_OPERATIONS.md` with monitor recovery, monthly-reset, environment,
+  hosting-choice, and live acceptance-test instructions.
+- Verification: strict TypeScript passed; 61 tests across five files passed; the
+  Vite/Express production build and a separate Vercel API bundle passed. The
+  suspended production service and real Backblaze/Supabase operations remain
+  unverified.
+
 ## Production persistence recovery — 11 September 2026
 
 - Removed obsolete AI route imports that prevented the Render production build.
@@ -58,12 +79,14 @@ The supported browser API was inspected again: it provides no viewport resizing/
 
 ## Still required before production release
 
-1. **150 MB video upload is not implemented.** Current direct uploads use base64 in JSON and the archive-state snapshot. The interface enforces 18 MB video / 15 MB image limits for this method. Raising the JSON limit is not a safe solution. Implement dedicated private object storage, signed/resumable binary uploads, MIME inspection, thumbnail/poster generation and authenticated media reads, then test the full 150 MB boundary and failure/retry paths.
+1. **150 MB video upload is not implemented.** Current uploads use private object storage with signed browser-to-storage transfers, but the intentional live limit is 20 MB and uploads are not resumable. Reaching 150 MB still requires multipart/resumable uploads, server-side MIME inspection, thumbnail/poster generation and live boundary/failure testing. Raising API JSON limits is not a safe solution.
 2. **Live AI quality is unverified.** Tests mock the provider. Configure a valid server key and test diverse real images plus repeated rewrite requests, quotas and provider timeouts. Remote-image fetching also needs a dedicated SSRF/size-limit security review before broad untrusted production use.
 3. **Persistence is not a full multi-tenant transactional database implementation.** Existing code stores maps as one Supabase JSON snapshot. Concurrent servers, large data, failed-write rollback and migrations need work. No production storage write/restart test was run.
-4. **Security audit remains incomplete.** Existing bearer/session-storage authentication is not the full HTTP-only-cookie/CSRF design from the specification. Review all mutations, revocation, moderation, rate limiting and tenant isolation. Do not treat the targeted fixes as a full security certification.
+4. **Security audit remains incomplete.** Existing bearer/session-storage authentication is not the full HTTP-only-cookie/CSRF design from the specification. HTTP-only cookies protect native media requests and are accepted by the API, but migrating every editor request without locking out existing owners remains unfinished. Review revocation, moderation, rate limiting and tenant isolation before a broad launch.
 5. **Browser coverage remains incomplete.** Crop output, real upload completion, admin modal interaction, horizontal timeline after uploads, all responsive sizes, all themes, keyboard-only flows and every button state still need repeated end-to-end tests. No real 14.8 MB or 150 MB upload was performed.
 6. **Performance and demo completeness remain unverified.** Core Web Vitals were not measured. The existing demos contain fewer assets than the full requested collection; this repair does not certify the original complete-platform specification.
+7. **Demo imagery is not release-ready.** The seed data contains 93 Unsplash image references but only 41 unique source photographs; several are reused many times and are remotely hotlinked. This fails the requested unique, locally controlled, documented Indian-student demo-asset standard. Replacing them requires an approved/licensed or fictional generated asset collection plus visual review; it was not safe to invent a passing image audit.
+8. **Dependency audit was not completed.** `npm audit` could not reach the package registry from this environment and was stopped. The lockfile must be checked from a network-enabled CI runner before release.
 
 ## Deployment gate
 
