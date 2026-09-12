@@ -51,15 +51,18 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
   };
 
   const load = async (refreshSettings = true) => {
-    try {
-      const [archiveData, settingsData, shareData] = await Promise.all([
+    const [archiveResult, settingsResult, shareResult] = await Promise.allSettled([
         request('/api/admin/archives'),
         fetch('/api/platform-settings').then((response) => response.json()),
         request('/api/admin/share-activity')
-      ]);
+    ]);
+    try {
+      if (archiveResult.status === 'rejected') throw archiveResult.reason;
+      const archiveData = archiveResult.value;
       setArchives(archiveData.archives || []);
-      if (refreshSettings) setSettings(settingsData.settings || {});
-      setShareActivity(shareData.activity || []);
+      if (refreshSettings && settingsResult.status === 'fulfilled') setSettings(settingsResult.value.settings || {});
+      if (shareResult.status === 'fulfilled') setShareActivity(shareResult.value.activity || []);
+      else setNotice('Archive list loaded. Share activity is temporarily unavailable.');
     } catch (error: any) {
       setNotice(error.message || 'Unable to open Owner Tools.');
     }
