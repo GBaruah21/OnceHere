@@ -887,13 +887,14 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
 
             <MediaUploader
               key={newEventImg ? 'timeline-media-selected' : 'timeline-media-empty'}
-              acceptMode="image-video"
+              acceptMode="image"
               value={newEventImg}
               directUpload={{ archiveId: archive.id, token: ownerToken }}
+              uploadPurpose="timeline"
               onChange={(url) => setNewEventImg(url)}
               onBusyChange={setIsTimelineMediaBusy}
-              label="Milestone Media Attachment (Optional)"
-              placeholder="Paste photo/video URL or upload local file..."
+              label="Milestone Photo Attachment (Optional)"
+              placeholder="Paste photo URL or upload local image..."
             />
 
             {timelineSaveError && <p role="alert" className="text-xs text-rose-300">{timelineSaveError}</p>}
@@ -1084,6 +1085,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               acceptMode="image"
               value={newMemberImg}
               directUpload={{ archiveId: archive.id, token: ownerToken }}
+              uploadPurpose="portrait"
               onChange={(url) => setNewMemberImg(url)}
               label="Portrait Photo / Avatar"
               placeholder="Paste portrait image URL or choose file from device..."
@@ -1211,6 +1213,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               acceptMode="image-video"
               value={newMediaUrl}
               directUpload={{ archiveId: archive.id, token: ownerToken }}
+              uploadPurpose="vault"
               onChange={(url, type, meta) => {
                 setNewMediaUrl(url);
                 setNewMediaStorage({
@@ -1452,6 +1455,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               acceptMode="image"
               value={newWallImg}
               directUpload={{ archiveId: archive.id, token: ownerToken }}
+              uploadPurpose="wall"
               onChange={(url) => setNewWallImg(url)}
               label="Attach Photo to Scribble (Optional)"
               placeholder="Paste image link or upload photo from device..."
