@@ -313,10 +313,29 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   const findElementInView = (id: string) =>
     viewRootRef.current?.querySelector<HTMLElement>(`#${id}`) || null;
 
+  // The public archive is also rendered inside the editor, deploy modal and
+  // owner preview. `scrollIntoView()` walks every ancestor and frequently
+  // scrolls the page behind those previews instead of their intended panel.
+  // Keep section navigation contained when a preview scroller is present.
+  const scrollElementInView = (element: HTMLElement, behavior: ScrollBehavior = 'smooth') => {
+    const previewScroller = viewRootRef.current?.closest<HTMLElement>('[data-archive-preview-scroll]');
+    if (!previewScroller) {
+      element.scrollIntoView({ behavior, block: 'start' });
+      return;
+    }
+
+    const scrollerBounds = previewScroller.getBoundingClientRect();
+    const elementBounds = element.getBoundingClientRect();
+    // Leave a little room for the sticky archive navigation rather than
+    // hiding the section title immediately underneath it.
+    const top = previewScroller.scrollTop + elementBounds.top - scrollerBounds.top - 76;
+    previewScroller.scrollTo({ top: Math.max(0, top), behavior });
+  };
+
   const scrollViewToTop = () => {
     const heroEl = findElementInView('section-hero');
     if (heroEl) {
-      heroEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      scrollElementInView(heroEl);
       return;
     }
 
@@ -670,6 +689,8 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
     if (elements.length === 0) return;
 
+    const previewScroller = viewRootRef.current?.closest<HTMLElement>('[data-archive-preview-scroll]');
+
     if (typeof IntersectionObserver !== 'undefined') {
       const observer = new IntersectionObserver(
         (entries) => {
@@ -682,6 +703,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
         },
         {
           threshold: [0.1, 0.4],
+          root: previewScroller || null,
           rootMargin: '-5% 0px -30% 0px'
         }
       );
@@ -693,7 +715,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
       };
     } else {
       const handleScroll = () => {
-        const scrollPos = window.scrollY + 200;
+        const scrollPos = previewScroller ? previewScroller.scrollTop + 200 : window.scrollY + 200;
         for (let i = elements.length - 1; i >= 0; i--) {
           const item = elements[i];
           if (item && item.offsetTop <= scrollPos) {
@@ -702,8 +724,9 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
           }
         }
       };
-      window.addEventListener('scroll', handleScroll, { passive: true });
-      return () => window.removeEventListener('scroll', handleScroll);
+      const scrollRoot = previewScroller || window;
+      scrollRoot.addEventListener('scroll', handleScroll, { passive: true });
+      return () => scrollRoot.removeEventListener('scroll', handleScroll);
     }
   }, [visibleSections]);
 
@@ -804,7 +827,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
         findElementInView(tabId);
 
       if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        scrollElementInView(el);
       } else {
         scrollViewToTop();
       }
