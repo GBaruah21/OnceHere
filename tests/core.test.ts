@@ -92,6 +92,15 @@ describe('Security & Authentication', () => {
       archive.visibility = originalVisibility;
     }
   });
+
+  it('does not reveal contributor PIN attempt counts or thresholds', () => {
+    const ip = `generic-pin-error-${Date.now()}`;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = verifyArchivePin('demo-marys-2025', '908172', ip);
+      expect(result.success).toBe(false);
+      expect(result.error).not.toMatch(/\b[1-5]\b|attempt|maximum/i);
+    }
+  });
 });
 
 describe('Database Multi-Tenant Isolation', () => {
