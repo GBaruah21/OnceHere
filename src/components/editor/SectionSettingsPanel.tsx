@@ -888,6 +888,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               key={newEventImg ? 'timeline-media-selected' : 'timeline-media-empty'}
               acceptMode="image-video"
               value={newEventImg}
+              directUpload={{ archiveId: archive.id, token: ownerToken, autoRegister: true }}
               onChange={(url) => setNewEventImg(url)}
               label="Milestone Media Attachment (Optional)"
               placeholder="Paste photo/video URL or upload local file..."
@@ -1080,6 +1081,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             <MediaUploader
               acceptMode="image"
               value={newMemberImg}
+              directUpload={{ archiveId: archive.id, token: ownerToken, autoRegister: true }}
               onChange={(url) => setNewMemberImg(url)}
               label="Portrait Photo / Avatar"
               placeholder="Paste portrait image URL or choose file from device..."
@@ -1447,6 +1449,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             <MediaUploader
               acceptMode="image"
               value={newWallImg}
+              directUpload={{ archiveId: archive.id, token: ownerToken, autoRegister: true }}
               onChange={(url) => setNewWallImg(url)}
               label="Attach Photo to Scribble (Optional)"
               placeholder="Paste image link or upload photo from device..."
