@@ -3,19 +3,25 @@ import cookieParser from 'cookie-parser';
 
 import { apiRouter } from '../server/api';
 import { PLATFORM_CONFIG } from '../src/config/platform';
+import { db } from '../server/db';
 
 // Vercel invokes this exported app for every /api/* request (see vercel.json).
 // The existing router remains the single source of truth for all API behavior.
 const app = express();
 
-app.use(express.json({ limit: '40mb' }));
-app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+// Media bytes are uploaded directly to private object storage. Keeping the API
+// body limit small prevents stale clients from relaying base64 files through a
+// serverless function and unexpectedly consuming memory or transfer allowance.
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '256kb' }));
 app.use(cookieParser());
 
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'healthy',
     platform: PLATFORM_CONFIG.name,
+    buildCommit: process.env.VERCEL_GIT_COMMIT_SHA || process.env.RENDER_GIT_COMMIT || process.env.COMMIT_SHA || 'local',
+    durableStorage: db.hasDurableStorage() ? 'configured' : 'not-configured',
     timestamp: new Date().toISOString()
   });
 });
