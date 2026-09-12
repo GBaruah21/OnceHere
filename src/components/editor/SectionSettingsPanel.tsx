@@ -172,6 +172,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   const [draggedEventId, setDraggedEventId] = useState<string | null>(null);
   const [timelineSaveError, setTimelineSaveError] = useState<string | null>(null);
   const [isSavingTimeline, setIsSavingTimeline] = useState(false);
+  const [isTimelineMediaBusy, setIsTimelineMediaBusy] = useState(false);
 
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberRole, setNewMemberRole] = useState('');
@@ -888,8 +889,9 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
               key={newEventImg ? 'timeline-media-selected' : 'timeline-media-empty'}
               acceptMode="image-video"
               value={newEventImg}
-              directUpload={{ archiveId: archive.id, token: ownerToken, autoRegister: true }}
+              directUpload={{ archiveId: archive.id, token: ownerToken }}
               onChange={(url) => setNewEventImg(url)}
+              onBusyChange={setIsTimelineMediaBusy}
               label="Milestone Media Attachment (Optional)"
               placeholder="Paste photo/video URL or upload local file..."
             />
@@ -926,11 +928,11 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                     setIsSavingTimeline(false);
                   }
                 }}
-                disabled={isSavingTimeline}
+                disabled={isSavingTimeline || isTimelineMediaBusy}
                 className="flex-1 py-2 rounded-xl text-xs font-semibold bg-amber-400 text-neutral-950 hover:brightness-110 shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-60"
               >
                 {editingEventId && <Save className="w-3.5 h-3.5" />}
-                {isSavingTimeline ? 'Saving milestone…' : editingEventId ? 'Save Milestone Changes' : 'Add Milestone to Journey'}
+                {isTimelineMediaBusy ? 'Finishing media upload…' : isSavingTimeline ? 'Saving milestone…' : editingEventId ? 'Save Milestone Changes' : 'Add Milestone to Journey'}
               </button>
               {editingEventId && (
                 <button type="button" onClick={resetEventForm} className="px-3 rounded-xl border border-white/15 bg-white/5 text-neutral-300 hover:text-white" title="Cancel editing">
