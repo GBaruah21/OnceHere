@@ -13,9 +13,12 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 export const R2_LIMITS = {
   imageBytes: 10 * 1024 * 1024,
   videoBytes: 20 * 1024 * 1024,
-  maxImagesPerArchive: 50,
-  maxVideosPerArchive: 2,
-  maxTotalBytesPerArchive: 100 * 1024 * 1024
+  maxVaultImages: 100,
+  maxVaultVideos: 5,
+  maxMemberPortraits: 250,
+  maxTimelineAttachments: 20,
+  maxWallImageAttachments: 15,
+  maxTotalBytesPerArchive: 500 * 1024 * 1024
 } as const;
 
 const ALLOWED_TYPES = new Set([
@@ -162,6 +165,22 @@ export async function checkStorageConnection(): Promise<{ connected: boolean; co
       : 'connection-failed';
     return { connected: false, code };
   }
+}
+
+/** Total physical media bytes for one archive, including section attachments. */
+export async function getArchiveStorageUsage(archiveId: string): Promise<number> {
+  let continuationToken: string | undefined;
+  let total = 0;
+  do {
+    const page = await client().send(new ListObjectsV2Command({
+      Bucket: bucketName(),
+      Prefix: `archives/${archiveId}/`,
+      ContinuationToken: continuationToken
+    }));
+    total += (page.Contents || []).reduce((sum, object) => sum + Number(object.Size || 0), 0);
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return total;
 }
 
 export async function deleteObject(key: string): Promise<void> {
