@@ -92,6 +92,16 @@ interface ArchivePublicViewProps {
   readOnly?: boolean;
 }
 
+function publicMediaCaption(caption?: string): string {
+  const value = caption?.trim() || '';
+  // Old attachment uploads were saved with their device filename as a caption.
+  // Never expose that implementation detail in the public archive.
+  if (!value || /^(?:img|image|video|whatsapp[ _-]?image)[\w .()_-]*\.(?:jpe?g|png|webp|gif|avif|mp4|webm|mov)$/i.test(value)) {
+    return 'Memory Snapshot';
+  }
+  return value;
+}
+
 interface HeroSectionProps {
   archive: Archive;
   members: Member[];
@@ -1856,7 +1866,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                       ) : (
                         <LazyImage
                           src={item.type === 'video' ? item.thumbnailUrl! : item.url}
-                          alt={item.caption || (item.type === 'video' ? 'Video preview' : 'Memory snapshot')}
+                          alt={publicMediaCaption(item.caption) || (item.type === 'video' ? 'Video preview' : 'Memory snapshot')}
                           containerClassName="w-full h-full"
                           className="w-full h-full object-cover group-hover:scale-115 group-active:scale-125 transition-transform duration-700 ease-out"
                         />
@@ -1886,7 +1896,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                       {/* Gradient overlay with caption, note count, and year */}
                       <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/50 to-transparent opacity-95 group-hover:opacity-100 transition-opacity p-3.5 sm:p-4 flex flex-col justify-end text-xs text-white">
                         <span className={`font-bold text-white line-clamp-2 text-sm drop-shadow-md ${activeFontPreset.headingClass}`}>
-                          {item.caption || 'Memory Snapshot'}
+                          {publicMediaCaption(item.caption)}
                         </span>
                         <div className="flex items-center justify-between text-[11px] text-amber-200 font-mono mt-1.5 pt-1.5 border-t border-white/20">
                           <span className="font-semibold">{item.eventDate || item.year || 'Archive'}</span>
@@ -2513,7 +2523,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                   ) : (
                     <motion.img
                       src={activeItem.url}
-                      alt={activeItem.caption || 'Media item'}
+                      alt={publicMediaCaption(activeItem.caption)}
                       animate={{ scale: photoZoom }}
                       transition={{ type: 'spring', stiffness: 300, damping: 25 }}
                       className="max-h-[60vh] max-w-full object-contain rounded-xl select-none cursor-zoom-in"
@@ -2536,7 +2546,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                   {/* Photo Title & Caption */}
                   <div>
                     <h3 className={`text-xl font-bold text-white ${activeFontPreset.headingClass}`}>
-                      {activeItem.caption || 'Archive Photograph'}
+                      {publicMediaCaption(activeItem.caption)}
                     </h3>
                     {activeItem.tags && activeItem.tags.length > 0 && (
                       <div className="flex flex-wrap gap-1.5 mt-2">
