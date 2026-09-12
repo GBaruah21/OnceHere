@@ -4,6 +4,7 @@ import {
   GetObjectCommand,
   ListObjectsV2Command,
   HeadObjectCommand,
+  PutBucketCorsCommand,
   PutObjectCommand,
   S3Client
 } from '@aws-sdk/client-s3';
@@ -27,6 +28,12 @@ const ALLOWED_TYPES = new Set([
   'video/webm',
   'video/quicktime'
 ]);
+
+// B2's dashboard presets have proved unreliable for S3 virtual-hosted upload
+// URLs. Configure the S3 CORS policy from the same credentials used to sign
+// uploads, once per server instance. The signed URL still controls write
+// access; this only lets browsers perform the required OPTIONS preflight.
+let corsConfiguredBucket: string | undefined;
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
@@ -89,7 +96,38 @@ export function publicObjectUrl(key: string): string {
   return `/api/archives/${encodeURIComponent(archiveId)}/media-object/${encodeURIComponent(fileName)}`;
 }
 
+async function ensureBrowserCors(): Promise<void> {
+  const bucket = bucketName();
+  if (corsConfiguredBucket === bucket) return;
+  try {
+    await client().send(new PutBucketCorsCommand({
+      Bucket: bucket,
+      CORSConfiguration: {
+        CORSRules: [{
+          AllowedHeaders: ['*'],
+          AllowedMethods: ['GET', 'HEAD', 'PUT'],
+          AllowedOrigins: [
+            'https://oncehere.vercel.app',
+            'https://oncehere-gbaruah-projects.vercel.app',
+            'https://oncehere-git-main-gbaruah-projects.vercel.app',
+            'https://oncehere-the-forever-home-of-memories.onrender.com'
+          ],
+          ExposeHeaders: ['ETag'],
+          MaxAgeSeconds: 3600
+        }]
+      }
+    }));
+    corsConfiguredBucket = bucket;
+  } catch (error) {
+    // Do not turn a provider-side CORS-management limitation into an outage.
+    // The existing bucket rule may already be valid; the presigned upload can
+    // still proceed in that case.
+    console.error('Unable to apply object-storage CORS policy:', error);
+  }
+}
+
 export async function createUploadUrl(key: string, contentType: string, _size: number): Promise<string> {
+  await ensureBrowserCors();
   return getSignedUrl(client(), new PutObjectCommand({
     Bucket: bucketName(),
     Key: key,
