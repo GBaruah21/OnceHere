@@ -24,6 +24,11 @@ const SNAPSHOT_CHUNK_SIZE = 64 * 1024;
 const SNAPSHOT_READ_CONCURRENCY = 6;
 const TENANT_SNAPSHOT_FORMAT = 1;
 const TENANT_INDEX_FORMAT = 1;
+// Revisions are full copies of a section at the moment of an edit. Keeping
+// dozens of them makes a media-heavy archive grow on every save, even though
+// the media itself lives in object storage. Eight is enough for practical
+// recovery while keeping the tenant row bounded.
+const MAX_REVISIONS_PER_ARCHIVE = 8;
 const TENANT_INDEX_ID = 'tenant-index';
 const STORAGE_REQUEST_TIMEOUT_MS = 20_000;
 const STORAGE_RETRY_DELAYS_MS = [0, 250, 750];
@@ -555,7 +560,11 @@ export class MemoryDatabase {
 
   async ensureAllArchivesLoaded(): Promise<void> {
     await this.ensureLoaded();
-    const ids = Array.from(this.archives.keys());
+    // A legacy archive lives inside the retired, whole-platform snapshot.
+    // Loading it here would download every archive and can time out a
+    // serverless request. Normal owner/explore reads only need the compact
+    // index, so load independently persisted tenants only.
+    const ids = Array.from(this.archives.keys()).filter((id) => !this.legacyArchiveIds.has(id));
     let next = 0;
     await Promise.all(Array.from({ length: Math.min(SNAPSHOT_READ_CONCURRENCY, ids.length) }, async () => {
       while (next < ids.length) await this.ensureArchiveLoaded(ids[next++]);
@@ -992,8 +1001,7 @@ export class MemoryDatabase {
       createdAt: new Date().toISOString()
     };
     list.unshift(rev);
-    // Keep max 30 revisions
-    if (list.length > 30) list.pop();
+    if (list.length > MAX_REVISIONS_PER_ARCHIVE) list.length = MAX_REVISIONS_PER_ARCHIVE;
     this.revisions.set(archiveId, list);
     return rev;
   }
