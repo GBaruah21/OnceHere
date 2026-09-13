@@ -12,17 +12,35 @@ const headers = key.startsWith('sb_secret_')
   : { apikey: key, Authorization: `Bearer ${key}` };
 
 async function request(path, options = {}) {
-  const response = await fetch(`${url}/rest/v1/${path}`, {
-    ...options,
-    headers: { ...headers, ...(options.headers || {}) },
-    signal: AbortSignal.timeout(120_000)
-  });
-  if (!response.ok) throw new Error(`Supabase request failed (${response.status}): ${await response.text()}`);
-  return response.status === 204 ? undefined : response.json();
+  let lastError;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try {
+      const response = await fetch(`${url}/rest/v1/${path}`, {
+        ...options,
+        headers: { ...headers, ...(options.headers || {}) },
+        signal: AbortSignal.timeout(120_000)
+      });
+      if (response.ok) return response.status === 204 ? undefined : response.json();
+      const detail = await response.text();
+      lastError = new Error(`Supabase request failed (${response.status}): ${detail}`);
+      if (![500, 502, 503, 504].includes(response.status)) throw lastError;
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+  }
+  throw lastError;
 }
 
 async function readRows(ids) {
-  return request(`oncehere_state?id=in.(${ids.join(',')})&select=id,data&order=id.asc`);
+  // The legacy table is severely bloated. Small indexed reads are slow but avoid
+  // PostgREST timing out while planning one wide IN query against that table.
+  const rows = [];
+  for (const id of ids) {
+    const result = await request(`oncehere_state?id=eq.${encodeURIComponent(id)}&select=id,data`);
+    if (result[0]) rows.push(result[0]);
+  }
+  return rows;
 }
 
 function decode(chunks, expectedSha256) {
@@ -63,10 +81,12 @@ const ids = Array.from({ length: manifest.chunkCount }, (_, index) =>
 const batches = [];
 for (let offset = 0; offset < ids.length; offset += 10) batches.push(ids.slice(offset, offset + 10));
 const rows = [];
-let next = 0;
-await Promise.all(Array.from({ length: 6 }, async () => {
-  while (next < batches.length) rows.push(...await readRows(batches[next++]));
-}));
+for (const [index, batch] of batches.entries()) {
+  rows.push(...await readRows(batch));
+  if ((index + 1) % 10 === 0 || index + 1 === batches.length) {
+    console.log(`Read ${Math.min((index + 1) * 10, ids.length)} of ${ids.length} legacy chunks.`);
+  }
+}
 const payloads = new Map(rows.map((row) => [row.id, row.data?.payload]));
 const chunks = ids.map((id) => payloads.get(id));
 if (chunks.some((chunk) => typeof chunk !== 'string')) throw new Error('Legacy snapshot is incomplete.');
