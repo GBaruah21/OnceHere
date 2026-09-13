@@ -136,6 +136,36 @@ describe('chunked durable snapshots', () => {
     }
   });
 
+
+  it('does not bulk-load legacy archives from the retired global snapshot', async () => {
+    const previousUrl = process.env.SUPABASE_URL;
+    const previousKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    process.env.SUPABASE_URL = 'https://storage.test';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role';
+    const database = new MemoryDatabase();
+    const archive = database.archives.get('demo-marys-2025')!;
+    const internals = database as unknown as {
+      legacyArchiveIds: Set<string>;
+      ensureAllArchivesLoaded(): Promise<void>;
+    };
+    internals.legacyArchiveIds.add(archive.id);
+    const ensureLoaded = vi.spyOn(database, 'ensureLoaded').mockResolvedValue();
+    const ensureArchiveLoaded = vi.spyOn(database, 'ensureArchiveLoaded').mockResolvedValue();
+
+    try {
+      await internals.ensureAllArchivesLoaded();
+      expect(ensureLoaded).toHaveBeenCalledOnce();
+      expect(ensureArchiveLoaded).not.toHaveBeenCalledWith(archive.id);
+    } finally {
+      ensureLoaded.mockRestore();
+      ensureArchiveLoaded.mockRestore();
+      if (previousUrl === undefined) delete process.env.SUPABASE_URL;
+      else process.env.SUPABASE_URL = previousUrl;
+      if (previousKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+      else process.env.SUPABASE_SERVICE_ROLE_KEY = previousKey;
+    }
+  });
+
   it('loads tenant snapshots independently and skips an unreadable row', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const snapshot = encodeSnapshot({ archive: { id: 'archive-good' } });
