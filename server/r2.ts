@@ -14,7 +14,7 @@ export const R2_LIMITS = {
   imageBytes: 10 * 1024 * 1024,
   videoBytes: 20 * 1024 * 1024,
   maxVaultImages: 100,
-  maxVaultVideos: 5,
+  maxVideosPerArchive: 5,
   maxMemberPortraits: 250,
   maxTimelineAttachments: 20,
   maxWallImageAttachments: 15,
