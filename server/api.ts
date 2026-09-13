@@ -1072,6 +1072,9 @@ apiRouter.post('/archives/:id/timeline', (req: Request, res: Response) => {
   if (parsed.data.mediaUrl && db.getTimelineEvents(id).filter((entry) => Boolean(entry.mediaUrl)).length >= R2_LIMITS.maxTimelineAttachments) {
     return res.status(413).json({ error: 'This archive already has the maximum of 20 Journey attachments.' });
   }
+  if (isVideoMediaUrl(parsed.data.mediaUrl) && archiveVideoCount(id) >= R2_LIMITS.maxVideosPerArchive) {
+    return res.status(413).json({ error: 'This archive already has the maximum of 5 videos across the Media Vault and Journey.' });
+  }
 
   const event: TimelineEvent = {
     id: `te-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
@@ -1125,6 +1128,11 @@ apiRouter.patch('/archives/:id/timeline/:eventId', (req: Request, res: Response)
   }
 
   const { title, description, yearLabel, eventDate, icon, location, mediaUrl, tags, position, isDraft } = req.body;
+  const existing = db.getTimelineEvents(id).find((event) => event.id === eventId);
+  if (!existing) return res.status(404).json({ error: 'Event not found.' });
+  if (mediaUrl !== undefined && isVideoMediaUrl(mediaUrl) && archiveVideoCount(id, eventId) >= R2_LIMITS.maxVideosPerArchive) {
+    return res.status(413).json({ error: 'This archive already has the maximum of 5 videos across the Media Vault and Journey.' });
+  }
   const updates = Object.fromEntries(Object.entries({
     title, description, yearLabel, eventDate, icon, location, mediaUrl, tags, position, isDraft
   }).filter(([, value]) => value !== undefined));
@@ -1300,16 +1308,25 @@ async function checkUploadQuota(
 ) {
   const media = db.getMediaItems(archiveId);
   const images = media.filter((item) => item.type === 'image').length;
-  const videos = media.filter((item) => item.type === 'video').length;
-  if (purpose !== 'vault' && kind === 'video') return 'Videos can be uploaded only to the Media Vault.';
   if (purpose === 'vault' && kind === 'image' && images >= R2_LIMITS.maxVaultImages) return 'This archive already has the maximum of 100 Media Vault photos.';
-  if (purpose === 'vault' && kind === 'video' && videos >= R2_LIMITS.maxVaultVideos) return 'This archive already has the maximum of 5 Media Vault videos.';
+  if ((purpose === 'vault' || purpose === 'timeline') && kind === 'video' && archiveVideoCount(archiveId) >= R2_LIMITS.maxVideosPerArchive) return 'This archive already has the maximum of 5 videos across the Media Vault and Journey.';
   if (purpose === 'portrait' && db.getMembers(archiveId).filter((member) => Boolean(member.imageUrl)).length >= R2_LIMITS.maxMemberPortraits) return 'This archive already has the maximum of 250 Yearbook portraits.';
   if (purpose === 'timeline' && db.getTimelineEvents(archiveId).filter((event) => Boolean(event.mediaUrl)).length >= R2_LIMITS.maxTimelineAttachments) return 'This archive already has the maximum of 20 Journey attachments.';
   if (purpose === 'wall' && db.getWallPosts(archiveId, true).filter((post) => Boolean(post.imageUrl)).length >= R2_LIMITS.maxWallImageAttachments) return 'This archive already has the maximum of 15 Memory Wall image attachments.';
   const storedBytes = await getArchiveStorageUsage(archiveId);
   if (storedBytes + incomingBytes > R2_LIMITS.maxTotalBytesPerArchive) return 'This archive would exceed its 500 MB total media allowance.';
   return null;
+}
+
+function isVideoMediaUrl(url?: string): boolean {
+  return Boolean(url && (/^data:video\//i.test(url) || /\.(mp4|webm|mov)(?:[?#]|$)/i.test(url)));
+}
+
+function archiveVideoCount(archiveId: string, exceptTimelineEventId?: string): number {
+  const vaultVideos = db.getMediaItems(archiveId).filter((item) => item.type === 'video').length;
+  const journeyVideos = db.getTimelineEvents(archiveId)
+    .filter((event) => event.id !== exceptTimelineEventId && isVideoMediaUrl(event.mediaUrl)).length;
+  return vaultVideos + journeyVideos;
 }
 
 // Never relay media bytes through the application server. Older cached clients
@@ -1374,7 +1391,6 @@ apiRouter.post('/archives/:id/media/upload-complete', async (req: Request, res: 
   } catch (error) {
     return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid upload completion request.' });
   }
-  if (parsed.data.purpose !== 'vault' && kind === 'video') return res.status(400).json({ error: 'Videos can be uploaded only to the Media Vault.' });
   try {
     await verifyObject(parsed.data.key, parsed.data.contentType, parsed.data.size);
     return res.json({
@@ -1492,7 +1508,7 @@ apiRouter.post('/archives/:id/media', async (req: Request, res: Response) => {
       const kind = validateUpload(contentType, fileSize);
       if (kind !== (type === 'video' ? 'video' : 'image')) return res.status(400).json({ error: 'Media type does not match the uploaded file.' });
       if (kind === 'image' && db.getMediaItems(id).filter((item) => item.type === 'image').length >= R2_LIMITS.maxVaultImages) return res.status(413).json({ error: 'This archive already has the maximum of 100 Media Vault photos.' });
-      if (kind === 'video' && db.getMediaItems(id).filter((item) => item.type === 'video').length >= R2_LIMITS.maxVaultVideos) return res.status(413).json({ error: 'This archive already has the maximum of 5 Media Vault videos.' });
+      if (kind === 'video' && archiveVideoCount(id) >= R2_LIMITS.maxVideosPerArchive) return res.status(413).json({ error: 'This archive already has the maximum of 5 videos across the Media Vault and Journey.' });
       await verifyObject(storageKey, contentType, fileSize);
       if (url !== publicObjectUrl(storageKey)) return res.status(400).json({ error: 'Invalid media URL.' });
     } catch (error) {
