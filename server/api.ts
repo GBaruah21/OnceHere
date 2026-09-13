@@ -1764,7 +1764,10 @@ apiRouter.get('/archives/:id/revisions', (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Archive editor access required.' });
   }
 
-  const revisions = db.getRevisions(id);
+  // Revision payloads can contain full section snapshots. The editor only
+  // needs the metadata to render this list; returning the payload would make
+  // every history view needlessly download the archive again.
+  const revisions = db.getRevisions(id).map(({ snapshotData, ...revision }) => revision);
   return res.json({ revisions });
 });
 
