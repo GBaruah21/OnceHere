@@ -403,7 +403,9 @@ export class MemoryDatabase {
         (_, index) => `snapshot-${manifest.generation}-${String(index).padStart(6, '0')}`
       );
       const batches: string[][] = [];
-      for (let offset = 0; offset < chunkIds.length; offset += 50) batches.push(chunkIds.slice(offset, offset + 50));
+      // Large PostgREST responses can time out on an overgrown legacy table.
+      // Keep each recovery batch small; this path runs once, not on normal reads.
+      for (let offset = 0; offset < chunkIds.length; offset += 10) batches.push(chunkIds.slice(offset, offset + 10));
       const chunkRows: StoredStateRow[] = [];
       let nextBatch = 0;
       await Promise.all(Array.from({ length: Math.min(SNAPSHOT_READ_CONCURRENCY, batches.length) }, async () => {
