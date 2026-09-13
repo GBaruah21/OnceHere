@@ -887,14 +887,14 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
 
             <MediaUploader
               key={newEventImg ? 'timeline-media-selected' : 'timeline-media-empty'}
-              acceptMode="image"
+              acceptMode="image-video"
               value={newEventImg}
               directUpload={{ archiveId: archive.id, token: ownerToken }}
               uploadPurpose="timeline"
               onChange={(url) => setNewEventImg(url)}
               onBusyChange={setIsTimelineMediaBusy}
-              label="Milestone Photo Attachment (Optional)"
-              placeholder="Paste photo URL or upload local image..."
+              label="Milestone Photo or Video Attachment (Optional)"
+              placeholder="Paste photo/video URL or upload a local file..."
             />
 
             {timelineSaveError && <p role="alert" className="text-xs text-rose-300">{timelineSaveError}</p>}
