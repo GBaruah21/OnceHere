@@ -252,12 +252,16 @@ export class MemoryDatabase {
       : {};
   }
 
-  private async fetchRows(config: { url: string; key: string }, ids: string[]): Promise<StoredStateRow[]> {
+  private async fetchRows(
+    config: { url: string; key: string },
+    ids: string[],
+    timeoutMs = 10_000
+  ): Promise<StoredStateRow[]> {
     let rejected: Response | undefined;
     for (const candidate of this.storageCandidates(config)) {
       const response = await fetch(
         `${candidate.url}/rest/v1/oncehere_state?id=in.(${ids.join(',')})&select=id,data&order=id.asc`,
-        { headers: this.storageHeaders(candidate), signal: AbortSignal.timeout(10_000) }
+        { headers: this.storageHeaders(candidate), signal: AbortSignal.timeout(timeoutMs) }
       );
       if (response.ok) return response.json() as Promise<StoredStateRow[]>;
       rejected = response;
@@ -377,7 +381,11 @@ export class MemoryDatabase {
   }
 
   private async fetchGlobalSnapshot(config: { url: string; key: string }): Promise<Record<string, unknown> | undefined> {
-    const rows = await this.fetchRows(config, ['manifest']);
+    // This retired snapshot is read only during a one-time tenant recovery.
+    // It is roughly 55 MB and needs more time than normal per-tenant reads;
+    // ordinary archive requests keep the strict 10-second timeout above.
+    const legacyReadTimeoutMs = 45_000;
+    const rows = await this.fetchRows(config, ['manifest'], legacyReadTimeoutMs);
     const manifest = rows.find((row) => row.id === 'manifest')?.data as Partial<SnapshotManifest> | undefined;
     const legacySnapshot = !manifest
       ? (await this.fetchRows(config, ['primary']))[0]?.data
@@ -399,7 +407,9 @@ export class MemoryDatabase {
       const chunkRows: StoredStateRow[] = [];
       let nextBatch = 0;
       await Promise.all(Array.from({ length: Math.min(SNAPSHOT_READ_CONCURRENCY, batches.length) }, async () => {
-        while (nextBatch < batches.length) chunkRows.push(...await this.fetchRows(config, batches[nextBatch++]));
+        while (nextBatch < batches.length) {
+          chunkRows.push(...await this.fetchRows(config, batches[nextBatch++], legacyReadTimeoutMs));
+        }
       }));
       const chunksById = new Map(chunkRows.map((row) => [row.id, row.data?.payload]));
       const chunks = chunkIds.map((id) => chunksById.get(id));
