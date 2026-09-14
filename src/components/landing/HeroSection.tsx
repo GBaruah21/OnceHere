@@ -64,7 +64,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onCreateClick, onViewD
           </h1>
 
           <p className="text-base sm:text-xl text-neutral-300 max-w-2xl mx-auto font-sans font-light leading-relaxed">
-            Build and deploy an everlasting digital memory home for your graduating batch, university department, sports team, or reunion. Complete with collaborative timelines, yearbook profiles, private media vaults, and scribble walls.
+            A beautiful home for the people, places, and moments you never want to lose.
           </p>
 
           {/* Action CTAs */}
@@ -424,4 +424,3 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onCreateClick, onViewD
     </section>
   );
 };
-
