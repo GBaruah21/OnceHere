@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { createClient } from '@libsql/client';
 import { createHash } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import {
@@ -17,9 +18,8 @@ import {
   ShareActivity
 } from '../src/types/index.js';
 import { PLATFORM_CONFIG } from '../src/config/platform.js';
-import { getSupabaseSecret, getSupabaseUrl } from './runtime-config.js';
+import { getTursoAuthToken, getTursoDatabaseUrl } from './runtime-config.js';
 
-const SNAPSHOT_FORMAT = 3;
 const SNAPSHOT_CHUNK_SIZE = 64 * 1024;
 const SNAPSHOT_READ_CONCURRENCY = 6;
 const TENANT_SNAPSHOT_FORMAT = 1;
@@ -30,26 +30,12 @@ const TENANT_INDEX_FORMAT = 1;
 // recovery while keeping the tenant row bounded.
 const MAX_REVISIONS_PER_ARCHIVE = 8;
 const TENANT_INDEX_ID = 'tenant-index';
-const STORAGE_REQUEST_TIMEOUT_MS = 20_000;
-const STORAGE_RETRY_DELAYS_MS = [0, 250, 750];
-
-interface SnapshotManifest {
-  format: number;
-  generation: string;
-  chunkCount: number;
-  sha256: string;
-  compression?: 'gzip';
-  updatedAt: string;
-}
 
 interface StoredStateRow {
   id: string;
   data?: Record<string, unknown>;
 }
 
-interface StoredStateIdRow {
-  id: string;
-}
 
 export function encodeSnapshot(snapshot: Record<string, unknown>) {
   const json = JSON.stringify(snapshot);
@@ -82,8 +68,8 @@ export function decodeSnapshot(
 
 /**
  * Multi-tenant archive store. It keeps the existing synchronous API used by
- * the application, while saving a complete state snapshot to Supabase when
- * the server is configured with SUPABASE_URL and SUPABASE_SECRET_KEY.
+ * the application, while persisting compact per-archive snapshots to Turso.
+ * Media bytes remain in object storage and are never stored in this database.
  */
 export class MemoryDatabase {
   archives: Map<string, Archive> = new Map();
@@ -107,41 +93,33 @@ export class MemoryDatabase {
   private loadedTenantIds = new Set<string>();
   private tenantLoading = new Map<string, Promise<void>>();
   private legacyArchiveIds = new Set<string>();
+  private schemaReady?: Promise<void>;
 
   constructor() {
     this.seedSampleData();
   }
 
   private get storageConfig() {
-    const url = getSupabaseUrl();
-    // The project's schema is configured for SUPABASE_SECRET_KEY. Other names
-    // remain supported for older Render configurations.
-    const key = getSupabaseSecret();
-    return url && key ? { url, key } : undefined;
+    const url = getTursoDatabaseUrl();
+    const authToken = getTursoAuthToken();
+    return url && authToken ? { url, authToken } : undefined;
   }
 
-  private storageCandidates(config: { url: string; key: string }) {
-    const keys = [
-      config.key,
-      process.env.SUPABASE_SECRET_KEY,
-      process.env.SUPABASE_SERVICE_ROLE_KEY,
-      process.env.service_role
-    ].filter((key): key is string => Boolean(key?.trim()));
-    return Array.from(new Set(keys)).map((key) => ({ url: config.url, key }));
+  private storageClient(config: { url: string; authToken: string }) {
+    return createClient({ url: config.url, authToken: config.authToken });
   }
 
-  private storageHeaders(config: { key: string }): Record<string, string> {
-    // Supabase's newer sb_secret_* keys are API keys, not JWTs, and must not be
-    // placed in an Authorization: Bearer header. Legacy service-role JWTs need
-    // both headers for PostgREST compatibility.
-    return config.key.startsWith('sb_secret_')
-      ? { apikey: config.key }
-      : { apikey: config.key, Authorization: `Bearer ${config.key}` };
-  }
-
-  private async storageError(response: Response, operation: 'load' | 'save') {
-    const detail = (await response.text()).replace(/[\r\n]+/g, ' ').slice(0, 500);
-    return new Error(`Supabase ${operation} failed (${response.status})${detail ? `: ${detail}` : '.'}`);
+  private async ensureStorageSchema(config: { url: string; authToken: string }): Promise<void> {
+    if (!this.schemaReady) {
+      this.schemaReady = this.storageClient(config).execute(`
+        CREATE TABLE IF NOT EXISTS oncehere_state (
+          id TEXT PRIMARY KEY NOT NULL,
+          data TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `).then(() => undefined);
+    }
+    return this.schemaReady;
   }
 
   /** True when archives and their recovery-key hashes survive redeployments. */
@@ -252,95 +230,36 @@ export class MemoryDatabase {
       : {};
   }
 
-  private async fetchRows(
-    config: { url: string; key: string },
-    ids: string[],
-    timeoutMs = 10_000
-  ): Promise<StoredStateRow[]> {
-    let rejected: Response | undefined;
-    for (const candidate of this.storageCandidates(config)) {
-      const response = await fetch(
-        `${candidate.url}/rest/v1/oncehere_state?id=in.(${ids.join(',')})&select=id,data&order=id.asc`,
-        { headers: this.storageHeaders(candidate), signal: AbortSignal.timeout(timeoutMs) }
-      );
-      if (response.ok) return response.json() as Promise<StoredStateRow[]>;
-      rejected = response;
-      if (response.status !== 401 && response.status !== 403) break;
-    }
-    throw await this.storageError(rejected!, 'load');
-  }
-
-  private async fetchTenantRows(config: { url: string; key: string }): Promise<StoredStateRow[]> {
-    let rejected: Response | undefined;
-    for (const candidate of this.storageCandidates(config)) {
-      const response = await fetch(
-        `${candidate.url}/rest/v1/oncehere_state?id=like.tenant-*&select=id&order=id.asc`,
-        { headers: this.storageHeaders(candidate), signal: AbortSignal.timeout(10_000) }
-      );
-      if (response.ok) {
-        const ids = await response.json() as StoredStateIdRow[];
-        const rows: StoredStateRow[] = [];
-        // Tenant snapshots may contain media metadata and become large. Fetching
-        // every JSONB payload in one response made cold starts fragile and could
-        // take the whole API offline when one tenant row was damaged.
-        for (let offset = 0; offset < ids.length; offset += 4) {
-          const batch = ids.slice(offset, offset + 4);
-          const settled = await Promise.allSettled(
-            batch.map(({ id }) => this.fetchRows(config, [id]))
-          );
-          settled.forEach((result, index) => {
-            if (result.status === 'fulfilled') {
-              rows.push(...result.value);
-            } else {
-              console.error(`Skipping unreadable tenant snapshot ${batch[index].id}:`, result.reason);
-            }
-          });
-        }
-        return rows;
+  private async fetchRows(config: { url: string; authToken: string }, ids: string[]): Promise<StoredStateRow[]> {
+    if (!ids.length) return [];
+    await this.ensureStorageSchema(config);
+    const placeholders = ids.map(() => '?').join(', ');
+    const result = await this.storageClient(config).execute({
+      sql: `SELECT id, data FROM oncehere_state WHERE id IN (${placeholders}) ORDER BY id ASC`,
+      args: ids
+    });
+    return result.rows.flatMap((row) => {
+      if (typeof row.id !== 'string' || typeof row.data !== 'string') return [];
+      try {
+        return [{ id: row.id, data: JSON.parse(row.data) as Record<string, unknown> }];
+      } catch {
+        console.error(`Skipping invalid Turso state row ${row.id}.`);
+        return [];
       }
-      rejected = response;
-      if (response.status !== 401 && response.status !== 403) break;
-    }
-    throw await this.storageError(rejected!, 'load');
+    });
   }
 
   private async upsertRows(
-    config: { url: string; key: string },
+    config: { url: string; authToken: string },
     rows: Array<{ id: string; data: Record<string, unknown>; updated_at: string }>
   ): Promise<void> {
-    let rejected: Response | undefined;
-    let lastError: unknown;
-    const body = JSON.stringify(rows);
-    for (const delay of STORAGE_RETRY_DELAYS_MS) {
-      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-      for (const candidate of this.storageCandidates(config)) {
-        try {
-          const response = await fetch(`${candidate.url}/rest/v1/oncehere_state?on_conflict=id`, {
-            method: 'POST',
-            signal: AbortSignal.timeout(STORAGE_REQUEST_TIMEOUT_MS),
-            headers: {
-              ...this.storageHeaders(candidate),
-              'Content-Type': 'application/json',
-              Prefer: 'resolution=merge-duplicates,return=minimal'
-            },
-            body
-          });
-          if (response.ok) return;
-          rejected = response;
-          // A bad key can fall through to a legacy service-role key. Temporary
-          // provider failures are retried; validation failures are not.
-          if (response.status === 401 || response.status === 403) continue;
-          if (response.status !== 408 && response.status !== 429 && response.status < 500) {
-            throw await this.storageError(response, 'save');
-          }
-          break;
-        } catch (error) {
-          lastError = error;
-        }
-      }
-    }
-    if (rejected) throw await this.storageError(rejected, 'save');
-    throw lastError instanceof Error ? lastError : new Error('Supabase save failed because the storage service did not respond.');
+    await this.ensureStorageSchema(config);
+    const client = this.storageClient(config);
+    await client.batch(rows.map((row) => ({
+      sql: `INSERT INTO oncehere_state (id, data, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
+      args: [row.id, JSON.stringify(row.data), row.updated_at]
+    })), 'write');
   }
 
   /** A request-scoped copy used only to roll back a mutation when durable save fails. */
@@ -380,81 +299,6 @@ export class MemoryDatabase {
     return this.getPlatformSettings();
   }
 
-  private async fetchGlobalSnapshot(config: { url: string; key: string }): Promise<Record<string, unknown> | undefined> {
-    // This retired snapshot is read only during a one-time tenant recovery.
-    // It is roughly 55 MB and needs more time than normal per-tenant reads;
-    // ordinary archive requests keep the strict 10-second timeout above.
-    const legacyReadTimeoutMs = 45_000;
-    const rows = await this.fetchRows(config, ['manifest'], legacyReadTimeoutMs);
-    const manifest = rows.find((row) => row.id === 'manifest')?.data as Partial<SnapshotManifest> | undefined;
-    const legacySnapshot = !manifest
-      ? (await this.fetchRows(config, ['primary']))[0]?.data
-      : undefined;
-
-    if (
-      (manifest?.format === 2 || manifest?.format === SNAPSHOT_FORMAT)
-      && typeof manifest.generation === 'string'
-      && Number.isInteger(manifest.chunkCount)
-      && Number(manifest.chunkCount) > 0
-      && typeof manifest.sha256 === 'string'
-    ) {
-      const chunkIds = Array.from(
-        { length: Number(manifest.chunkCount) },
-        (_, index) => `snapshot-${manifest.generation}-${String(index).padStart(6, '0')}`
-      );
-      const batches: string[][] = [];
-      // Large PostgREST responses can time out on an overgrown legacy table.
-      // Keep each recovery batch small; this path runs once, not on normal reads.
-      for (let offset = 0; offset < chunkIds.length; offset += 10) batches.push(chunkIds.slice(offset, offset + 10));
-      const chunkRows: StoredStateRow[] = [];
-      let nextBatch = 0;
-      await Promise.all(Array.from({ length: Math.min(SNAPSHOT_READ_CONCURRENCY, batches.length) }, async () => {
-        while (nextBatch < batches.length) {
-          chunkRows.push(...await this.fetchRows(config, batches[nextBatch++], legacyReadTimeoutMs));
-        }
-      }));
-      const chunksById = new Map(chunkRows.map((row) => [row.id, row.data?.payload]));
-      const chunks = chunkIds.map((id) => chunksById.get(id));
-      if (chunks.some((chunk) => typeof chunk !== 'string')) throw new Error('Stored archive snapshot is incomplete.');
-      try {
-        return decodeSnapshot(chunks as string[], manifest.sha256, manifest.compression);
-      } catch (error) {
-        const fallback = (await this.fetchRows(config, ['primary']))[0]?.data;
-        if (!fallback) throw error;
-        console.error('Active archive snapshot failed validation; loading the recovery copy:', error);
-        return fallback;
-      }
-    }
-    return legacySnapshot;
-  }
-
-  private tenantFromGlobalSnapshot(snapshot: Record<string, unknown>, archiveId: string): Record<string, unknown> | undefined {
-    const valueFor = (key: string) => {
-      const entries = snapshot[key];
-      if (!Array.isArray(entries)) return undefined;
-      return (entries as [string, unknown][]).find(([id]) => id === archiveId)?.[1];
-    };
-    const archive = valueFor('archives') as Archive | undefined;
-    if (!archive) return undefined;
-    const sessions = Array.isArray(snapshot.sessions)
-      ? (snapshot.sessions as [string, UserSession][]).filter(([, session]) => session.archiveId === archiveId)
-      : [];
-    return {
-      archive,
-      sections: valueFor('sections') || [],
-      timelineEvents: valueFor('timelineEvents') || [],
-      members: valueFor('members') || [],
-      memberMessages: valueFor('memberMessages') || [],
-      mediaItems: valueFor('mediaItems') || [],
-      albums: valueFor('albums') || [],
-      wallPosts: valueFor('wallPosts') || [],
-      revisions: valueFor('revisions') || [],
-      accessLogs: valueFor('accessLogs') || [],
-      shareActivity: valueFor('shareActivity') || [],
-      sessions
-    };
-  }
-
   /** Loads the durable state once per server start, before any API route runs. */
   async ensureLoaded(): Promise<void> {
     if (this.loadedFromStorage) return;
@@ -469,42 +313,15 @@ export class MemoryDatabase {
         return;
       }
 
-      // Current deployments start from a compact archive index. Full media,
-      // revisions and session data are fetched only for the requested tenant.
+      // Turso starts clean. The bundled sample data is the only data seeded
+      // automatically; this intentionally never imports Supabase snapshots.
       const index = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0]?.data;
       if (index && this.restoreTenantIndex(index)) {
         this.loadedFromStorage = true;
         return;
       }
-
-      const globalSnapshot = await this.fetchGlobalSnapshot(config);
-      if (globalSnapshot) this.restore(globalSnapshot);
-
-      // New writes are stored independently per archive. They overlay the
-      // legacy global snapshot, preserving old data while making edits small.
-      const tenantRows = await this.fetchTenantRows(config);
-      for (const row of tenantRows) {
-        const stored = row.data;
-        if (stored?.format !== TENANT_SNAPSHOT_FORMAT || !Array.isArray(stored.chunks)
-          || typeof stored.sha256 !== 'string') continue;
-        try {
-          this.restoreTenant(decodeSnapshot(
-            stored.chunks as string[],
-            stored.sha256,
-            stored.compression === 'gzip' ? 'gzip' : undefined
-          ));
-        } catch (error) {
-          // One broken tenant override must not make unrelated archives and
-          // built-in demos unavailable. The base snapshot remains untouched.
-          console.error(`Skipping invalid tenant snapshot ${row.id}:`, error);
-        }
-      }
       this.loadedFromStorage = true;
-
-      // One-time migration from the legacy global snapshot. Write every tenant
-      // first and publish the compact index last, so future cold starts never
-      // need to reconstruct the historical whole-platform snapshot.
-      await this.migrateToTenantIndex();
+      await this.seedTurso();
     })();
 
     try {
@@ -533,20 +350,6 @@ export class MemoryDatabase {
         // archive, refusing the request is safer than saving an empty tenant.
         if (archiveId.startsWith('demo-')) {
           this.loadedTenantIds.add(archiveId);
-          return;
-        }
-        if (this.legacyArchiveIds.has(archiveId)) {
-          const globalSnapshot = await this.fetchGlobalSnapshot(config);
-          const tenant = globalSnapshot && this.tenantFromGlobalSnapshot(globalSnapshot, archiveId);
-          if (!tenant) throw new Error('The archive data is temporarily unavailable.');
-          this.restoreTenant(tenant);
-          try {
-            await this.writeTenantRow(config, archiveId);
-            this.legacyArchiveIds.delete(archiveId);
-            await this.writeTenantIndex(config);
-          } catch (error) {
-            console.error(`Archive ${archiveId} loaded from recovery storage but could not be migrated:`, error);
-          }
           return;
         }
         throw new Error('The archive data is temporarily unavailable.');
@@ -605,24 +408,20 @@ export class MemoryDatabase {
     };
   }
 
-  private async writeTenantRow(config: { url: string; key: string }, archiveId: string): Promise<void> {
+  private async writeTenantRow(config: { url: string; authToken: string }, archiveId: string): Promise<void> {
     await this.upsertRows(config, [this.tenantStorageRow(archiveId)]);
     this.loadedTenantIds.add(archiveId);
   }
 
-  private async writeTenantIndex(config: { url: string; key: string }): Promise<void> {
+  private async writeTenantIndex(config: { url: string; authToken: string }): Promise<void> {
     await this.upsertRows(config, [this.tenantIndexRow()]);
   }
 
-  private async migrateToTenantIndex(): Promise<void> {
+  private async seedTurso(): Promise<void> {
     const config = this.storageConfig;
     if (!config) return;
-    // Publish lookup metadata immediately. Legacy-only tenants are recovered
-    // and migrated individually when requested, never inside the Explore path.
-    this.legacyArchiveIds = new Set(Array.from(this.archives.keys()).filter(
-      (id) => !id.startsWith('demo-') && !this.loadedTenantIds.has(id)
-    ));
-    for (const id of this.archives.keys()) this.loadedTenantIds.add(id);
+    this.legacyArchiveIds.clear();
+    for (const id of this.archives.keys()) await this.writeTenantRow(config, id);
     await this.writeTenantIndex(config);
   }
 
@@ -656,8 +455,7 @@ export class MemoryDatabase {
         try {
           const config = this.storageConfig;
           if (!config) throw new Error('Durable storage configuration disappeared.');
-          // One PostgREST upsert keeps tenant content and its lookup metadata
-          // atomic while also avoiding a second network round trip per edit.
+          // One libSQL batch keeps tenant content and lookup metadata together.
           await this.upsertRows(config, [this.tenantStorageRow(archiveId), this.tenantIndexRow()]);
           this.loadedTenantIds.add(archiveId);
           waiters.forEach(({ resolve }) => resolve());

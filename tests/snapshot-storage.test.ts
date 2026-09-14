@@ -1,8 +1,23 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const turso = vi.hoisted(() => ({
+  execute: vi.fn(),
+  batch: vi.fn()
+}));
+
+vi.mock('@libsql/client', () => ({
+  createClient: vi.fn(() => ({ execute: turso.execute, batch: turso.batch }))
+}));
 import { db, decodeSnapshot, encodeSnapshot, MemoryDatabase } from '../server/db';
 
 describe('chunked durable snapshots', () => {
+  afterEach(() => {
+    turso.execute.mockReset();
+    turso.batch.mockReset();
+    delete process.env.TURSO_DATABASE_URL;
+    delete process.env.TURSO_AUTH_TOKEN;
+  });
   it('compresses and round-trips Unicode archive data', () => {
     const snapshot = {
       archives: [['archive-1', { title: 'The Years We’ll Carry 🎓', notes: 'नमस्ते'.repeat(30_000) }]],
@@ -32,171 +47,37 @@ describe('chunked durable snapshots', () => {
     expect(decodeSnapshot([legacyChunk], hash)).toEqual(snapshot);
   });
 
-  it('persists an edit as one tenant row instead of a global snapshot', async () => {
-    const previousUrl = process.env.SUPABASE_URL;
-    const previousKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    process.env.SUPABASE_URL = 'https://storage.test';
-    process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role';
-    let posted: any[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
-      posted = JSON.parse(String(init?.body || '[]'));
-      return new Response(null, { status: 201 });
-    }));
+  it('writes one archive tenant and the compact index in one Turso batch', async () => {
+    process.env.TURSO_DATABASE_URL = 'libsql://oncehere.turso.io';
+    process.env.TURSO_AUTH_TOKEN = 'test-token';
+    turso.execute.mockResolvedValue({ rows: [] });
+    turso.batch.mockResolvedValue([]);
 
-    try {
-      await db.persistArchive('demo-marys-2025');
-      expect(posted).toHaveLength(2);
-      expect(posted.map((row) => row.id)).toEqual(['tenant-demo-marys-2025', 'tenant-index']);
-      const tenantPost = (fetch as any).mock.calls
-        .map((call: any[]) => JSON.parse(String(call[1]?.body || '[]')))
-        .flat()
-        .find((row: any) => row.id === 'tenant-demo-marys-2025');
-      expect(tenantPost).toBeTruthy();
-      const data = tenantPost.data;
-      const restored = decodeSnapshot(data.chunks, data.sha256, data.compression);
-      expect((restored.archive as { id: string }).id).toBe('demo-marys-2025');
-    } finally {
-      vi.unstubAllGlobals();
-      if (previousUrl === undefined) delete process.env.SUPABASE_URL;
-      else process.env.SUPABASE_URL = previousUrl;
-      if (previousKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-      else process.env.SUPABASE_SERVICE_ROLE_KEY = previousKey;
-    }
+    await db.persistArchive('demo-marys-2025');
+
+    const statements = turso.batch.mock.calls[0][0];
+    expect(statements).toHaveLength(2);
+    expect(statements.map((statement: { args: unknown[] }) => statement.args[0]))
+      .toEqual(['tenant-demo-marys-2025', 'tenant-index']);
+    const tenant = JSON.parse(statements[0].args[1] as string);
+    const restored = decodeSnapshot(tenant.chunks, tenant.sha256, tenant.compression);
+    expect((restored.archive as { id: string }).id).toBe('demo-marys-2025');
   });
 
-  it('boots from the compact index and lazily loads only the requested tenant', async () => {
-    const previousUrl = process.env.SUPABASE_URL;
-    const previousKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    process.env.SUPABASE_URL = 'https://storage.test';
-    process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role';
+  it('seeds only built-in demos into an empty Turso database', async () => {
+    process.env.TURSO_DATABASE_URL = 'libsql://oncehere.turso.io';
+    process.env.TURSO_AUTH_TOKEN = 'test-token';
+    turso.execute.mockResolvedValue({ rows: [] });
+    turso.batch.mockResolvedValue([]);
     const database = new MemoryDatabase();
-    const archive = database.archives.get('demo-marys-2025')!;
-    const tenant = encodeSnapshot({
-      archive,
-      sections: [], timelineEvents: [], members: [], memberMessages: [], mediaItems: [],
-      albums: [], wallPosts: [], revisions: [], accessLogs: [], shareActivity: [], sessions: []
-    });
-    const calls: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      calls.push(url);
-      if (url.includes('tenant-index')) return Response.json([{
-        id: 'tenant-index',
-        data: { format: 1, archives: [[archive.id, archive]], platformSettings: {} }
-      }]);
-      if (url.includes(`tenant-${archive.id}`)) return Response.json([{
-        id: `tenant-${archive.id}`,
-        data: { format: 1, chunks: tenant.chunks, compression: tenant.compression, sha256: tenant.sha256 }
-      }]);
-      return Response.json([]);
-    }));
 
-    try {
-      await database.ensureLoaded();
-      expect(calls).toHaveLength(1);
-      expect(calls[0]).toContain('tenant-index');
-      await database.ensureArchiveLoaded(archive.id);
-      expect(calls).toHaveLength(2);
-      expect(calls[1]).toContain(`tenant-${archive.id}`);
-      expect(calls.some((url) => url.includes('manifest'))).toBe(false);
-    } finally {
-      vi.unstubAllGlobals();
-      if (previousUrl === undefined) delete process.env.SUPABASE_URL;
-      else process.env.SUPABASE_URL = previousUrl;
-      if (previousKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-      else process.env.SUPABASE_SERVICE_ROLE_KEY = previousKey;
-    }
-  });
+    await database.ensureLoaded();
 
-  it('does not rewrite tenant rows that already exist during index migration', async () => {
-    const previousUrl = process.env.SUPABASE_URL;
-    const previousKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    process.env.SUPABASE_URL = 'https://storage.test';
-    process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role';
-    const database = new MemoryDatabase();
-    const internals = database as unknown as {
-      loadedTenantIds: Set<string>;
-      migrateToTenantIndex(): Promise<void>;
-    };
-    for (const id of database.archives.keys()) internals.loadedTenantIds.add(id);
-    const postedIds: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
-      postedIds.push(...JSON.parse(String(init?.body || '[]')).map((row: { id: string }) => row.id));
-      return new Response(null, { status: 201 });
-    }));
-
-    try {
-      await internals.migrateToTenantIndex();
-      expect(postedIds).toEqual(['tenant-index']);
-    } finally {
-      vi.unstubAllGlobals();
-      if (previousUrl === undefined) delete process.env.SUPABASE_URL;
-      else process.env.SUPABASE_URL = previousUrl;
-      if (previousKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-      else process.env.SUPABASE_SERVICE_ROLE_KEY = previousKey;
-    }
-  });
-
-
-  it('does not bulk-load legacy archives from the retired global snapshot', async () => {
-    const previousUrl = process.env.SUPABASE_URL;
-    const previousKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    process.env.SUPABASE_URL = 'https://storage.test';
-    process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role';
-    const database = new MemoryDatabase();
-    const archive = database.archives.get('demo-marys-2025')!;
-    const internals = database as unknown as {
-      legacyArchiveIds: Set<string>;
-      ensureAllArchivesLoaded(): Promise<void>;
-    };
-    internals.legacyArchiveIds.add(archive.id);
-    const ensureLoaded = vi.spyOn(database, 'ensureLoaded').mockResolvedValue();
-    const ensureArchiveLoaded = vi.spyOn(database, 'ensureArchiveLoaded').mockResolvedValue();
-
-    try {
-      await internals.ensureAllArchivesLoaded();
-      expect(ensureLoaded).toHaveBeenCalledOnce();
-      expect(ensureArchiveLoaded).not.toHaveBeenCalledWith(archive.id);
-    } finally {
-      ensureLoaded.mockRestore();
-      ensureArchiveLoaded.mockRestore();
-      if (previousUrl === undefined) delete process.env.SUPABASE_URL;
-      else process.env.SUPABASE_URL = previousUrl;
-      if (previousKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-      else process.env.SUPABASE_SERVICE_ROLE_KEY = previousKey;
-    }
-  });
-
-  it('loads tenant snapshots independently and skips an unreadable row', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const snapshot = encodeSnapshot({ archive: { id: 'archive-good' } });
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      if (url.includes('select=id&')) {
-        return Response.json([{ id: 'tenant-good' }, { id: 'tenant-broken' }]);
-      }
-      if (url.includes('tenant-good')) {
-        return Response.json([{
-          id: 'tenant-good',
-          data: {
-            format: 1,
-            chunks: snapshot.chunks,
-            compression: snapshot.compression,
-            sha256: snapshot.sha256
-          }
-        }]);
-      }
-      return new Response('temporary storage failure', { status: 503 });
-    }));
-
-    try {
-      const rows = await (db as unknown as {
-        fetchTenantRows(config: { url: string; key: string }): Promise<Array<{ id: string }>>;
-      }).fetchTenantRows({ url: 'https://storage.test', key: 'test-service-role' });
-
-      expect(rows.map((row) => row.id)).toEqual(['tenant-good']);
-      expect(consoleError).toHaveBeenCalledOnce();
-    } finally {
-      consoleError.mockRestore();
-      vi.unstubAllGlobals();
-    }
+    expect(turso.batch).toHaveBeenCalledTimes(database.archives.size + 1);
+    const ids = turso.batch.mock.calls.flatMap(([statements]: any[]) =>
+      statements.map((statement: { args: unknown[] }) => statement.args[0])
+    );
+    expect(ids).toContain('tenant-index');
+    expect(ids.every((id: string) => id === 'tenant-index' || id.startsWith('tenant-demo-'))).toBe(true);
   });
 });

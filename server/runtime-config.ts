@@ -3,20 +3,16 @@ function firstValue(...values: Array<string | undefined>): string | undefined {
   return values.map((value) => value?.trim()).find(Boolean);
 }
 
-export function getSupabaseUrl(): string | undefined {
-  return firstValue(process.env.SUPABASE_URL, process.env.VITE_SUPABASE_URL)?.replace(/\/$/, '');
+export function getTursoDatabaseUrl(): string | undefined {
+  return firstValue(process.env.TURSO_DATABASE_URL)?.replace(/\/$/, '');
 }
 
-export function getSupabaseSecret(): string | undefined {
-  return firstValue(
-    process.env.SUPABASE_SECRET_KEY,
-    process.env.SUPABASE_SERVICE_ROLE_KEY,
-    process.env.service_role
-  );
+export function getTursoAuthToken(): string | undefined {
+  return firstValue(process.env.TURSO_AUTH_TOKEN);
 }
 
 export function getSessionSecret(): string | undefined {
-  return firstValue(process.env.SESSION_SECRET, getSupabaseSecret());
+  return firstValue(process.env.SESSION_SECRET);
 }
 
 export function getDeploymentProvider(): 'vercel' | 'render' | 'local' {
@@ -26,7 +22,7 @@ export function getDeploymentProvider(): 'vercel' | 'render' | 'local' {
 }
 
 export function getRuntimeReadiness() {
-  const supabase = Boolean(getSupabaseUrl() && getSupabaseSecret());
+  const turso = Boolean(getTursoDatabaseUrl() && getTursoAuthToken());
   const sessionSigning = Boolean(getSessionSecret());
   const objectStorage = [
     process.env.OBJECT_STORAGE_ENDPOINT,
@@ -36,8 +32,8 @@ export function getRuntimeReadiness() {
   ].every((value) => Boolean(value?.trim()));
 
   return {
-    ready: supabase && sessionSigning && objectStorage,
+    ready: turso && sessionSigning && objectStorage,
     provider: getDeploymentProvider(),
-    services: { supabase, sessionSigning, objectStorage }
+    services: { turso, sessionSigning, objectStorage }
   };
 }
