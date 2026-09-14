@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { ThemeId } from '../../types';
 
 interface ThemeInteractiveBackdropProps {
@@ -15,45 +15,52 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
   interactive = true,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [mousePos, setMousePos] = useState({ x: 50, y: 35 });
-  const [isHovered, setIsHovered] = useState(false);
 
   useEffect(() => {
     if (!interactive) return;
 
+    const targetEl = containerRef.current?.parentElement;
+    if (!targetEl) return;
+    let frameId: number | null = null;
+    let nextX = 50;
+    let nextY = 35;
+
+    const paint = () => {
+      const backdrop = containerRef.current;
+      if (!backdrop) return;
+      backdrop.style.setProperty('--cursor-x', `${nextX}%`);
+      backdrop.style.setProperty('--cursor-y', `${nextY}%`);
+      backdrop.style.setProperty('--cursor-x-echo', `${100 - nextX * 0.6}%`);
+      backdrop.style.setProperty('--cursor-y-echo', `${100 - nextY * 0.6}%`);
+      backdrop.style.setProperty('--cursor-tilt', `${Math.max(-5, Math.min(5, (nextY - 50) * 0.1))}deg`);
+      frameId = null;
+    };
+
     const handleMouseMove = (e: MouseEvent) => {
-      if (!containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
+      const rect = targetEl.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
 
       const x = ((e.clientX - rect.left) / rect.width) * 100;
       const y = ((e.clientY - rect.top) / rect.height) * 100;
 
-      // Bound within 0-100% with gentle clamping
-      const boundedX = Math.max(-10, Math.min(110, x));
-      const boundedY = Math.max(-10, Math.min(110, y));
-
-      setMousePos({ x: boundedX, y: boundedY });
-      setIsHovered(true);
+      nextX = Math.max(0, Math.min(100, x));
+      nextY = Math.max(0, Math.min(100, y));
+      if (frameId === null) frameId = window.requestAnimationFrame(paint);
     };
 
     const handleMouseLeave = () => {
-      setIsHovered(false);
-      // Gently return to center
-      setMousePos({ x: 50, y: 35 });
+      nextX = 50;
+      nextY = 35;
+      if (frameId === null) frameId = window.requestAnimationFrame(paint);
     };
 
-    const targetEl = containerRef.current?.parentElement || containerRef.current;
-    if (targetEl) {
-      targetEl.addEventListener('mousemove', handleMouseMove as EventListener);
-      targetEl.addEventListener('mouseleave', handleMouseLeave as EventListener);
-    }
+    targetEl.addEventListener('mousemove', handleMouseMove);
+    targetEl.addEventListener('mouseleave', handleMouseLeave);
 
     return () => {
-      if (targetEl) {
-        targetEl.removeEventListener('mousemove', handleMouseMove as EventListener);
-        targetEl.removeEventListener('mouseleave', handleMouseLeave as EventListener);
-      }
+      targetEl.removeEventListener('mousemove', handleMouseMove);
+      targetEl.removeEventListener('mouseleave', handleMouseLeave);
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
     };
   }, [interactive]);
 
@@ -64,17 +71,24 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
     <div
       ref={containerRef}
       className={`absolute inset-0 overflow-hidden pointer-events-none transition-opacity duration-700 select-none ${className}`}
-      style={{ opacity: opacityMultiplier }}
+      style={{
+        opacity: opacityMultiplier,
+        '--cursor-x': '50%',
+        '--cursor-y': '35%',
+        '--cursor-x-echo': '70%',
+        '--cursor-y-echo': '79%',
+        '--cursor-tilt': '0deg',
+      } as React.CSSProperties}
     >
       {/* 1. MIDNIGHT CINEMA: 35mm Film Grain + Golden Projector Spotlight */}
       {themeId === 'midnight-cinema' && (
         <div className="absolute inset-0">
           {/* Dynamic Golden Spotlight tracking cursor */}
           <div
-            className="absolute w-[600px] h-[600px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-all duration-300 ease-out"
+            className="absolute w-[600px] h-[600px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-[left,top] duration-300 ease-out will-change-[left,top]"
             style={{
-              left: `${mousePos.x}%`,
-              top: `${mousePos.y}%`,
+              left: 'var(--cursor-x)',
+              top: 'var(--cursor-y)',
               background: 'radial-gradient(circle, rgba(245, 158, 11, 0.22) 0%, rgba(217, 119, 6, 0.08) 45%, transparent 70%)',
               filter: 'blur(50px)',
             }}
@@ -93,20 +107,20 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
         <div className="absolute inset-0">
           {/* Cursor-following Electric Cyan & Sky Blue Beam */}
           <div
-            className="absolute w-[500px] h-[500px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-all duration-200 ease-out"
+            className="absolute w-[500px] h-[500px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-[left,top] duration-200 ease-out will-change-[left,top]"
             style={{
-              left: `${mousePos.x}%`,
-              top: `${mousePos.y}%`,
+              left: 'var(--cursor-x)',
+              top: 'var(--cursor-y)',
               background: 'radial-gradient(circle, rgba(56, 189, 248, 0.28) 0%, rgba(99, 102, 241, 0.18) 45%, transparent 70%)',
               filter: 'blur(45px)',
             }}
           />
           {/* Celestial Violet Ambient Wave */}
           <div
-            className="absolute w-[550px] h-[550px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-all duration-500 ease-out"
+            className="absolute w-[550px] h-[550px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-[left,top] duration-500 ease-out will-change-[left,top]"
             style={{
-              left: `${100 - mousePos.x * 0.6}%`,
-              top: `${100 - mousePos.y * 0.6}%`,
+              left: 'var(--cursor-x-echo)',
+              top: 'var(--cursor-y-echo)',
               background: 'radial-gradient(circle, rgba(192, 132, 252, 0.22) 0%, rgba(236, 72, 153, 0.1) 50%, transparent 75%)',
               filter: 'blur(60px)',
             }}
@@ -123,10 +137,10 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
         <div className="absolute inset-0">
           {/* Warm Reading Lamp Glow tracking cursor */}
           <div
-            className="absolute w-[480px] h-[480px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-all duration-300 ease-out"
+            className="absolute w-[480px] h-[480px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-[left,top] duration-300 ease-out will-change-[left,top]"
             style={{
-              left: `${mousePos.x}%`,
-              top: `${mousePos.y}%`,
+              left: 'var(--cursor-x)',
+              top: 'var(--cursor-y)',
               background: 'radial-gradient(circle, rgba(254, 215, 170, 0.45) 0%, rgba(251, 146, 60, 0.12) 50%, transparent 75%)',
               filter: 'blur(40px)',
             }}
@@ -143,10 +157,10 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
         <div className="absolute inset-0">
           {/* Cyberpunk Tokyo Laser Ripple following cursor */}
           <div
-            className="absolute w-[450px] h-[450px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-all duration-150 ease-out"
+            className="absolute w-[450px] h-[450px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-[left,top] duration-200 ease-out will-change-[left,top]"
             style={{
-              left: `${mousePos.x}%`,
-              top: `${mousePos.y}%`,
+              left: 'var(--cursor-x)',
+              top: 'var(--cursor-y)',
               background: 'radial-gradient(circle, rgba(0, 240, 255, 0.28) 0%, rgba(255, 0, 127, 0.2) 45%, transparent 70%)',
               filter: 'blur(35px)',
             }}
@@ -162,7 +176,7 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
                 linear-gradient(to bottom, rgba(255, 0, 127, 0.4) 1px, transparent 1px)
               `,
               backgroundSize: '36px 36px',
-              transform: `perspective(600px) rotateX(${Math.max(0, (mousePos.y - 50) * 0.1)}deg)`,
+              transform: 'perspective(600px) rotateX(var(--cursor-tilt))',
             }}
           />
           {/* Scanline effect */}
@@ -175,10 +189,10 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
         <div className="absolute inset-0">
           {/* Copper Sunbeam moving through pine mist */}
           <div
-            className="absolute w-[520px] h-[520px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-all duration-300 ease-out"
+            className="absolute w-[520px] h-[520px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-[left,top] duration-300 ease-out will-change-[left,top]"
             style={{
-              left: `${mousePos.x}%`,
-              top: `${mousePos.y}%`,
+              left: 'var(--cursor-x)',
+              top: 'var(--cursor-y)',
               background: 'radial-gradient(circle, rgba(245, 158, 11, 0.24) 0%, rgba(16, 185, 129, 0.15) 45%, transparent 70%)',
               filter: 'blur(45px)',
             }}
@@ -195,10 +209,10 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
         <div className="absolute inset-0">
           {/* Candlelight Halo following cursor */}
           <div
-            className="absolute w-[500px] h-[500px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-all duration-250 ease-out"
+            className="absolute w-[500px] h-[500px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-[left,top] duration-250 ease-out will-change-[left,top]"
             style={{
-              left: `${mousePos.x}%`,
-              top: `${mousePos.y}%`,
+              left: 'var(--cursor-x)',
+              top: 'var(--cursor-y)',
               background: 'radial-gradient(circle, rgba(229, 193, 88, 0.25) 0%, rgba(180, 83, 9, 0.12) 50%, transparent 70%)',
               filter: 'blur(45px)',
             }}

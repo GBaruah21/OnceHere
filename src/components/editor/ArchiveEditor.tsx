@@ -888,7 +888,6 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
               onClick={() => {
                 const stage = document.getElementById('editor-preview-stage');
                 if (stage) stage.scrollTo({ top: 0, behavior: 'smooth' });
-                window.scrollTo({ top: 0, behavior: 'smooth' });
               }}
               title="Scroll to Top"
               className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-neutral-300 hover:text-amber-400 text-xs transition-colors shrink-0 cursor-pointer"
