@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 34601)
-Total output lines: 2912
-
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { motion, useScroll, useTransform, useSpring, AnimatePresence } from 'motion/react';
 import {
@@ -1482,7 +1479,364 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
             onClick={() => setIsAddingNote(true)}
             data-cursor="note"
             data-cursor-text="SIGN NOTE"
-            className={`px-4 py-1.5 rounded-full text-xs font-mono font-bold tracking-wider uppercase shadow-lg active:sc…4601 tokens truncated…/40 border border-white/10 focus:outline-none focus:border-amber-400 transition-colors"
+            className={`px-4 py-1.5 rounded-full text-xs font-mono font-bold tracking-wider uppercase shadow-lg active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer border ${
+              archive.themeId === 'paper-polaroids'
+                ? 'border-amber-700 text-amber-950 bg-amber-100 hover:bg-amber-200'
+                : 'border-amber-400/40 text-amber-300 bg-amber-400/10 hover:bg-amber-400/20'
+            }`}
+          >
+            <PenTool className={`w-3.5 h-3.5 ${archive.themeId === 'paper-polaroids' ? 'text-amber-900' : 'text-amber-400'}`} />
+            <span>SIGN NOTE</span>
+          </motion.button>
+        </div>
+      </nav>
+
+      {/* Mobile/Tablet Sub-Navigation Sticky Bar */}
+      <div className={`md:hidden sticky top-[65px] z-30 px-3 py-2 backdrop-blur-md border-b overflow-x-auto no-scrollbar flex items-center gap-2 justify-start shadow-md ${
+        archive.themeId === 'paper-polaroids'
+          ? 'bg-[#faf6ee]/95 border-stone-300 text-stone-900'
+          : 'bg-neutral-950/85 border-white/10 text-neutral-100'
+      }`}>
+        {navTabs.map((tab) => {
+          const isTabActive = activeScrollSection === tab.id;
+          const TabIcon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => handleSelectTab(tab.id, tab.id)}
+              className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap flex items-center gap-1.5 transition-all cursor-pointer ${
+                archive.themeId === 'paper-polaroids'
+                  ? isTabActive
+                    ? 'bg-amber-800 text-white font-bold shadow-sm'
+                    : 'bg-stone-200 text-stone-800 border border-stone-300 hover:bg-stone-300'
+                  : isTabActive
+                  ? 'bg-amber-400 text-neutral-950 font-bold shadow-sm'
+                  : 'bg-white/5 text-neutral-300 border border-white/10 hover:bg-white/10'
+              }`}
+            >
+              <TabIcon className="w-3.5 h-3.5" />
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* 2. RENDER SECTIONS DYNAMICALLY */}
+      <main className="space-y-12 sm:space-y-16 lg:space-y-20 pb-16 relative z-10">
+        
+        {visibleSections.map((section) => {
+          
+          {/* HERO SECTION WITH SUBTLE PARALLAX */}
+          if (section.stableType === 'hero') {
+            return (
+              <HeroSection
+                key={section.id}
+                archive={archive}
+                members={members}
+                media={media}
+                theme={theme}
+                cardBg={cardBg}
+                fontPreset={activeFontPreset}
+                onOpenShareModal={() => setIsShareModalOpen(true)}
+                onOpenInstagramModal={(mode) => {
+                  setInstagramMode(mode);
+                  setIsInstagramModalOpen(true);
+                }}
+                onQuickCopy={handleQuickCopyLink}
+                quickCopied={quickCopied}
+              />
+            );
+          }
+
+          {/* TIMELINE / JOURNEY SECTION (Supports Vertical Cinematic, Horizontal Slider, Stacked Cards, Story Chapters) */}
+          if (section.stableType === 'timeline') {
+            return (
+              <TimelineSectionView
+                key={section.id}
+                section={section}
+                timeline={timeline}
+                theme={theme}
+                activeFontPreset={activeFontPreset}
+                cardBg={cardBg}
+                sectionRevealVariants={sectionRevealVariants}
+                staggerGridVariants={staggerGridVariants}
+                staggerCardVariants={staggerCardVariants}
+                archive={archive}
+              />
+            );
+          }
+
+          {/* MEMBERS / YEARBOOK SECTION */}
+          if (section.stableType === 'members') {
+            return (
+              <motion.section
+                key={section.id}
+                id="section-members"
+                variants={sectionRevealVariants}
+                initial="hidden"
+                whileInView="visible"
+                viewport={{ once: true, amount: 0.01 }}
+                className="px-4 sm:px-8 max-w-6xl mx-auto space-y-8"
+              >
+                <div className="text-center space-y-2">
+                  <span className="text-xs font-mono uppercase tracking-widest opacity-60">Directory</span>
+                  <h2 className={`text-3xl sm:text-4xl font-bold ${activeFontPreset.headingClass}`}>{section.displayTitle || 'Class of Distinction'}</h2>
+                  {section.description && <p className={`text-xs sm:text-sm opacity-75 ${activeFontPreset.bodyClass}`}>{section.description}</p>}
+                </div>
+
+                {/* Filter and Search Bar */}
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+                  
+                  {/* Group Filter Tabs with Dynamic Counts */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setSelectedMemberGroup('all');
+                      }}
+                      data-cursor="hover"
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-sm ${
+                        selectedMemberGroup === 'all'
+                          ? 'bg-amber-400 text-neutral-950 font-bold shadow-md scale-105'
+                          : 'bg-white/5 opacity-75 hover:opacity-100 border border-white/10 hover:bg-white/10'
+                      }`}
+                    >
+                      All ({members.length})
+                    </button>
+                    {memberGroups.map((g) => {
+                      const count = members.filter((m) => m.groupLabel === g).length;
+                      return (
+                        <button
+                          key={g}
+                          onClick={() => {
+                            setSelectedMemberGroup(g);
+                          }}
+                          data-cursor="hover"
+                          className={`px-3.5 py-1.5 rounded-xl text-xs font-medium transition-all cursor-pointer shadow-sm ${
+                            selectedMemberGroup === g
+                              ? 'bg-amber-400 text-neutral-950 font-bold shadow-md scale-105'
+                              : 'bg-white/5 opacity-75 hover:opacity-100 border border-white/10 hover:bg-white/10'
+                          }`}
+                        >
+                          {g} ({count})
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Search input */}
+                  <div className="w-full sm:w-64 relative">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 opacity-40 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={memberSearch}
+                      onChange={(e) => setMemberSearch(e.target.value)}
+                      placeholder="Find a classmate..."
+                      className="w-full pl-9 pr-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-xs focus:outline-none focus:border-amber-400 transition-colors"
+                    />
+                  </div>
+                </div>
+
+                {/* Members Grid with Instant Smooth Reveal on Filter Change */}
+                <motion.div
+                  key={selectedMemberGroup + memberSearch}
+                  variants={staggerGridVariants}
+                  initial="hidden"
+                  animate="visible"
+                  className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6"
+                >
+                  {displayedMembers.map((member) => (
+                    <motion.div
+                      key={member.id}
+                      variants={staggerCardVariants}
+                      whileHover={{ y: -6, transition: { duration: 0.2 } }}
+                      onClick={() => setSelectedMember(member)}
+                      data-cursor="profile"
+                      data-cursor-text="EXPLORE"
+                      className={`p-6 rounded-2xl border ${cardBg} transition-all duration-300 cursor-pointer flex flex-col items-center text-center justify-between group hover:shadow-2xl`}
+                    >
+                      <div>
+                        {/* Portrait */}
+                        <div
+                          className="w-24 h-24 rounded-full overflow-hidden border-2 mb-4 group-hover:scale-105 transition-transform shadow-md"
+                          style={{ borderColor: theme.palette.accent }}
+                        >
+                          <LazyImage
+                            src={member.imageUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80'}
+                            alt={member.name}
+                            containerClassName="w-full h-full rounded-full"
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+
+                        <h3 className={`text-base font-bold ${activeFontPreset.headingClass} ${archive.themeId === 'paper-polaroids' ? 'text-stone-900' : 'text-white'} tracking-wide`}>
+                          {member.name}
+                        </h3>
+                        {member.nickname && (
+                          <div className="text-[12px] text-amber-300 font-medium italic mt-0.5">
+                            “{member.nickname}”
+                          </div>
+                        )}
+                        {member.groupLabel && (
+                          <div className="text-[11px] font-bold mt-1 tracking-wide" style={{ color: theme.palette.accent }}>
+                            {member.groupLabel}
+                          </div>
+                        )}
+
+                        {member.quote && (
+                          <p className={`text-xs italic ${archive.themeId === 'paper-polaroids' ? 'text-stone-700' : 'text-neutral-200'} mt-3 ${activeFontPreset.accentClass} line-clamp-3 leading-relaxed`}>
+                            “{member.quote}”
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="mt-4 pt-3 border-t border-white/10 w-full text-[11px] font-semibold flex items-center justify-center gap-1 group-hover:gap-1.5 transition-all" style={{ color: theme.palette.accent }}>
+                        <span>View Profile & Note</span>
+                        <span>→</span>
+                      </div>
+                    </motion.div>
+                  ))}
+                </motion.div>
+
+                {filteredMembers.length > COLLECTION_PAGE_SIZE && (
+                  <div className="flex justify-center gap-2">
+                    {visibleMemberCount < filteredMembers.length ? (
+                      <button
+                        type="button"
+                        onClick={() => setVisibleMemberCount((count) => Math.min(count + COLLECTION_PAGE_SIZE, filteredMembers.length))}
+                        className="px-5 py-2.5 rounded-full bg-amber-400 text-neutral-950 text-xs font-bold hover:brightness-110 transition-all"
+                      >
+                        View more people ({filteredMembers.length - visibleMemberCount})
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setVisibleMemberCount(COLLECTION_PAGE_SIZE)}
+                        className="px-5 py-2.5 rounded-full bg-white/10 border border-white/15 text-white text-xs font-semibold hover:bg-white/15 transition-all"
+                      >
+                        Show fewer people
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {filteredMembers.length === 0 && (
+                  <div className="py-12 text-center space-y-3 bg-white/5 rounded-3xl border border-white/10 p-8 max-w-lg mx-auto">
+                    <div className="text-3xl">🔍</div>
+                    <div className="text-sm font-semibold text-neutral-200">No classmates found</div>
+                    <p className="text-xs text-neutral-400">Try searching with another name or resetting the category filter.</p>
+                    <button
+                      onClick={() => {
+                        setSelectedMemberGroup('all');
+                        setMemberSearch('');
+                      }}
+                      className="px-4 py-2 rounded-xl bg-amber-400 text-neutral-950 font-bold text-xs cursor-pointer hover:bg-amber-300 transition-all shadow-md"
+                    >
+                      Show All Classmates ({members.length})
+                    </button>
+                  </div>
+                )}
+              </motion.section>
+            );
+          }
+
+          {/* MEDIA VAULT SECTION (With Sorting Buttons & Categories) */}
+          if (section.stableType === 'media-vault') {
+            return (
+              <motion.section
+                key={section.id}
+                id="section-media-vault"
+                variants={sectionRevealVariants}
+                initial="hidden"
+                whileInView="visible"
+                viewport={{ once: true, amount: 0.08, margin: '0px 0px -40px 0px' }}
+                className="px-4 sm:px-8 max-w-6xl mx-auto space-y-8"
+              >
+                <div className="text-center space-y-2">
+                  <span className="text-xs font-mono uppercase tracking-widest opacity-60">Archive Gallery</span>
+                  <h2 className={`text-3xl sm:text-4xl font-bold ${activeFontPreset.headingClass}`}>{section.displayTitle || 'Media Vault'}</h2>
+                  <p className={`text-xs sm:text-sm opacity-75 ${activeFontPreset.bodyClass}`}>
+                    {section.description || 'Curated photos, high-resolution memories, and candid moments.'}
+                  </p>
+                </div>
+
+                {/* Controls Bar: Sort Buttons, Search, and Category Filters */}
+                <div className="p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-md space-y-4 max-w-4xl mx-auto">
+                  
+                  {/* Top Controls Row */}
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+                    
+                    {/* Sort Options Buttons (Newest First, Oldest First, Highlights) */}
+                    <div className="flex items-center gap-1.5 text-xs w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0">
+                      <span className="text-[11px] font-mono uppercase opacity-50 mr-1 flex items-center gap-1">
+                        <ArrowUpDown className="w-3 h-3" /> Sort:
+                      </span>
+
+                      {/* Newest First Button */}
+                      <button
+                        onClick={() => setMediaSort('newest')}
+                        data-cursor="hover"
+                        className={`px-3 py-1.5 rounded-xl font-mono text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+                          mediaSort === 'newest'
+                            ? 'bg-amber-400 text-neutral-950 shadow-md scale-105'
+                            : 'bg-white/5 text-neutral-300 hover:bg-white/10'
+                        }`}
+                      >
+                        <Clock className="w-3 h-3" />
+                        <span>Newest First</span>
+                      </button>
+
+                      {/* Oldest First Button */}
+                      <button
+                        onClick={() => setMediaSort('oldest')}
+                        data-cursor="hover"
+                        className={`px-3 py-1.5 rounded-xl font-mono text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+                          mediaSort === 'oldest'
+                            ? 'bg-amber-400 text-neutral-950 shadow-md scale-105'
+                            : 'bg-white/5 text-neutral-300 hover:bg-white/10'
+                        }`}
+                      >
+                        <Clock className="w-3 h-3 rotate-180" />
+                        <span>Oldest First</span>
+                      </button>
+
+                      {/* Highlights Button */}
+                      <button
+                        onClick={() => setMediaSort('highlights')}
+                        data-cursor="hover"
+                        className={`px-3 py-1.5 rounded-xl font-mono text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+                          mediaSort === 'highlights'
+                            ? 'bg-amber-400 text-neutral-950 shadow-md scale-105'
+                            : 'bg-white/5 text-neutral-300 hover:bg-white/10'
+                        }`}
+                      >
+                        <Flame className="w-3 h-3" />
+                        <span>Highlights</span>
+                      </button>
+
+                      {/* Shuffle Button */}
+                      <button
+                        onClick={() => setMediaSort('random')}
+                        data-cursor="hover"
+                        title="Shuffle memories"
+                        className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer ${
+                          mediaSort === 'random'
+                            ? 'bg-amber-400 text-neutral-950 shadow-md'
+                            : 'bg-white/5 text-neutral-300 hover:bg-white/10'
+                        }`}
+                      >
+                        <Shuffle className="w-3 h-3" />
+                      </button>
+                    </div>
+
+                    {/* Media Search Input */}
+                    <div className="relative w-full sm:w-64">
+                      <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 opacity-40" />
+                      <input
+                        type="text"
+                        placeholder="Search photos & tags..."
+                        value={mediaSearch}
+                        onChange={(e) => setMediaSearch(e.target.value)}
+                        className="w-full pl-8 pr-3 py-1.5 rounded-xl text-xs bg-black/40 border border-white/10 focus:outline-none focus:border-amber-400 transition-colors"
                       />
                     </div>
 
