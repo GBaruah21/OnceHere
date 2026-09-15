@@ -6,6 +6,7 @@ interface ThemeInteractiveBackdropProps {
   className?: string;
   intensity?: 'subtle' | 'vibrant' | 'mockup';
   interactive?: boolean;
+  coordinateMode?: 'container' | 'viewport';
 }
 
 export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> = ({
@@ -13,6 +14,7 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
   className = '',
   intensity = 'vibrant',
   interactive = true,
+  coordinateMode = 'container',
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -24,27 +26,46 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
     let frameId: number | null = null;
     let nextX = 50;
     let nextY = 35;
+    let energy = 0;
 
     const paint = () => {
       const backdrop = containerRef.current;
       if (!backdrop) return;
+      energy *= 0.88;
       backdrop.style.setProperty('--cursor-x', `${nextX}%`);
       backdrop.style.setProperty('--cursor-y', `${nextY}%`);
       backdrop.style.setProperty('--cursor-x-echo', `${100 - nextX * 0.6}%`);
       backdrop.style.setProperty('--cursor-y-echo', `${100 - nextY * 0.6}%`);
       backdrop.style.setProperty('--cursor-tilt', `${Math.max(-5, Math.min(5, (nextY - 50) * 0.1))}deg`);
-      frameId = null;
+      backdrop.style.setProperty('--cursor-energy', energy.toFixed(3));
+      backdrop.style.setProperty('--cursor-grid-size', `${36 + energy * 22}px`);
+      backdrop.style.setProperty('--cursor-dot-size', `${18 + energy * 10}px`);
+      backdrop.style.setProperty('--cursor-pattern-x', `${nextX * -0.14}px`);
+      backdrop.style.setProperty('--cursor-pattern-y', `${nextY * -0.14}px`);
+      backdrop.style.setProperty('--cursor-pattern-scale', `${1 + energy * 0.07}`);
+      if (energy > 0.015) {
+        frameId = window.requestAnimationFrame(paint);
+      } else {
+        frameId = null;
+      }
     };
 
     const handleMouseMove = (e: MouseEvent) => {
       const rect = targetEl.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
+      const width = coordinateMode === 'viewport' ? window.innerWidth : rect.width;
+      const height = coordinateMode === 'viewport' ? window.innerHeight : rect.height;
+      const originX = coordinateMode === 'viewport' ? 0 : rect.left;
+      const originY = coordinateMode === 'viewport' ? 0 : rect.top;
+      if (width === 0 || height === 0) return;
 
-      const x = ((e.clientX - rect.left) / rect.width) * 100;
-      const y = ((e.clientY - rect.top) / rect.height) * 100;
+      const x = ((e.clientX - originX) / width) * 100;
+      const y = ((e.clientY - originY) / height) * 100;
 
-      nextX = Math.max(0, Math.min(100, x));
-      nextY = Math.max(0, Math.min(100, y));
+      const clampedX = Math.max(0, Math.min(100, x));
+      const clampedY = Math.max(0, Math.min(100, y));
+      energy = Math.min(1, energy + Math.hypot(clampedX - nextX, clampedY - nextY) / 18);
+      nextX = clampedX;
+      nextY = clampedY;
       if (frameId === null) frameId = window.requestAnimationFrame(paint);
     };
 
@@ -62,7 +83,7 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
       targetEl.removeEventListener('mouseleave', handleMouseLeave);
       if (frameId !== null) window.cancelAnimationFrame(frameId);
     };
-  }, [interactive]);
+  }, [coordinateMode, interactive]);
 
   // Alpha modifiers based on intensity
   const opacityMultiplier = intensity === 'mockup' ? 1 : intensity === 'subtle' ? 0.6 : 0.9;
@@ -78,6 +99,12 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
         '--cursor-x-echo': '70%',
         '--cursor-y-echo': '79%',
         '--cursor-tilt': '0deg',
+        '--cursor-energy': '0',
+        '--cursor-grid-size': '36px',
+        '--cursor-dot-size': '18px',
+        '--cursor-pattern-x': '0px',
+        '--cursor-pattern-y': '0px',
+        '--cursor-pattern-scale': '1',
       } as React.CSSProperties}
     >
       {/* 1. MIDNIGHT CINEMA: 35mm Film Grain + Golden Projector Spotlight */}
@@ -169,14 +196,15 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
           <div className="absolute -top-10 -right-10 w-96 h-96 bg-fuchsia-600/20 rounded-full blur-[80px]" />
           {/* Cyber Perspective Grid Overlay */}
           <div
-            className="absolute inset-0 opacity-20 transition-transform duration-300"
+            className="absolute inset-0 opacity-30 transition-transform duration-300"
             style={{
               backgroundImage: `
                 linear-gradient(to right, rgba(0, 240, 255, 0.5) 1px, transparent 1px),
                 linear-gradient(to bottom, rgba(255, 0, 127, 0.4) 1px, transparent 1px)
               `,
-              backgroundSize: '36px 36px',
-              transform: 'perspective(600px) rotateX(var(--cursor-tilt))',
+              backgroundSize: 'var(--cursor-grid-size) var(--cursor-grid-size)',
+              backgroundPosition: 'var(--cursor-pattern-x) var(--cursor-pattern-y)',
+              transform: 'perspective(600px) rotateX(var(--cursor-tilt)) scale(var(--cursor-pattern-scale))',
             }}
           />
           {/* Scanline effect */}
@@ -220,7 +248,14 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
           {/* Archival Museum Sepia Vignette */}
           <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_45%,rgba(0,0,0,0.85)_100%)]" />
           {/* Museum Archival Parchment Texture */}
-          <div className="absolute inset-0 opacity-[0.05] bg-[radial-gradient(#e5c158_1px,transparent_1px)] [background-size:18px_18px]" />
+          <div
+            className="absolute inset-0 opacity-[0.11] transition-[background-size,background-position] duration-300"
+            style={{
+              backgroundImage: 'radial-gradient(#e5c158 1.15px, transparent 1.35px)',
+              backgroundSize: 'var(--cursor-dot-size) var(--cursor-dot-size)',
+              backgroundPosition: 'var(--cursor-pattern-x) var(--cursor-pattern-y)',
+            }}
+          />
         </div>
       )}
     </div>

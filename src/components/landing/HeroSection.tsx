@@ -5,7 +5,6 @@ import { PLATFORM_CONFIG } from '../../config/platform';
 import { THEMES } from '../../config/themes';
 import { ThemeId } from '../../types';
 import { ThemeInteractiveBackdrop } from '../common/ThemeInteractiveBackdrop';
-import { HeroAmbientCursor } from '../common/HeroAmbientCursor';
 
 interface HeroSectionProps {
   onCreateClick: () => void;
@@ -33,8 +32,6 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onCreateClick, onViewD
         <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[700px] h-[450px] bg-gradient-to-tr from-amber-500/15 via-rose-500/10 to-indigo-500/10 blur-[130px] rounded-full" />
         <div className="absolute top-10 right-10 w-96 h-96 bg-amber-500/5 blur-[100px] rounded-full" />
       </div>
-
-      <HeroAmbientCursor />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
         

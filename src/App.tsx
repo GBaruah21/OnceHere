@@ -8,6 +8,7 @@ import { ThemesSection } from './components/landing/ThemesSection';
 import { FeaturesSection } from './components/landing/FeaturesSection';
 import { HowItWorksSection } from './components/landing/HowItWorksSection';
 import { ExploreArchivesSection } from './components/landing/ExploreArchivesSection';
+import { LandingTextureOverlay } from './components/common/LandingTextureOverlay';
 import { AttributionFooter } from './components/AttributionFooter';
 import { SessionStorage } from './lib/security';
 import { AlertCircle, Lock, ArrowLeft, RefreshCw } from 'lucide-react';
@@ -456,7 +457,8 @@ export default function App() {
       )}
 
       {/* Main Landing Sections */}
-      <main className="flex-grow">
+      <main className="relative flex-grow">
+        <LandingTextureOverlay />
         
         {/* Hero with interactive mini-preview */}
         <HeroSection

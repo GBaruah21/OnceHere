@@ -1265,6 +1265,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
         themeId={archive.themeId}
         intensity="vibrant"
         interactive={true}
+        coordinateMode={isPreviewMode ? 'container' : 'viewport'}
         className={`${isPreviewMode ? 'absolute' : 'fixed'} inset-0 z-0 pointer-events-none`}
       />
 
