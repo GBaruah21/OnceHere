@@ -1,0 +1,39 @@
+name: OnceHere source audit snapshot
+
+on:
+  push:
+    branches:
+      - audit/project-wide-2026-09-16
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: oncehere-audit-source
+          path: |
+            .env.example
+            README.md
+            RETRY-QA.md
+            RENDER_OPERATIONS.md
+            BACKBLAZE_B2_SETUP.md
+            R2_SETUP.md
+            package.json
+            package-lock.json
+            tsconfig.json
+            vite.config.ts
+            vercel.json
+            index.html
+            server.ts
+            api
+            server
+            src
+            tests
+          if-no-files-found: error
+          retention-days: 1
