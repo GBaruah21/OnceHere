@@ -277,3 +277,9 @@ button, a, input, select, textarea {
     transform: translateX(100%);
   }
 }
+
+/* The old nested modal preview was unreliable because the public archive uses
+   page-level scroll/sticky behavior. Keep the obsolete studio trigger hidden. */
+button[title="Open Full Live Preview"] {
+  display: none !important;
+}
