@@ -10,13 +10,15 @@ export const HeroAmbientCursor: React.FC = () => {
 
   useEffect(() => {
     const root = rootRef.current;
-    if (!root || !window.matchMedia('(pointer: fine)').matches || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const interactionSurface = root?.parentElement;
+    if (!root || !interactionSurface || !window.matchMedia('(pointer: fine)').matches || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
     let frame: number | null = null;
     let x = 50;
     let y = 28;
     let lastX = x;
     let lastY = y;
+    let energy = 0;
 
     const paint = () => {
       // The outer halo deliberately catches up after the pointer instead of
@@ -24,11 +26,13 @@ export const HeroAmbientCursor: React.FC = () => {
       // rerenders or a continuously running animation at rest.
       lastX += (x - lastX) * 0.12;
       lastY += (y - lastY) * 0.12;
+      energy *= 0.88;
       root.style.setProperty('--hero-cursor-x', `${x}%`);
       root.style.setProperty('--hero-cursor-y', `${y}%`);
       root.style.setProperty('--hero-cursor-tail-x', `${lastX}%`);
       root.style.setProperty('--hero-cursor-tail-y', `${lastY}%`);
-      if (Math.abs(x - lastX) > 0.08 || Math.abs(y - lastY) > 0.08) {
+      root.style.setProperty('--hero-cursor-energy', energy.toFixed(3));
+      if (Math.abs(x - lastX) > 0.08 || Math.abs(y - lastY) > 0.08 || energy > 0.015) {
         frame = window.requestAnimationFrame(paint);
       } else {
         frame = null;
@@ -36,10 +40,13 @@ export const HeroAmbientCursor: React.FC = () => {
     };
 
     const onMove = (event: MouseEvent) => {
-      const rect = root.getBoundingClientRect();
+      const rect = interactionSurface.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
-      x = Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100));
-      y = Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100));
+      const nextX = Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100));
+      const nextY = Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100));
+      energy = Math.min(1, energy + Math.hypot(nextX - x, nextY - y) / 18);
+      x = nextX;
+      y = nextY;
       if (frame === null) frame = window.requestAnimationFrame(paint);
     };
 
@@ -49,11 +56,11 @@ export const HeroAmbientCursor: React.FC = () => {
       if (frame === null) frame = window.requestAnimationFrame(paint);
     };
 
-    root.addEventListener('mousemove', onMove);
-    root.addEventListener('mouseleave', onLeave);
+    interactionSurface.addEventListener('pointermove', onMove);
+    interactionSurface.addEventListener('pointerleave', onLeave);
     return () => {
-      root.removeEventListener('mousemove', onMove);
-      root.removeEventListener('mouseleave', onLeave);
+      interactionSurface.removeEventListener('pointermove', onMove);
+      interactionSurface.removeEventListener('pointerleave', onLeave);
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
   }, []);
@@ -62,20 +69,32 @@ export const HeroAmbientCursor: React.FC = () => {
     <div
       ref={rootRef}
       aria-hidden="true"
-      className="absolute inset-0 hidden lg:block overflow-hidden pointer-events-auto"
+      className="absolute inset-0 hidden lg:block overflow-hidden pointer-events-none"
       style={{
         '--hero-cursor-x': '50%',
         '--hero-cursor-y': '28%',
         '--hero-cursor-tail-x': '50%',
         '--hero-cursor-tail-y': '28%',
+        '--hero-cursor-energy': '0',
       } as React.CSSProperties}
     >
-      {/* Fine star-map texture: intentionally restrained so type remains the hero. */}
+      {/* The texture only brightens around the pointer, like a small field of light spreading across paper. */}
       <div
-        className="absolute inset-0 opacity-[0.18]"
+        className="absolute inset-0 opacity-70 transition-opacity duration-300"
         style={{
-          backgroundImage: 'radial-gradient(rgba(226, 232, 240, 0.42) 0.65px, transparent 0.8px), linear-gradient(115deg, rgba(125, 211, 252, 0.045) 1px, transparent 1px)',
-          backgroundSize: '22px 22px, 88px 88px',
+          backgroundImage: 'radial-gradient(rgba(226, 232, 240, 0.58) 0.75px, transparent 0.95px), linear-gradient(115deg, rgba(125, 211, 252, 0.12) 1px, transparent 1px)',
+          backgroundSize: '20px 20px, 88px 88px',
+          maskImage: 'radial-gradient(circle 17rem at var(--hero-cursor-x) var(--hero-cursor-y), black 0%, rgba(0,0,0,0.75) 33%, transparent 73%)',
+          WebkitMaskImage: 'radial-gradient(circle 17rem at var(--hero-cursor-x) var(--hero-cursor-y), black 0%, rgba(0,0,0,0.75) 33%, transparent 73%)',
+        }}
+      />
+      <div
+        className="absolute h-64 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-100/25 transition-[left,top,opacity,transform] duration-500 ease-out"
+        style={{
+          left: 'var(--hero-cursor-tail-x)',
+          top: 'var(--hero-cursor-tail-y)',
+          opacity: 'calc(0.12 + var(--hero-cursor-energy) * 0.58)',
+          transform: 'translate(-50%, -50%) scale(calc(0.86 + var(--hero-cursor-energy) * 0.55))',
         }}
       />
       <div
@@ -95,7 +114,7 @@ export const HeroAmbientCursor: React.FC = () => {
         }}
       />
       <div
-          className="absolute h-44 w-44 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-100/15 shadow-[inset_0_0_40px_rgba(56,189,248,0.06)] transition-[left,top] duration-500 ease-out"
+          className="absolute h-44 w-44 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-100/30 shadow-[inset_0_0_40px_rgba(56,189,248,0.10)] transition-[left,top] duration-500 ease-out"
         style={{ left: 'var(--hero-cursor-tail-x)', top: 'var(--hero-cursor-tail-y)' }}
       />
       <div
