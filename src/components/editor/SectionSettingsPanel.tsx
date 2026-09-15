@@ -123,22 +123,19 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   const [newEditorPin, setNewEditorPin] = useState('');
   const [newViewerPin, setNewViewerPin] = useState('');
   const [pinMessage, setPinMessage] = useState<string | null>(null);
-  const [, setRecoveryKeyVersion] = useState(0);
 
   const getOrInitRecoveryKey = (): string => {
     return SessionStorage.getRecoveryKey(archive.id) || (archive.id.startsWith('demo-') ? 'mc_rec_sample_key_123' : '');
   };
 
-  const rotateRecoveryKey = async () => {
-    const response = await fetch(`/api/archives/${archive.id}/auth/recovery/regenerate`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${ownerToken || ''}` }
-    });
-    const data = await response.json();
-    if (!response.ok || !data.recoveryKey) throw new Error(data.error || 'Could not replace the recovery key.');
-    SessionStorage.setRecoveryKey(archive.id, data.recoveryKey);
-    setRecoveryKeyVersion((value) => value + 1);
-    setPinMessage('New recovery key created. Download it now; the old key no longer works.');
+  const saveRecoveryKeyBackup = () => {
+    const recoveryKey = getOrInitRecoveryKey();
+    if (!recoveryKey) {
+      setPinMessage('The original recovery key is not stored on this device. Unlock this archive with the original key first, then save a backup copy.');
+      return;
+    }
+    downloadRecoveryKeyFile(archive.title, recoveryKey);
+    setPinMessage('Backup saved. This does not change or replace your original owner recovery key.');
   };
 
   useEffect(() => {
@@ -502,7 +499,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             <div className="p-3 rounded-2xl bg-neutral-900 border border-white/10 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-mono text-amber-300 select-all break-all">
-                  {getOrInitRecoveryKey() || 'Hidden for security — replace it to receive a new key'}
+                  {getOrInitRecoveryKey() || 'Hidden for security — unlock with the original owner key on this device to save a backup'}
                 </span>
                 <button
                   type="button"
@@ -531,7 +528,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                   <Download className="w-3.5 h-3.5" />
                   <span>Download .txt Key File</span>
                 </button>
-                <button type="button" onClick={async () => { try { await rotateRecoveryKey(); } catch (error: any) { setPinMessage(error.message || 'Could not replace key.'); } }} className="min-h-11 px-3 rounded-xl border border-rose-400/30 bg-rose-500/10 text-xs text-rose-200">Replace recovery key</button>
+                <button type="button" onClick={saveRecoveryKeyBackup} disabled={!getOrInitRecoveryKey()} className="min-h-11 px-3 rounded-xl border border-emerald-400/30 bg-emerald-500/10 text-xs text-emerald-200 hover:bg-emerald-500/15 disabled:opacity-40">Save recovery key backup</button>
               </div>
             </div>
           </div>
