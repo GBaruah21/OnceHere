@@ -60,3 +60,5 @@ jobs:
           git add -A
           git commit -m "[oncehere-final] Enforce media limits and permanent recovery key"
           git push origin HEAD:main
+
+# trigger validation after workflow is present on main
