@@ -100,7 +100,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onCreateClick, onViewD
             </div>
             <div className="flex items-center gap-1.5">
               <Heart className="w-4 h-4 text-rose-400" />
-              <span>Instant preview before domain claim</span>
+              <span>Live preview while you build</span>
             </div>
           </div>
         </motion.div>

@@ -17,8 +17,6 @@ import { THEMES } from '../../config/themes';
 interface DeployModalProps {
   isOpen: boolean;
   onClose: () => void;
-  /** Kept for compatibility with older editor builds. Embedded pre-deploy preview was removed. */
-  initialTab?: 'configure' | 'preview';
   archive: Archive;
   sections?: Section[];
   timeline?: TimelineEvent[];
@@ -230,7 +228,7 @@ export const DeployModal: React.FC<DeployModalProps> = ({
           ) : (
             <>
               <div className="rounded-2xl border border-amber-400/20 bg-amber-400/5 p-4 text-xs text-neutral-300 leading-5">
-                The broken embedded “preview before deploy” has been removed. Your editor already shows the current archive while you build it; after publishing, use <strong className="text-white">Visit Live Site</strong> to verify the real public page.
+                Review the archive in the Studio preview while you build it. When it is ready, choose its public address here and publish; after publishing, use <strong className="text-white">Visit Live Site</strong> to verify the visitor view.
               </div>
 
               <div className="space-y-3">

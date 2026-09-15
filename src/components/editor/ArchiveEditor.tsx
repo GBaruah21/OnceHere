@@ -84,7 +84,6 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
 
   // Modals
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false);
-  const [deployModalInitialTab, setDeployModalInitialTab] = useState<'configure' | 'preview'>('configure');
   const [isRevisionsModalOpen, setIsRevisionsModalOpen] = useState(false);
   const [isAccessHistoryModalOpen, setIsAccessHistoryModalOpen] = useState(false);
 
@@ -615,25 +614,9 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
             <span className="hidden md:inline">Revisions</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setDeployModalInitialTab('preview');
-              setIsDeployModalOpen(true);
-            }}
-            className="hidden lg:flex p-2 rounded-xl text-amber-200 hover:text-white bg-amber-400/10 hover:bg-amber-400/20 border border-amber-400/30 text-xs font-medium items-center gap-1.5 cursor-pointer"
-            title="Open Full Live Preview"
-          >
-            <Eye className="w-4 h-4 text-amber-400" />
-            <span className="hidden md:inline">Live Preview</span>
-          </button>
-
           {/* Primary Deployment Action */}
           <button
-            onClick={() => {
-              setDeployModalInitialTab('configure');
-              setIsDeployModalOpen(true);
-            }}
+            onClick={() => setIsDeployModalOpen(true)}
             id="open-deploy-modal-btn"
             className="px-3 sm:px-5 py-2 rounded-xl text-xs sm:text-sm font-semibold text-neutral-950 bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-300 hover:brightness-110 shadow-lg shadow-amber-500/20 active:scale-95 transition-all flex items-center gap-1.5 sm:gap-2 cursor-pointer"
           >
@@ -992,11 +975,10 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
         ownerToken={ownerToken}
       />
 
-      {/* Deploy & Domain Selection Modal (With Interactive Live Preview) */}
+      {/* Deploy & Domain Selection Modal */}
       <DeployModal
         isOpen={isDeployModalOpen}
         onClose={() => setIsDeployModalOpen(false)}
-        initialTab={deployModalInitialTab}
         archive={archive}
         sections={sections}
         timeline={timeline}
