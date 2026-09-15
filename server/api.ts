@@ -1119,6 +1119,19 @@ apiRouter.patch('/archives/:id/timeline/:eventId', (req: Request, res: Response)
   const { title, description, yearLabel, eventDate, icon, location, mediaUrl, tags, position, isDraft } = req.body;
   const existing = db.getTimelineEvents(id).find((event) => event.id === eventId);
   if (!existing) return res.status(404).json({ error: 'Event not found.' });
+
+  // Replacing an existing attachment is allowed, but editing a text-only
+  // milestone into a 21st attached milestone must obey the same Journey quota
+  // as new milestones and signed uploads.
+  const isAddingAttachment = mediaUrl !== undefined && Boolean(mediaUrl) && !existing.mediaUrl;
+  if (
+    isAddingAttachment &&
+    db.getTimelineEvents(id).filter((entry) => Boolean(entry.mediaUrl)).length >= R2_LIMITS.maxTimelineAttachments
+  ) {
+    return res.status(413).json({
+      error: `This archive already has the maximum of ${R2_LIMITS.maxTimelineAttachments} Journey attachments.`
+    });
+  }
   if (mediaUrl !== undefined && isVideoMediaUrl(mediaUrl) && journeyVideoCount(id, eventId) >= R2_LIMITS.maxTimelineVideos) {
     return res.status(413).json({ error: `The Journey already has its maximum of ${R2_LIMITS.maxTimelineVideos} videos.` });
   }
