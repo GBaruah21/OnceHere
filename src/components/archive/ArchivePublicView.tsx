@@ -18,6 +18,7 @@ import { SocialShareModal } from './SocialShareModal';
 import { PreConfiguredShareBar } from './PreConfiguredShareBar';
 import { InstagramStoryModal } from './InstagramStoryModal';
 import { LazyImage } from '../common/LazyImage';
+import { MediaUploader } from '../common/MediaUploader';
 import { TimelineSectionView } from './TimelineSectionView';
 import { useDynamicArchiveMeta } from '../../hooks/useDynamicArchiveMeta';
 import { ThemeInteractiveBackdrop } from '../common/ThemeInteractiveBackdrop';
@@ -76,6 +77,7 @@ import confetti from 'canvas-confetti';
 // on demand. This intentionally caps legacy archives that were configured to
 // render a very large first page.
 const COLLECTION_PAGE_SIZE = 12;
+const MEMORY_NOTE_IMAGE_LIMIT = 5;
 
 interface ArchivePublicViewProps {
   archive: Archive;
@@ -699,9 +701,14 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   const [newNoteAuthor, setNewNoteAuthor] = useState('');
   const [newNoteText, setNewNoteText] = useState('');
   const [newNoteRole, setNewNoteRole] = useState('');
+  const [newNoteImageUrl, setNewNoteImageUrl] = useState('');
+  const [isUploadingNoteImage, setIsUploadingNoteImage] = useState(false);
+  const [isPostingWallNote, setIsPostingWallNote] = useState(false);
+  const [newNoteError, setNewNoteError] = useState<string | null>(null);
   const [justAddedNoteId, setJustAddedNoteId] = useState<string | null>(null);
   const [noteToastMessage, setNoteToastMessage] = useState<string | null>(null);
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
+  const wallImageCount = useMemo(() => wallPosts.filter((post) => Boolean(post.imageUrl)).length, [wallPosts]);
 
   // Synchronize wall posts safely with incoming server wall props & local storage
   useEffect(() => {
@@ -975,111 +982,77 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
     }
   };
 
-  // Submit Note on Wall with immediate optimistic preview + local storage + server sync + smooth scroll to wall
+  // Submit a Memory Note only after the server confirms it. This prevents
+  // quota/network failures from being shown as successful notes.
   const handlePostNote = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly) return;
+    if (readOnly || isPostingWallNote || isUploadingNoteImage) return;
     if (!newNoteText.trim()) return;
+    if (newNoteImageUrl && wallImageCount >= MEMORY_NOTE_IMAGE_LIMIT) {
+      setNewNoteError(`This Memory Wall already has ${MEMORY_NOTE_IMAGE_LIMIT} image attachments. You can still post a text-only Memory Note.`);
+      return;
+    }
 
     const author = newNoteAuthor.trim() || 'Classmate';
     const role = newNoteRole.trim() || undefined;
     const text = newNoteText.trim();
-    const style = 'polaroid';
+    const imageUrl = newNoteImageUrl.trim() || undefined;
+    setIsPostingWallNote(true);
+    setNewNoteError(null);
 
-    const optimisticPost: WallPost = {
-      id: `wp-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      archiveId: archive.id,
-      authorName: author,
-      authorRole: role,
-      text: text,
-      cardStyle: style,
-      isPinned: false,
-      isApproved: true,
-      likesCount: 0,
-      createdAt: new Date().toISOString()
-    };
-
-    // 1. Immediately update UI state & close modal
-    setWallPosts((prev) => [optimisticPost, ...prev]);
-    setIsAddingNote(false);
-    setJustAddedNoteId(optimisticPost.id);
-    setNoteToastMessage('✨ Memory Note pinned to the wall!');
-    setNewNoteAuthor('');
-    setNewNoteText('');
-    setNewNoteRole('');
-
-    // Trigger parent sync callback if present (e.g. Editor workspace)
-    if (onAddWallPost) {
-      onAddWallPost(optimisticPost);
-    }
-
-    // Clear highlight and toast after duration
-    setTimeout(() => setJustAddedNoteId(null), 5000);
-    setTimeout(() => setNoteToastMessage(null), 4000);
-
-    // 2. Smoothly scroll directly to the Memory Wall section
-    setTimeout(() => {
-      const wallEl = findElementInView('section-memory-wall');
-      if (wallEl) {
-        wallEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }, 150);
-
-    // 3. Play celebratory confetti
-    try {
-      confetti({
-        particleCount: 80,
-        spread: 80,
-        origin: { y: 0.7 }
-      });
-    } catch {
-      // Safe fallback
-    }
-
-    // 4. Persist in local browser storage so it survives refresh
-    try {
-      const localKey1 = `archive_wall_${archive.id}`;
-      const existing1: WallPost[] = JSON.parse(localStorage.getItem(localKey1) || '[]');
-      localStorage.setItem(localKey1, JSON.stringify([optimisticPost, ...existing1.filter((p) => p.id !== optimisticPost.id)]));
-
-      if (archive.slug) {
-        const localKey2 = `archive_wall_${archive.slug}`;
-        const existing2: WallPost[] = JSON.parse(localStorage.getItem(localKey2) || '[]');
-        localStorage.setItem(localKey2, JSON.stringify([optimisticPost, ...existing2.filter((p) => p.id !== optimisticPost.id)]));
-      }
-    } catch (err) {
-      console.warn('Could not save note to localStorage:', err);
-    }
-
-    // 5. Send to server backend with archive.id, falling back to slug
     try {
       const targetIdentifier = archive.id || archive.slug;
       const res = await fetch(`/api/archives/${targetIdentifier}/wall`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          authorName: author,
-          authorRole: role,
-          text: text,
-          cardStyle: style
-        })
+        body: JSON.stringify({ authorName: author, authorRole: role, text, cardStyle: 'polaroid', imageUrl })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success || !data.post) {
+        throw new Error(data.error || 'Could not pin this Memory Note. Please retry.');
+      }
 
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && data.post) {
-          setWallPosts((prev) => prev.map((p) => (p.id === optimisticPost.id ? data.post : p)));
-          try {
-            const localKey1 = `archive_wall_${archive.id}`;
-            const existing1: WallPost[] = JSON.parse(localStorage.getItem(localKey1) || '[]');
-            localStorage.setItem(localKey1, JSON.stringify(existing1.map((p) => (p.id === optimisticPost.id ? data.post : p))));
-          } catch {
-            // ignore
+      const savedPost: WallPost = data.post;
+      setWallPosts((prev) => [savedPost, ...prev.filter((post) => post.id !== savedPost.id)]);
+      onAddWallPost?.(savedPost);
+
+      if (!isPreviewMode) {
+        try {
+          const localKey1 = `archive_wall_${archive.id}`;
+          const existing1: WallPost[] = JSON.parse(localStorage.getItem(localKey1) || '[]');
+          localStorage.setItem(localKey1, JSON.stringify([savedPost, ...existing1.filter((p) => p.id !== savedPost.id)]));
+          if (archive.slug) {
+            const localKey2 = `archive_wall_${archive.slug}`;
+            const existing2: WallPost[] = JSON.parse(localStorage.getItem(localKey2) || '[]');
+            localStorage.setItem(localKey2, JSON.stringify([savedPost, ...existing2.filter((p) => p.id !== savedPost.id)]));
           }
+        } catch (storageError) {
+          console.warn('Could not cache Memory Note locally:', storageError);
         }
       }
-    } catch (err) {
-      console.warn('Note submitted locally, backend sync deferred:', err);
+
+      setIsAddingNote(false);
+      setJustAddedNoteId(savedPost.id);
+      setNoteToastMessage(imageUrl ? '✨ Memory Note + photo pinned to the wall!' : '✨ Memory Note pinned to the wall!');
+      setNewNoteAuthor('');
+      setNewNoteText('');
+      setNewNoteRole('');
+      setNewNoteImageUrl('');
+      setTimeout(() => setJustAddedNoteId(null), 5000);
+      setTimeout(() => setNoteToastMessage(null), 4000);
+      setTimeout(() => {
+        const wallEl = findElementInView('section-memory-wall');
+        if (wallEl) scrollElementInView(wallEl);
+      }, 150);
+      try {
+        confetti({ particleCount: 80, spread: 80, origin: { y: 0.7 } });
+      } catch {
+        // Posting never depends on the visual celebration.
+      }
+    } catch (error) {
+      setNewNoteError(error instanceof Error ? error.message : 'Could not pin this Memory Note. Please retry.');
+    } finally {
+      setIsPostingWallNote(false);
     }
   };
 
@@ -2983,9 +2956,49 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                 />
               </div>
 
+              {/* Optional Memory Note photo — image only, max five across this archive wall. */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="block text-[11px] font-mono uppercase tracking-wider opacity-70">Optional Photo</label>
+                  <span className="text-[10px] font-mono opacity-60">{Math.min(wallImageCount, MEMORY_NOTE_IMAGE_LIMIT)}/{MEMORY_NOTE_IMAGE_LIMIT} used</span>
+                </div>
+                {wallImageCount >= MEMORY_NOTE_IMAGE_LIMIT && !newNoteImageUrl ? (
+                  <div className="rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-2.5 text-[11px] leading-relaxed">
+                    This Memory Wall already has {MEMORY_NOTE_IMAGE_LIMIT} image attachments. You can still post a text-only Memory Note.
+                  </div>
+                ) : (
+                  <MediaUploader
+                    value={newNoteImageUrl}
+                    onChange={(url, type) => {
+                      if (type === 'video') {
+                        setNewNoteError('Memory Notes accept images only. Videos are not allowed.');
+                        return;
+                      }
+                      setNewNoteImageUrl(url);
+                      setNewNoteError(null);
+                    }}
+                    onClear={() => setNewNoteImageUrl('')}
+                    acceptMode="image"
+                    label="Memory Note photo"
+                    placeholder="Paste a direct image URL or choose an image"
+                    compact
+                    directUpload={{ archiveId: archive.id, token: ownerToken, autoRegister: false }}
+                    uploadPurpose="wall"
+                    onBusyChange={setIsUploadingNoteImage}
+                  />
+                )}
+                <p className="text-[10px] opacity-60">Images only. Videos stay available in Journey and Media Vault under their separate limits.</p>
+              </div>
+
+              {newNoteError && (
+                <div role="alert" className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-300">
+                  {newNoteError}
+                </div>
+              )}
+
               <button
                 type="submit"
-                disabled={!newNoteText.trim()}
+                disabled={!newNoteText.trim() || isPostingWallNote || isUploadingNoteImage}
                 className="w-full py-3 rounded-xl text-xs font-bold shadow-lg active:scale-95 disabled:opacity-50 transition-all cursor-pointer flex items-center justify-center gap-2"
                 style={{
                   backgroundColor: theme.palette.accent,
@@ -2993,7 +3006,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                 }}
               >
                 <PenTool className="w-4 h-4" />
-                <span>Pin Note to Memory Wall</span>
+                <span>{isPostingWallNote ? 'Pinning Memory Note…' : isUploadingNoteImage ? 'Uploading photo…' : 'Pin Note to Memory Wall'}</span>
               </button>
             </form>
           </div>
