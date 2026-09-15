@@ -1,0 +1,56 @@
+name: OnceHere final Journey quota guard
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oncehere-final-journey-quota-guard
+  cancel-in-progress: true
+
+jobs:
+  patch_test_build_commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Apply Journey PATCH quota guard
+        run: python3 scripts/apply_journey_patch_quota.py
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Commit validated source and remove temporary validator
+        shell: bash
+        run: |
+          rm -f .github/workflows/oncehere-journey-quota-final.yml
+          rm -f scripts/apply_journey_patch_quota.py
+          git config user.name "OnceHere Fix Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "[oncehere-final] Close Journey attachment quota bypass"
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
