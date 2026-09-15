@@ -30,6 +30,71 @@ type AuthorizedUpload = {
   type: MediaKind;
 };
 
+type TransientPreview = {
+  previewUrl: string;
+  type: MediaKind;
+  name: string;
+  size: number;
+  expiresAt: number;
+};
+
+// Timeline/media forms can intentionally remount the uploader as soon as the
+// durable storage URL is written into parent state. That used to destroy the
+// local blob URL and make the UI immediately render the protected API URL,
+// which is not readable until the parent record (milestone/member/etc.) has
+// actually been saved. Keep a short-lived mapping from durable URL -> local
+// preview so the exact selected image/video remains visible through that
+// remount. Nothing is persisted and the object URL is revoked automatically.
+const transientPreviewCache = new Map<string, TransientPreview>();
+const TRANSIENT_PREVIEW_TTL_MS = 10 * 60 * 1000;
+
+function isCachedPreviewUrl(previewUrl: string): boolean {
+  if (!previewUrl) return false;
+  for (const entry of transientPreviewCache.values()) {
+    if (entry.previewUrl === previewUrl) return true;
+  }
+  return false;
+}
+
+function forgetTransientPreview(durableUrl: string) {
+  if (!durableUrl) return;
+  const existing = transientPreviewCache.get(durableUrl);
+  if (!existing) return;
+  transientPreviewCache.delete(durableUrl);
+  if (existing.previewUrl.startsWith('blob:')) URL.revokeObjectURL(existing.previewUrl);
+}
+
+function rememberTransientPreview(
+  durableUrl: string,
+  previewUrl: string,
+  type: MediaKind,
+  name: string,
+  size: number
+) {
+  if (!durableUrl || !previewUrl.startsWith('blob:')) return;
+
+  const old = transientPreviewCache.get(durableUrl);
+  if (old && old.previewUrl !== previewUrl && old.previewUrl.startsWith('blob:')) {
+    URL.revokeObjectURL(old.previewUrl);
+  }
+
+  const entry: TransientPreview = {
+    previewUrl,
+    type,
+    name,
+    size,
+    expiresAt: Date.now() + TRANSIENT_PREVIEW_TTL_MS
+  };
+  transientPreviewCache.set(durableUrl, entry);
+
+  window.setTimeout(() => {
+    const current = transientPreviewCache.get(durableUrl);
+    if (!current || current.previewUrl !== previewUrl || current.expiresAt > Date.now()) return;
+    transientPreviewCache.delete(durableUrl);
+    if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+  }, TRANSIENT_PREVIEW_TTL_MS + 250);
+}
+
 const VIDEO_EXTENSION_RE = /\.(mp4|webm|mov|m4v|ogv)(?:[?#]|$)/i;
 const IMAGE_EXTENSION_RE = /\.(jpe?g|png|webp|gif|avif|bmp|svg)(?:[?#]|$)/i;
 const PAGE_URL_RE = /(^|\.)((?:youtube\.com)|(?:youtu\.be)|(?:instagram\.com)|(?:tiktok\.com)|(?:facebook\.com)|(?:x\.com)|(?:twitter\.com))$/i;
@@ -253,6 +318,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   uploadPurpose = 'vault',
   onBusyChange
 }) => {
+  const cachedPreview = value ? transientPreviewCache.get(value) : undefined;
   const [activeTab, setActiveTab] = useState<'upload' | 'url'>('upload');
   const [urlInput, setUrlInput] = useState(value && !value.startsWith('data:') ? value : '');
   const [isDragging, setIsDragging] = useState(false);
@@ -263,7 +329,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   const [fileError, setFileError] = useState<string | null>(null);
   const [localPreviewUrl, setLocalPreviewUrl] = useState('');
   const [selectedFile, setSelectedFile] = useState<{ name: string; type: MediaKind; size: number } | null>(null);
-  const [resolvedMediaType, setResolvedMediaType] = useState<MediaKind | null>(() => guessMediaKind(value));
+  const [resolvedMediaType, setResolvedMediaType] = useState<MediaKind | null>(() => cachedPreview?.type || guessMediaKind(value));
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [cropOpen, setCropOpen] = useState(false);
@@ -291,11 +357,16 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
       }
       return;
     }
-    setResolvedMediaType((current) => current || guessMediaKind(value));
+    const cached = transientPreviewCache.get(value);
+    setResolvedMediaType((current) => cached?.type || current || guessMediaKind(value));
   }, [value]);
 
   useEffect(() => () => {
-    if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
+    // Do not revoke a blob URL that has just been cached for the replacement
+    // uploader instance. It is revoked when removed or when the short TTL ends.
+    if (localPreviewUrl.startsWith('blob:') && !isCachedPreviewUrl(localPreviewUrl)) {
+      URL.revokeObjectURL(localPreviewUrl);
+    }
   }, [localPreviewUrl]);
 
   useEffect(() => {
@@ -312,15 +383,17 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     };
   }, [previewOpen]);
 
-  const previewValue = localPreviewUrl || value;
-  const previewType: MediaKind = selectedFile?.type || resolvedMediaType || guessMediaKind(previewValue) || 'image';
+  const activeCachedPreview = value ? transientPreviewCache.get(value) : undefined;
+  const previewValue = localPreviewUrl || activeCachedPreview?.previewUrl || value;
+  const previewType: MediaKind = selectedFile?.type || activeCachedPreview?.type || resolvedMediaType || guessMediaKind(previewValue) || 'image';
 
   const previewLabel = useMemo(() => {
     if (selectedFile) return `${selectedFile.name} · ${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB`;
+    if (activeCachedPreview) return `${activeCachedPreview.name} · ${(activeCachedPreview.size / (1024 * 1024)).toFixed(1)} MB`;
     if (previewValue.startsWith('data:')) return 'Local file ready to save';
     if (previewValue) return previewValue;
     return '';
-  }, [previewValue, selectedFile]);
+  }, [activeCachedPreview, previewValue, selectedFile]);
 
   const uploadDirectly = async (file: File) => {
     if (!directUpload) throw new Error('Direct upload is unavailable.');
@@ -423,7 +496,9 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
       }
     }
 
-    if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
+    if (localPreviewUrl.startsWith('blob:') && !isCachedPreviewUrl(localPreviewUrl)) {
+      URL.revokeObjectURL(localPreviewUrl);
+    }
     const objectUrl = URL.createObjectURL(uploadFile);
     const mediaType: MediaKind = isVideoFile ? 'video' : 'image';
     setLocalPreviewUrl(objectUrl);
@@ -435,6 +510,10 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
       try {
         const completed = await uploadDirectly(uploadFile);
         setResolvedMediaType(completed.type);
+        // Cache BEFORE parent state changes. Some editor forms use a keyed
+        // MediaUploader and immediately remount here when newEventImg/newMediaUrl
+        // changes from empty -> durable URL.
+        rememberTransientPreview(completed.url, objectUrl, completed.type, uploadFile.name, uploadFile.size);
         onChange(completed.url, completed.type, {
           name: uploadFile.name,
           size: completed.fileSize,
@@ -486,7 +565,9 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
       fileReaderRef.current?.abort();
       pendingFileRef.current = null;
       completedUploadRef.current = null;
-      if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
+      if (localPreviewUrl.startsWith('blob:') && !isCachedPreviewUrl(localPreviewUrl)) {
+        URL.revokeObjectURL(localPreviewUrl);
+      }
       setLocalPreviewUrl('');
       setSelectedFile(null);
       setResolvedMediaType(checked.type);
@@ -512,9 +593,12 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     setPreviewOpen(false);
     setPreviewFailed(false);
     if (fileInputRef.current) fileInputRef.current.value = '';
+    if (value) forgetTransientPreview(value);
     if (onClear) onClear();
     else onChange('', 'image');
-    if (localPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(localPreviewUrl);
+    if (localPreviewUrl.startsWith('blob:') && !isCachedPreviewUrl(localPreviewUrl)) {
+      URL.revokeObjectURL(localPreviewUrl);
+    }
     setLocalPreviewUrl('');
     setSelectedFile(null);
     setResolvedMediaType(null);
@@ -532,9 +616,10 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
     <div className={`space-y-2 text-xs ${className}`}>
       {cropOpen && previewType === 'image' && (
         <ImageCropPreview
-          src={localPreviewUrl || value}
+          src={previewValue}
           onClose={() => setCropOpen(false)}
           onApply={(cropped) => {
+            if (value) forgetTransientPreview(value);
             setLocalPreviewUrl('');
             setSelectedFile(null);
             setResolvedMediaType('image');
