@@ -1,0 +1,90 @@
+name: OnceHere audit cleanup
+
+on:
+  push:
+    paths:
+      - '.github/workflows/oncehere-audit-cleanup.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  audit-cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Apply final audit cleanup
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          editor = Path('src/components/editor/ArchiveEditor.tsx')
+          text = editor.read_text()
+          text = text.replace("  const [deployModalInitialTab, setDeployModalInitialTab] = useState<'configure' | 'preview'>('configure');\n", "")
+          preview_block = '''          <button
+            type="button"
+            onClick={() => {
+              setDeployModalInitialTab('preview');
+              setIsDeployModalOpen(true);
+            }}
+            className="hidden lg:flex p-2 rounded-xl text-amber-200 hover:text-white bg-amber-400/10 hover:bg-amber-400/20 border border-amber-400/30 text-xs font-medium items-center gap-1.5 cursor-pointer"
+            title="Open Full Live Preview"
+          >
+            <Eye className="w-4 h-4 text-amber-400" />
+            <span className="hidden md:inline">Live Preview</span>
+          </button>
+
+'''
+          if preview_block not in text:
+              raise SystemExit('Expected obsolete Live Preview button block not found')
+          text = text.replace(preview_block, '')
+          text = text.replace("            onClick={() => {\n              setDeployModalInitialTab('configure');\n              setIsDeployModalOpen(true);\n            }}\n", "            onClick={() => setIsDeployModalOpen(true)}\n")
+          text = text.replace("      {/* Deploy & Domain Selection Modal (With Interactive Live Preview) */}\n", "      {/* Deploy & Domain Selection Modal */}\n")
+          text = text.replace("        initialTab={deployModalInitialTab}\n", "")
+          editor.write_text(text)
+
+          deploy = Path('src/components/editor/DeployModal.tsx')
+          text = deploy.read_text()
+          text = text.replace("  /** Kept for compatibility with older editor builds. Embedded pre-deploy preview was removed. */\n  initialTab?: 'configure' | 'preview';\n", "")
+          old = '''              <div className="rounded-2xl border border-amber-400/20 bg-amber-400/5 p-4 text-xs text-neutral-300 leading-5">
+                The broken embedded “preview before deploy” has been removed. Your editor already shows the current archive while you build it; after publishing, use <strong className="text-white">Visit Live Site</strong> to verify the real public page.
+              </div>
+'''
+          new = '''              <div className="rounded-2xl border border-amber-400/20 bg-amber-400/5 p-4 text-xs text-neutral-300 leading-5">
+                Review the archive in the Studio preview while you build it. When it is ready, choose its public address here and publish; after publishing, use <strong className="text-white">Visit Live Site</strong> to verify the visitor view.
+              </div>
+'''
+          if old not in text:
+              raise SystemExit('Expected deploy preview notice not found')
+          deploy.write_text(text.replace(old, new))
+
+          hero = Path('src/components/landing/HeroSection.tsx')
+          text = hero.read_text()
+          old = '<span>Instant preview before domain claim</span>'
+          new = '<span>Live preview while you build</span>'
+          if old not in text:
+              raise SystemExit('Expected stale landing preview claim not found')
+          hero.write_text(text.replace(old, new))
+          PY
+      - name: Install dependencies
+        run: npm ci
+      - name: Type-check
+        run: npm run lint
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Commit cleanup and remove workflow
+        run: |
+          rm .github/workflows/oncehere-audit-cleanup.yml
+          git config user.name "OnceHere Fix Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/components/editor/ArchiveEditor.tsx src/components/editor/DeployModal.tsx src/components/landing/HeroSection.tsx .github/workflows/oncehere-audit-cleanup.yml
+          git commit -m "[oncehere-audit] Remove obsolete pre-deploy preview remnants"
+          git push origin HEAD:main
