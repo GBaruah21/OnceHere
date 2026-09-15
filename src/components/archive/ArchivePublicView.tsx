@@ -5,6 +5,7 @@ import {
   Section,
   TimelineEvent,
   Member,
+  MemberMessage,
   MediaItem,
   WallPost,
   Album,
@@ -407,7 +408,10 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
     (archive.slug && ['sistec-batch-2026', 'riverdale-tech-2026', 'marys-convent-2025', 'st-thomas-2024'].includes(archive.slug)) ||
     archive.slug?.startsWith('demo-')
   );
-  const isEditorOrCreator = !readOnly && Boolean(isPreviewMode || ownerToken || isDemoArchive);
+  // Demo visitors may explore typography, but moderation is never exposed to
+  // ordinary visitors. Only the real owner/editor context can hide or delete.
+  const canModerateNotes = !readOnly && Boolean(isPreviewMode || ownerToken);
+  const isEditorOrCreator = canModerateNotes || (!readOnly && isDemoArchive);
   const canChangeTypography = !readOnly && (isDemoArchive || isEditorOrCreator);
 
   const [selectedFontPresetId, setSelectedFontPresetId] = useState<string>(() => {
@@ -483,12 +487,67 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   const [visibleMemberCount, setVisibleMemberCount] = useState(COLLECTION_PAGE_SIZE);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [selectedMember, setSelectedMember] = useState<Member | null>(null);
+  const [memberMessages, setMemberMessages] = useState<MemberMessage[]>([]);
+  const [memberNoteAuthor, setMemberNoteAuthor] = useState('');
+  const [memberNoteText, setMemberNoteText] = useState('');
+  const [isLoadingMemberNotes, setIsLoadingMemberNotes] = useState(false);
+  const [isPostingMemberNote, setIsPostingMemberNote] = useState(false);
 
   // Reset zoom when lightbox photo changes
   useEffect(() => {
     setPhotoZoom(1);
     setMediaNoteText('');
   }, [lightboxIndex]);
+
+  useEffect(() => {
+    if (!selectedMember) {
+      setMemberMessages([]);
+      setMemberNoteText('');
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingMemberNotes(true);
+    setMemberNoteText('');
+    fetch(`/api/archives/${archive.id}/members/${selectedMember.id}/messages`)
+      .then((response) => response.ok ? response.json() : { messages: [] })
+      .then((data) => {
+        if (!cancelled) setMemberMessages(Array.isArray(data.messages) ? data.messages : []);
+      })
+      .catch(() => {
+        if (!cancelled) setMemberMessages([]);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingMemberNotes(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [archive.id, selectedMember]);
+
+  const handlePostMemberNote = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedMember || readOnly || !archive.settings?.allowMemberMessages || !memberNoteText.trim()) return;
+
+    setIsPostingMemberNote(true);
+    try {
+      const response = await fetch(`/api/archives/${archive.id}/members/${selectedMember.id}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ authorName: memberNoteAuthor.trim() || 'Classmate', text: memberNoteText.trim(), visibility: 'public' })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.message) throw new Error('Could not add this note.');
+      setMemberMessages((current) => [...current, data.message]);
+      setMemberNoteText('');
+      setNoteToastMessage(`A note was added for ${selectedMember.name}.`);
+      setTimeout(() => setNoteToastMessage(null), 3500);
+    } catch (error) {
+      setNoteToastMessage(error instanceof Error ? error.message : 'Could not add this note.');
+      setTimeout(() => setNoteToastMessage(null), 3500);
+    } finally {
+      setIsPostingMemberNote(false);
+    }
+  };
 
   // Handle posting note to a media photograph with instant optimistic feedback
   const handlePostMediaNote = async (mediaId: string, e: React.FormEvent) => {
@@ -563,7 +622,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   // Handle deleting a note from a media photograph
   const handleDeleteMediaNote = async (mediaId: string, noteId: string) => {
-    if (readOnly) return;
+    if (!canModerateNotes) return;
     setCurrentMediaList((prev) =>
       prev.map((m) => {
         if (m.id === mediaId) {
@@ -590,6 +649,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   const [mediaCategory, setMediaCategory] = useState<string>('all');
   const [mediaLayout, setMediaLayout] = useState<'grid' | 'masonry' | 'polaroid'>('grid');
   const [mediaSearch, setMediaSearch] = useState<string>('');
+  const [showAllMediaCategories, setShowAllMediaCategories] = useState(false);
   // Old archives could save 100 here, which makes the first render heavy and
   // defeats the intended “View more” experience.
   const defaultMediaDisplayCount = Math.min(
@@ -784,6 +844,10 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
     });
     return Array.from(tagsSet);
   }, [currentMediaList]);
+
+  const visibleMediaCategories = showAllMediaCategories
+    ? mediaCategories
+    : mediaCategories.slice(0, 6);
 
   // Sorted and filtered media items (with Newest First, Oldest First, Highlights)
   const sortedAndFilteredMedia = useMemo(() => {
@@ -1021,7 +1085,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   // Creator & Editor Moderation: Delete Note Permanently
   const handleDeletePost = async (postId: string) => {
-    if (readOnly) return;
+    if (!canModerateNotes) return;
     setWallPosts((prev) => prev.filter((p) => p.id !== postId));
     setDeletingPostId(null);
 
@@ -1060,7 +1124,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   // Creator & Editor Moderation: Toggle Hide/Unhide Note
   const handleToggleHidePost = async (postId: string, currentHidden: boolean) => {
-    if (readOnly) return;
+    if (!canModerateNotes) return;
     const nextHidden = !currentHidden;
 
     setWallPosts((prev) =>
@@ -1110,11 +1174,11 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   // Filtered wall posts for display: Creators see all (with status badges), visitors see only visible/approved notes
   const displayedWallPosts = useMemo(() => {
-    if (isEditorOrCreator) {
+    if (canModerateNotes) {
       return wallPosts;
     }
     return wallPosts.filter((p) => !p.isHidden && p.isApproved !== false);
-  }, [wallPosts, isEditorOrCreator]);
+  }, [wallPosts, canModerateNotes]);
   // Theme-specific class names and atmospheric textures
   const themeBg = theme.styleClasses.container || (
     archive.themeId === 'paper-polaroids'
@@ -1760,14 +1824,14 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                 </div>
 
                 {/* Controls Bar: Sort Buttons, Search, and Category Filters */}
-                <div className="p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-md space-y-4 max-w-4xl mx-auto">
+                <div className="p-3 sm:p-4 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-md space-y-3 sm:space-y-4 max-w-4xl mx-auto">
                   
                   {/* Top Controls Row */}
-                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 sm:gap-4">
                     
                     {/* Sort Options Buttons (Newest First, Oldest First, Highlights) */}
-                    <div className="flex items-center gap-1.5 text-xs w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0">
-                      <span className="text-[11px] font-mono uppercase opacity-50 mr-1 flex items-center gap-1">
+                    <div className="flex items-center gap-1.5 text-xs w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0 [scrollbar-width:none]">
+                      <span className="hidden sm:flex text-[11px] font-mono uppercase opacity-50 mr-1 items-center gap-1">
                         <ArrowUpDown className="w-3 h-3" /> Sort:
                       </span>
 
@@ -1775,35 +1839,35 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                       <button
                         onClick={() => setMediaSort('newest')}
                         data-cursor="hover"
-                        className={`px-3 py-1.5 rounded-xl font-mono text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+                        className={`px-2.5 sm:px-3 py-2 sm:py-1.5 rounded-xl font-mono text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${
                           mediaSort === 'newest'
                             ? 'bg-amber-400 text-neutral-950 shadow-md scale-105'
                             : 'bg-white/5 text-neutral-300 hover:bg-white/10'
                         }`}
                       >
                         <Clock className="w-3 h-3" />
-                        <span>Newest First</span>
+                        <span className="sm:hidden">Newest</span><span className="hidden sm:inline">Newest First</span>
                       </button>
 
                       {/* Oldest First Button */}
                       <button
                         onClick={() => setMediaSort('oldest')}
                         data-cursor="hover"
-                        className={`px-3 py-1.5 rounded-xl font-mono text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+                        className={`px-2.5 sm:px-3 py-2 sm:py-1.5 rounded-xl font-mono text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${
                           mediaSort === 'oldest'
                             ? 'bg-amber-400 text-neutral-950 shadow-md scale-105'
                             : 'bg-white/5 text-neutral-300 hover:bg-white/10'
                         }`}
                       >
                         <Clock className="w-3 h-3 rotate-180" />
-                        <span>Oldest First</span>
+                        <span className="sm:hidden">Oldest</span><span className="hidden sm:inline">Oldest First</span>
                       </button>
 
                       {/* Highlights Button */}
                       <button
                         onClick={() => setMediaSort('highlights')}
                         data-cursor="hover"
-                        className={`px-3 py-1.5 rounded-xl font-mono text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+                        className={`px-2.5 sm:px-3 py-2 sm:py-1.5 rounded-xl font-mono text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer whitespace-nowrap ${
                           mediaSort === 'highlights'
                             ? 'bg-amber-400 text-neutral-950 shadow-md scale-105'
                             : 'bg-white/5 text-neutral-300 hover:bg-white/10'
@@ -1818,7 +1882,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                         onClick={() => setMediaSort('random')}
                         data-cursor="hover"
                         title="Shuffle memories"
-                        className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer ${
+                        className={`px-3 py-2 sm:py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer ${
                           mediaSort === 'random'
                             ? 'bg-amber-400 text-neutral-950 shadow-md'
                             : 'bg-white/5 text-neutral-300 hover:bg-white/10'
@@ -1836,7 +1900,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                         placeholder="Search photos & tags..."
                         value={mediaSearch}
                         onChange={(e) => setMediaSearch(e.target.value)}
-                        className="w-full pl-8 pr-3 py-1.5 rounded-xl text-xs bg-black/40 border border-white/10 focus:outline-none focus:border-amber-400 transition-colors"
+                        className="w-full min-h-10 sm:min-h-0 pl-8 pr-3 py-2 sm:py-1.5 rounded-xl text-xs bg-black/40 border border-white/10 focus:outline-none focus:border-amber-400 transition-colors"
                       />
                     </div>
 
@@ -1845,7 +1909,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                   {/* Category Filter Pills (if tags exist) */}
                   {mediaCategories.length > 0 && (
                     <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-white/5 text-xs">
-                      <span className="text-[10px] font-mono opacity-50 uppercase mr-1">Filter:</span>
+                      <span className="text-[10px] font-mono opacity-50 uppercase mr-1">Tags:</span>
                       <button
                         onClick={() => setMediaCategory('all')}
                         className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-all ${
@@ -1856,7 +1920,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                       >
                         All Photos ({currentMediaList.length})
                       </button>
-                      {mediaCategories.map((cat) => (
+                      {visibleMediaCategories.map((cat) => (
                         <button
                           key={cat}
                           onClick={() => setMediaCategory(cat)}
@@ -1869,6 +1933,15 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                           #{cat}
                         </button>
                       ))}
+                      {mediaCategories.length > 6 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowAllMediaCategories((show) => !show)}
+                          className="px-2.5 py-1 rounded-full text-[11px] font-semibold border border-amber-400/30 text-amber-300 bg-amber-400/10 hover:bg-amber-400/20 transition-colors"
+                        >
+                          {showAllMediaCategories ? 'Show fewer' : `View all tags (${mediaCategories.length})`}
+                        </button>
+                      )}
                     </div>
                   )}
 
@@ -2018,7 +2091,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                   </motion.button>
 
                   {/* Creator / Editor Mode Indicator & Visibility Counts */}
-                  {isEditorOrCreator && (
+                  {canModerateNotes && (
                     <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
                       <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-400/10 border border-amber-400/25 text-amber-300 text-[11px] font-mono">
                         <Shield className="w-3.5 h-3.5" />
@@ -2077,7 +2150,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                             </div>
 
                             {/* Hidden Status Tag for Editors & Creators */}
-                            {isHidden && isEditorOrCreator && (
+                            {isHidden && canModerateNotes && (
                               <div className="flex items-center justify-between gap-2 px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[11px] font-mono font-semibold">
                                 <span className="flex items-center gap-1.5">
                                   <EyeOff className="w-3.5 h-3.5 text-amber-400" />
@@ -2127,7 +2200,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                                 </button>
 
                                 {/* CREATOR / EDITOR ACTIONS: HIDE & DELETE */}
-                                {isEditorOrCreator && (
+                                {canModerateNotes && (
                                   <div className="flex items-center gap-1 pl-1.5 ml-0.5 border-l border-current/15">
                                     {/* Hide / Unhide Toggle */}
                                     <button
@@ -2628,14 +2701,16 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                                 <span className="text-[10px] text-neutral-400 font-mono">
                                   {new Date(n.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
                                 </span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteMediaNote(activeItem.id, n.id)}
-                                  title="Delete Note"
-                                  className="opacity-0 group-hover/note:opacity-100 hover:text-rose-400 text-neutral-500 transition-opacity p-0.5"
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                </button>
+                                {canModerateNotes && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteMediaNote(activeItem.id, n.id)}
+                                    title="Delete Note"
+                                    className="opacity-0 group-hover/note:opacity-100 hover:text-rose-400 text-neutral-500 transition-opacity p-0.5"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                )}
                               </div>
                             </div>
                             <p className="text-neutral-200 leading-relaxed font-sans text-xs">{n.text}</p>
@@ -2702,8 +2777,8 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
       {/* 5. MEMBER PROFILE MODAL */}
       {selectedMember && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
-          <div className={`w-full max-w-md p-6 sm:p-8 rounded-3xl border ${cardBg} shadow-2xl relative`}>
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in">
+          <div className={`w-full max-w-md max-h-[88dvh] overflow-y-auto p-5 sm:p-8 rounded-t-3xl sm:rounded-3xl border ${cardBg} shadow-2xl relative`}>
             <button
               onClick={() => setSelectedMember(null)}
               className="absolute top-4 right-4 p-2 rounded-full bg-white/5 opacity-70 hover:opacity-100"
@@ -2742,6 +2817,58 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
               {selectedMember.ambition && (
                 <div className={`text-xs opacity-75 ${activeFontPreset.bodyClass}`}>
                   <span className="font-semibold">Future Aspiration:</span> {selectedMember.ambition}
+                </div>
+              )}
+
+              {archive.settings?.allowMemberMessages && (
+                <div className="w-full pt-4 mt-1 border-t border-current/10 text-left space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-bold flex items-center gap-1.5" style={{ color: theme.palette.accent }}>
+                      <MessageSquareHeart className="w-3.5 h-3.5" /> Notes for {selectedMember.name.split(' ')[0]}
+                    </span>
+                    {memberMessages.length > 0 && <span className="text-[10px] opacity-60">{memberMessages.length} shared</span>}
+                  </div>
+
+                  {isLoadingMemberNotes ? (
+                    <div className="text-[11px] opacity-60 py-2">Loading notes…</div>
+                  ) : memberMessages.length > 0 ? (
+                    <div className="space-y-2 max-h-36 overflow-y-auto pr-1">
+                      {memberMessages.slice(-3).map((message) => (
+                        <div key={message.id} className="rounded-xl border border-current/10 bg-black/10 px-3 py-2 text-xs">
+                          <div className="font-semibold text-[11px]" style={{ color: theme.palette.accent }}>{message.authorName}</div>
+                          <p className="mt-0.5 opacity-85 leading-relaxed">{message.text}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] opacity-65">Leave the first short memory for this person.</p>
+                  )}
+
+                  {!readOnly && (
+                    <form onSubmit={handlePostMemberNote} className="space-y-2 pt-1">
+                      <input
+                        value={memberNoteAuthor}
+                        onChange={(event) => setMemberNoteAuthor(event.target.value)}
+                        placeholder="Your name"
+                        className="w-full min-h-10 rounded-xl border border-current/15 bg-black/20 px-3 text-xs outline-none focus:border-amber-400"
+                      />
+                      <textarea
+                        rows={2}
+                        value={memberNoteText}
+                        onChange={(event) => setMemberNoteText(event.target.value)}
+                        placeholder={`Write a short note for ${selectedMember.name.split(' ')[0]}…`}
+                        className="w-full rounded-xl border border-current/15 bg-black/20 px-3 py-2 text-xs outline-none focus:border-amber-400 resize-none"
+                        required
+                      />
+                      <button
+                        type="submit"
+                        disabled={isPostingMemberNote || !memberNoteText.trim()}
+                        className="w-full min-h-11 rounded-xl bg-amber-400 text-neutral-950 text-xs font-bold disabled:opacity-40 active:scale-[0.98] transition-transform"
+                      >
+                        {isPostingMemberNote ? 'Adding note…' : 'Add a note'}
+                      </button>
+                    </form>
+                  )}
                 </div>
               )}
             </div>
