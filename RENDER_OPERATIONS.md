@@ -1,108 +1,60 @@
-# OnceHere Render operations runbook
+# OnceHere Render secondary-host runbook
 
-This runbook is designed for the current architecture: one Express/Vite service,
-Supabase-backed durable archive snapshots, and private Backblaze B2 media.
+Last updated: 16 September 2026.
 
-## What happens after a bandwidth suspension
+**Current production is Vercel, not Render.** This file is retained only for the optional/secondary Render deployment path. Do not use it to infer the current production provider or current archive limits.
 
-Render documents that a Hobby workspace without a payment method is spun down
-after its included outbound bandwidth is exhausted and is restored at the start
-of the next month. No code or redeploy is required for that monthly reset. Check
-the dashboard on the first day because an unrelated configuration or build error
-can still prevent a healthy restart.
+The current architecture is one Vite/Express application, Turso/libSQL durable archive state, and private S3-compatible object storage. Uploaded media is transferred directly from the browser to object storage with signed URLs.
 
-Any external 14-minute monitors will also resume reaching the service after the
-reset. Stop them before the reset so the new allowance is not consumed again.
+## If using Render again
 
-## Stop every keep-alive monitor
+Free/low-cost host behavior, included bandwidth, sleep rules, and pricing can change. Check the current Render dashboard/documentation rather than relying on an old OnceHere assumption.
 
-1. Disable the Google/Gemini scheduled task now.
-2. Search every email inbox and password manager for the exact Render hostname,
-   `UptimeRobot`, `Better Stack`, `Freshping`, `cron-job.org`, `HetrixTools`, and
-   `Uptime Kuma`.
-3. Use password reset with each likely email address. If the account cannot be
-   recovered, ask that provider's support team to delete the monitor for the
-   exact URL.
-4. After Render restores the service, open its request logs. A request arriving
-   at the same interval reveals the path, user agent, and often the monitor name.
-5. If ownership cannot be recovered, changing the Render service hostname stops
-   requests to the old hostname, but breaks every old link. Treat this as the
-   last resort and verify the custom domain, B2 CORS origins, and `APP_URL` first.
+Do not run external keep-alive monitors merely to prevent a free service from sleeping. They create unnecessary traffic and can consume host allowances. If a secondary Render instance is intentionally allowed to sleep, accept the cold start rather than simulating constant user traffic.
 
-Returning `204`, blocking a user agent, or serving a tiny health response does
-not solve Free Render sleep: the inbound request still wakes the instance and it
-continues consuming free instance hours. Those measures reduce response bytes
-only.
+## Required server environment
 
-## The three honest hosting choices
+Set these values in the Render service environment; never expose them as `VITE_` variables:
 
-### 1. Free Render, allow sleep
+```text
+NODE_ENV=production
+APP_URL=https://the-render-or-custom-origin
+SESSION_SECRET=a-stable-random-secret-at-least-32-bytes
+PLATFORM_ADMIN_KEY=a-private-platform-owner-key
+TURSO_DATABASE_URL=libsql://...
+TURSO_AUTH_TOKEN=...
+OBJECT_STORAGE_ENDPOINT=https://...
+OBJECT_STORAGE_REGION=...
+OBJECT_STORAGE_ACCESS_KEY_ID=...
+OBJECT_STORAGE_SECRET_ACCESS_KEY=...
+OBJECT_STORAGE_BUCKET=oncehere-media
+OBJECT_STORAGE_FORCE_PATH_STYLE=false
+```
 
-Cost: zero. Cold start: about one minute after 15 idle minutes. Stop all external
-keep-alives. This is suitable for testing, not a production promise.
+Cloudflare-specific `R2_*` variables may be used instead of `OBJECT_STORAGE_*`; generic `OBJECT_STORAGE_*` values take precedence when both sets are configured.
 
-### 2. Paid Render compute
+Changing `SESSION_SECRET` logs existing owner/editor/viewer sessions out. Recovery-key ownership still works as long as the archive data and recovery-key hash remain intact.
 
-This is the simplest way to keep the current URL and remove Free-instance idle
-spin-down. Changing only the workspace plan is not sufficient; the web service's
-compute plan itself must be paid. Adding a payment method for bandwidth overage
-does not by itself remove Free compute sleep.
+## CORS when adding a Render origin
 
-### 3. Move the whole app to Vercel
+If Render is used as a second live origin, add its exact HTTPS origin to object-storage CORS. Do not include a path or trailing slash. Keep the storage bucket private.
 
-The repository includes `vercel.json` and `api/index.ts`, and the Vite client is
-served from the delivery network while API requests run as functions. Copy every
-required environment variable and add the new exact Vercel/custom origin to the
-Backblaze CORS rule before testing uploads. Do not split the current frontend and
-API across unrelated origins without redesigning cookie/CSRF handling.
+## Secondary-host acceptance checklist
 
-Vercel is not an unlimited guarantee. Its Hobby plan has usage and function
-limits. The current snapshot persistence also uses process-local mutation locks,
-so concurrent multi-instance production traffic needs a transactional database
-redesign before a high-traffic launch. For a small preview, test it on a separate
-deployment without changing the working Render service.
+1. Deploy the exact intended Git commit.
+2. Require `/api/health` to report healthy, durable storage configured, database configured, session signing configured, and object storage configured.
+3. Require `/api/storage-status` to report connected.
+4. Recover a disposable/test archive with its Owner Master Recovery Key.
+5. Verify reveal/copy/download of the recovery-key backup after owner-key access.
+6. Test contributor and private-viewer permissions.
+7. Test Studio section jumps across Journey, Yearbook, Media Vault, Memory Wall, and Farewell.
+8. Upload and persist one image in each image-capable section and a small video in Journey/Vault.
+9. Refresh/reopen and verify protected media still loads.
+10. Delete temporary content and verify it stays deleted.
+11. Inspect host logs after the test.
 
-## Required production environment gate
+## Limits
 
-Set these in the host dashboard; never put their values in Git or in a `VITE_`
-variable:
+Render hosting does not redefine OnceHere's application quotas. Use [CURRENT_LIMITS.md](CURRENT_LIMITS.md) and `server/r2.ts` for the current enforced media/storage rules.
 
-- `NODE_ENV=production`
-- `APP_URL` equal to the final HTTPS origin
-- `SESSION_SECRET` stable and at least 32 random bytes
-- `PLATFORM_ADMIN_KEY` stable and private
-- `SUPABASE_URL`
-- `SUPABASE_SECRET_KEY` or `SUPABASE_SERVICE_ROLE_KEY`
-- `OBJECT_STORAGE_ENDPOINT`
-- `OBJECT_STORAGE_REGION`
-- `OBJECT_STORAGE_ACCESS_KEY_ID`
-- `OBJECT_STORAGE_SECRET_ACCESS_KEY`
-- `OBJECT_STORAGE_BUCKET`
-- `OBJECT_STORAGE_FORCE_PATH_STYLE=false`
-
-The app now refuses to start in production without a stable session-signing
-secret. This is intentional: silently generating a new secret would invalidate
-all browser sessions after a sleep, restart, or redeploy.
-
-## First-day recovery checklist
-
-1. Confirm the Render workspace is active and outbound usage has reset.
-2. Confirm all keep-alive tasks are disabled.
-3. Open `/api/health`; require `status: healthy` and
-   `durableStorage: configured`.
-4. Confirm the reported build commit is the intended GitHub commit.
-5. Open the landing page and all demo archives.
-6. Recover one owner workspace with its recovery-key file.
-7. Create a temporary draft archive.
-8. Upload one JPG to the vault, one timeline image, one profile portrait, one
-   wall image, and one small MP4. Refresh after each save and confirm it remains.
-9. Delete the temporary media and archive; confirm deleted items do not return.
-10. Test a wrong contributor PIN and confirm it reveals no attempt count.
-11. Test the correct PIN, private viewer PIN, owner-only restrictions, deploy,
-    unpublish, and slug-conflict handling.
-12. Inspect browser console, failed network requests, Render logs, Supabase state,
-    Backblaze object count, and Render bandwidth after the test.
-
-Production cannot be certified while the service is suspended. A successful
-local build and mocked automated tests do not replace the live storage/restart,
-DNS, browser, accessibility, and mobile acceptance checks above.
+A passing local build is not proof that a secondary host's environment variables, database network access, object-storage CORS, cookies, or custom domain are configured correctly; verify them on the actual deployment.
