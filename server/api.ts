@@ -39,6 +39,7 @@ import {
   verifyObject,
   getArchiveStorageUsage
 } from './r2.js';
+import { mediaCdnStatus, publicMediaCdnUrl } from './mediaCdn.js';
 
 export const apiRouter = express.Router();
 // Media bytes never belong in JSON. Keeping this limit small prevents stale or
@@ -49,7 +50,10 @@ apiRouter.use(express.json({ limit: '2mb' }));
 // bucket reachability only; it never returns keys, object names, or data.
 apiRouter.get('/storage-status', async (_req: Request, res: Response) => {
   const result = await checkStorageConnection();
-  return res.status(result.connected ? 200 : 503).json({ storage: result });
+  return res.status(result.connected ? 200 : 503).json({
+    storage: result,
+    mediaCdn: mediaCdnStatus()
+  });
 });
 
 const archiveMutationTails = new Map<string, Promise<void>>();
@@ -1466,8 +1470,19 @@ apiRouter.get('/archives/:id/media-object/:fileName', async (req: Request, res: 
     db.getWallPosts(id).some((entry) => entry.imageUrl === requestedUrl);
   if (!item && !referencedByArchiveContent) return res.status(404).json({ error: 'Media not found.' });
   try {
-    // Authorize here, but send the browser straight to object storage. Render
-    // transfers only this small redirect—not the image or video bytes.
+    // Public, deployed archives can use a stable Cloudflare media URL. The
+    // Worker fetches this endpoint back with a shared origin header, so private
+    // and draft authorization remains enforced here instead of at the CDN.
+    const cdnUrl = publicMediaCdnUrl(archive, fileName, req.header('x-oncehere-cdn-origin'));
+    if (cdnUrl) {
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      return res.redirect(302, cdnUrl);
+    }
+
+    // CDN disabled, non-public archive, or trusted CDN-origin fetch: send the
+    // client/Worker to a short-lived signed object-storage URL. The application
+    // server transfers only this small redirect, never the image/video bytes.
     const downloadUrl = await createDownloadUrl(requestedStorageKey);
     res.setHeader('Cache-Control', archive.visibility === 'public'
       ? 'public, max-age=240'
