@@ -1,0 +1,41 @@
+name: Cloudflare media CDN verification
+
+on:
+  push:
+    branches:
+      - cloudflare-media-cdn-hardening
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Type-check
+        run: npm run lint
+
+      - name: Production build
+        run: npm run build
+
+      - name: Validate Cloudflare Worker bundle and Wrangler config
+        run: npx wrangler@latest deploy --dry-run --config cloudflare/wrangler.jsonc --outdir .wrangler-dry-run
