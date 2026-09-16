@@ -12,7 +12,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 export const R2_LIMITS = {
   imageBytes: 10 * 1024 * 1024,
-  videoBytes: 20 * 1024 * 1024,
+  videoBytes: 59 * 1024 * 1024,
   // Media Vault: 100 total attachments, of which at most 5 may be videos.
   maxVaultAttachments: 100,
   maxVaultVideos: 5,
@@ -20,6 +20,8 @@ export const R2_LIMITS = {
   // Journey: 20 total attachments, of which at most 3 may be videos.
   maxTimelineAttachments: 20,
   maxTimelineVideos: 3,
+  // Journey + Media Vault share one archive-wide video allowance.
+  maxArchiveVideos: 5,
   // Memory Notes: optional image only, max 5 image-attached notes.
   maxWallImageAttachments: 5,
   maxTotalBytesPerArchive: 500 * 1024 * 1024
