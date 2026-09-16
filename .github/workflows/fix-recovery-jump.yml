@@ -1,0 +1,217 @@
+name: Validate recovery key and section jump fixes
+
+on:
+  push:
+    branches:
+      - fix/recovery-key-jump-2026-09-16
+    paths:
+      - .github/workflows/fix-recovery-jump.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/recovery-key-jump-2026-09-16
+      - name: Apply fixes
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          # 1) Recovery-key unlock: the user just proved possession of the key,
+          # so keep that exact key in this tab session so Access & Privacy can
+          # reveal/copy/download it immediately after opening the Studio.
+          key_file = Path('src/components/common/KeyAccessModal.tsx')
+          text = key_file.read_text()
+          old = """      // Save token in storage
+      if (data.archive && data.token) {
+        SessionStorage.setOwnerToken(data.archive.id, data.token);
+        SessionStorage.setWorkspaceToken(data.workspaceSlug, data.token);
+      }
+
+      onSuccess(data.archive, data.workspaceSlug, data.token);
+"""
+          new = """      // Save the verified owner session AND the exact recovery key that
+      // was just presented. The server stores only a hash, so it cannot safely
+      // reconstruct a lost plaintext key later. Keeping the entered key in this
+      // tab session lets the owner reveal/copy/download a backup immediately.
+      if (data.archive && data.token) {
+        SessionStorage.setOwnerToken(data.archive.id, data.token);
+        SessionStorage.setWorkspaceToken(data.workspaceSlug, data.token);
+        SessionStorage.setRecoveryKey(data.archive.id, archiveKey.trim());
+      }
+
+      onSuccess(data.archive, data.workspaceSlug, data.token);
+"""
+          if old not in text:
+              raise SystemExit('KeyAccessModal target block not found')
+          key_file.write_text(text.replace(old, new))
+
+          # 2) Make section navigation deterministic in both standalone archive
+          # pages and nested Studio previews. Browser scrollIntoView can pick the
+          # wrong ancestor when several sticky/nested scrollers exist.
+          public_file = Path('src/components/archive/ArchivePublicView.tsx')
+          text = public_file.read_text()
+          old = """  const scrollElementInView = (element: HTMLElement, behavior: ScrollBehavior = 'smooth') => {
+    const previewScroller = viewRootRef.current?.closest<HTMLElement>('[data-archive-preview-scroll]');
+    if (!previewScroller) {
+      element.scrollIntoView({ behavior, block: 'start' });
+      return;
+    }
+
+    const scrollerBounds = previewScroller.getBoundingClientRect();
+    const elementBounds = element.getBoundingClientRect();
+    // Leave a little room for the sticky archive navigation rather than
+    // hiding the section title immediately underneath it.
+    const top = previewScroller.scrollTop + elementBounds.top - scrollerBounds.top - 76;
+    previewScroller.scrollTo({ top: Math.max(0, top), behavior });
+  };
+"""
+          new = """  const scrollElementInView = (element: HTMLElement, behavior: ScrollBehavior = 'smooth') => {
+    const performScroll = () => {
+      const previewScroller = viewRootRef.current?.closest<HTMLElement>('[data-archive-preview-scroll]');
+      const elementBounds = element.getBoundingClientRect();
+
+      if (previewScroller) {
+        const scrollerBounds = previewScroller.getBoundingClientRect();
+        // Account for both the Studio jump bar and the archive's own sticky nav.
+        const top = previewScroller.scrollTop + elementBounds.top - scrollerBounds.top - 132;
+        previewScroller.scrollTo({ top: Math.max(0, top), behavior });
+        return;
+      }
+
+      // Standalone archive: scroll the window explicitly rather than relying on
+      // scrollIntoView(), which can be confused by sticky navigation wrappers.
+      const top = window.scrollY + elementBounds.top - 112;
+      window.scrollTo({ top: Math.max(0, top), behavior });
+    };
+
+    // Let React/motion finish the current layout pass before measuring. A
+    // second frame makes jumps reliable when switching directly from Journey
+    // to Yearbook / Media Vault / Memory Wall in the Studio preview.
+    window.requestAnimationFrame(() => window.requestAnimationFrame(performScroll));
+  };
+"""
+          if old not in text:
+              raise SystemExit('ArchivePublicView scroll helper target not found')
+          public_file.write_text(text.replace(old, new))
+
+          # 3) Studio quick-jump + section sidebar: use one robust function with
+          # delayed re-measurement instead of a one-shot query in the click event.
+          editor_file = Path('src/components/editor/ArchiveEditor.tsx')
+          text = editor_file.read_text()
+          anchor = """  const handleToggleSectionVisibility = (sectionId: string) => {
+    const updated = sections.map((s) => (s.id === sectionId ? { ...s, isVisible: !s.isVisible } : s));
+    void handleUpdateSections(updated);
+  };
+
+  // Sub-entity mutations
+"""
+          replacement = """  const handleToggleSectionVisibility = (sectionId: string) => {
+    const updated = sections.map((s) => (s.id === sectionId ? { ...s, isVisible: !s.isVisible } : s));
+    void handleUpdateSections(updated);
+  };
+
+  const jumpPreviewToSection = useCallback((stableType: string) => {
+    const foundSection = sections.find((section) => section.stableType === stableType);
+    setActiveTab(foundSection?.id || stableType);
+
+    const scrollNow = () => {
+      const stage = document.getElementById('editor-preview-stage');
+      if (!stage) return;
+      const target = stage.querySelector<HTMLElement>(`#section-${stableType}`);
+      if (!target) return;
+      const stageBounds = stage.getBoundingClientRect();
+      const targetBounds = target.getBoundingClientRect();
+      const top = stage.scrollTop + targetBounds.top - stageBounds.top - 132;
+      stage.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    };
+
+    window.requestAnimationFrame(() => window.requestAnimationFrame(scrollNow));
+    // Motion/layout transitions can settle a little later on slower devices.
+    window.setTimeout(scrollNow, 240);
+  }, [sections]);
+
+  // Sub-entity mutations
+"""
+          if anchor not in text:
+              raise SystemExit('ArchiveEditor helper insertion anchor not found')
+          text = text.replace(anchor, replacement)
+
+          old_sidebar = """                        onClick={() => {
+                          setActiveTab(sec.id);
+                          setMobileStudioTab('inspector');
+                        }}
+"""
+          new_sidebar = """                        onClick={() => {
+                          jumpPreviewToSection(sec.stableType);
+                          setMobileStudioTab('inspector');
+                        }}
+"""
+          if old_sidebar not in text:
+              raise SystemExit('ArchiveEditor sidebar click target not found')
+          text = text.replace(old_sidebar, new_sidebar, 1)
+
+          old_jump = """                    onClick={() => {
+                      const foundSec = sections.find((s) => s.stableType === item.id);
+                      if (foundSec) {
+                        setActiveTab(foundSec.id);
+                      } else {
+                        setActiveTab(item.id);
+                      }
+                      // Resolve within this preview. A public page, modal, or
+                      // stale hidden preview can have the same section IDs.
+                      const stage = document.getElementById('editor-preview-stage');
+                      const el = stage?.querySelector<HTMLElement>(`#section-${item.id}, #${item.id}`) || null;
+                      if (el) {
+                        const stageBounds = stage?.getBoundingClientRect();
+                        const sectionBounds = el.getBoundingClientRect();
+                        const top = (stage?.scrollTop || 0) + sectionBounds.top - (stageBounds?.top || 0) - 76;
+                        stage?.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+                      }
+                    }}
+"""
+          new_jump = """                    onClick={() => jumpPreviewToSection(item.id)}
+"""
+          if old_jump not in text:
+              raise SystemExit('ArchiveEditor quick-jump target not found')
+          editor_file.write_text(text.replace(old_jump, new_jump))
+
+          # 4) Make the recovery panel explain the security model accurately.
+          settings_file = Path('src/components/editor/SectionSettingsPanel.tsx')
+          text = settings_file.read_text()
+          text = text.replace(
+              "Hidden for security — unlock with the original owner key on this device to save a backup",
+              "Owner key not cached in this tab — unlock with the original recovery key, then return here to copy or download it"
+          )
+          text = text.replace(
+              "Backup saved. This does not change or replace your original owner recovery key.",
+              "Recovery-key backup downloaded. The permanent owner key was not changed."
+          )
+          settings_file.write_text(text)
+          PY
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Type-check
+        run: npm run lint
+      - name: Tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+      - name: Commit tested fixes and remove validator
+        shell: bash
+        run: |
+          rm .github/workflows/fix-recovery-jump.yml
+          git config user.name "OnceHere Fix Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix recovery-key caching and reliable section jumps"
+          git push origin HEAD:fix/recovery-key-jump-2026-09-16
