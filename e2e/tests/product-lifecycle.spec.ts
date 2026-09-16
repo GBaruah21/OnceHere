@@ -1,6 +1,6 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test';
 
-test('landing and trust links render', async ({ page }) => {
+test('landing and trust surfaces render', async ({ page }) => {
   await page.goto('/');
   await expect(page).toHaveTitle(/OnceHere/);
   await expect(page.getByRole('button', { name: /Create Your Archive/i }).first()).toBeVisible();
@@ -10,6 +10,77 @@ test('landing and trust links render', async ({ page }) => {
   await expect(footer.getByRole('link', { name: 'Terms' })).toBeVisible();
   await expect(footer.getByRole('link', { name: 'Safety' })).toBeVisible();
   await expect(footer.getByRole('link', { name: 'Report content' })).toBeVisible();
+
+  for (const route of ['/privacy', '/terms', '/safety', '/report']) {
+    const response = await page.request.get(route);
+    expect(response.ok()).toBeTruthy();
+    expect(response.headers()['content-type']).toContain('text/html');
+  }
+});
+
+test('public share bridge emits archive metadata while private share bridge does not leak it', async ({ request }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const publicTitle = `Public Metadata ${suffix}`;
+  const privateTitle = `Private Metadata ${suffix}`;
+  const publicSlug = `e2e-public-${suffix}`.toLowerCase();
+  const privateSlug = `e2e-private-meta-${suffix}`.toLowerCase();
+  const created: Array<{ id: string; token: string }> = [];
+
+  const createArchive = async (visibility: 'public' | 'private', title: string, finalSlug: string) => {
+    const response = await request.post('/api/archives', {
+      data: {
+        archiveType: 'school',
+        title,
+        organizationName: 'OnceHere Metadata E2E',
+        subtitle: `${title} subtitle`,
+        startYear: 2025,
+        endYear: 2026,
+        themeId: 'midnight-cinema',
+        visibility,
+        contributionMode: 'owner-only',
+        viewerPin: visibility === 'private' ? '684205' : undefined,
+        recoveryKey: `e2e-recovery-${visibility}-${suffix}`
+      }
+    });
+    expect(response.status()).toBe(201);
+    const body = await response.json();
+    created.push({ id: body.archive.id, token: body.ownerToken });
+    const deploy = await request.post(`/api/archives/${body.archive.id}/deploy`, {
+      headers: { Authorization: `Bearer ${body.ownerToken}` },
+      data: { finalSlug }
+    });
+    expect(deploy.ok()).toBeTruthy();
+  };
+
+  try {
+    await createArchive('public', publicTitle, publicSlug);
+    await createArchive('private', privateTitle, privateSlug);
+
+    const anonymous = await playwrightRequest.newContext({ baseURL: 'http://127.0.0.1:4173' });
+    try {
+      const publicShare = await anonymous.get(`/share/${publicSlug}`);
+      expect(publicShare.ok()).toBeTruthy();
+      const publicHtml = await publicShare.text();
+      expect(publicHtml).toContain(publicTitle);
+      expect(publicHtml).toContain(`${publicTitle} subtitle`);
+      expect(publicHtml).toContain(`/s/${publicSlug}`);
+
+      const privateShare = await anonymous.get(`/share/${privateSlug}`);
+      expect(privateShare.ok()).toBeTruthy();
+      const privateHtml = await privateShare.text();
+      expect(privateHtml).not.toContain(privateTitle);
+      expect(privateHtml).not.toContain(`${privateTitle} subtitle`);
+      expect(privateHtml).toContain('Every chapter deserves a place to live.');
+    } finally {
+      await anonymous.dispose();
+    }
+  } finally {
+    for (const archive of created.reverse()) {
+      await request.delete(`/api/archives/${archive.id}`, {
+        headers: { Authorization: `Bearer ${archive.token}` }
+      }).catch(() => undefined);
+    }
+  }
 });
 
 test('private archive lifecycle enforces viewer access', async ({ request, page }) => {
@@ -49,9 +120,6 @@ test('private archive lifecycle enforces viewer access', async ({ request, page 
     });
     expect(deployed.ok()).toBeTruthy();
 
-    // Creation intentionally establishes an owner cookie on the fixture request
-    // context. Use a separate cookie-free context to prove anonymous visitors do
-    // not receive private archive content.
     const anonymous = await playwrightRequest.newContext({ baseURL: 'http://127.0.0.1:4173' });
     try {
       const locked = await anonymous.get(`/api/archives/by-slug/${finalSlug}`);
