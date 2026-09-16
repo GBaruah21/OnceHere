@@ -9,6 +9,7 @@ import { db } from './server/db';
 import { getRuntimeReadiness } from './server/runtime-config';
 import { renderArchiveSharePage } from './server/sharePage';
 import { enforceArchiveVideoLimit } from './server/videoPolicy';
+import { ownerKeyRouter } from './server/ownerKeyRouter';
 
 const portFlag = process.argv.indexOf('--port');
 const PORT = Number(portFlag >= 0 ? process.argv[portFlag + 1] : process.env.PORT || 3000);
@@ -42,9 +43,9 @@ async function startServer() {
   // immediately continue to the existing /s/:slug SPA route.
   app.get('/share/:slug', renderArchiveSharePage);
 
-  // Mount API Router after health so infrastructure checks never trigger a
-  // database load and cannot make a healthy server look unavailable.
-  app.use('/api', enforceArchiveVideoLimit, apiRouter);
+  // Mount owner-key protection before the ordinary API router. This keeps the
+  // first master recovery key immutable while allowing an owner-only backup key.
+  app.use('/api', ownerKeyRouter, enforceArchiveVideoLimit, apiRouter);
 
   // Serve public static folder (favicon, trust pages, icons, etc.). HTML
   // extensions let /privacy resolve to public/privacy.html outside Vercel too.
