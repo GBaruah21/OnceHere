@@ -1,0 +1,30 @@
+name: Validate Cloudflare worker bundle
+
+on:
+  push:
+    paths:
+      - '.github/workflows/validate-cloudflare-worker.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/cloudflare-media-cdn-2026-09-16
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --check cloudflare/media-cdn-worker.js
+      - run: npx --yes wrangler@latest deploy --dry-run --outdir /tmp/oncehere-worker --config cloudflare/wrangler.jsonc
+      - name: Remove one-time validator
+        run: |
+          rm .github/workflows/validate-cloudflare-worker.yml
+          git config user.name "OnceHere Fix Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: remove Cloudflare worker validator"
+          git push origin HEAD:feat/cloudflare-media-cdn-2026-09-16
