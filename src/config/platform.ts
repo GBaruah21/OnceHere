@@ -1,8 +1,12 @@
 /**
  * Central Platform Identity & Configuration
- * 
+ *
  * To rename or rebrand the platform in the future, update this single file.
  * Do not hardcode the platform name elsewhere in the codebase.
+ *
+ * IMPORTANT: server/r2.ts is the enforcement source of truth for upload/storage
+ * quotas. Keep this user-facing summary aligned with R2_LIMITS whenever quotas
+ * change.
  */
 
 export const PLATFORM_CONFIG = {
@@ -30,17 +34,25 @@ export const PLATFORM_CONFIG = {
     workspacePrefix: '/workspace/'
   },
   limits: {
+    // File limits
     maxImageSizeMB: 10,
     maxVideoSizeMB: 20,
-    maxImagesPerArchive: 50,
-    maxVideosPerArchive: 2,
-    maxMediaStorageMBPerArchive: 100,
-    maxBatchUploadCount: 30,
+
+    // Section quotas. These are attachment/portrait allowances, not a single
+    // combined media count. The shared 500 MB archive-storage cap also applies.
+    maxVaultAttachments: 100,
+    maxVaultVideos: 5,
+    maxMemberPortraits: 250,
+    maxTimelineAttachments: 20,
+    maxTimelineVideos: 3,
+    maxWallImageAttachments: 5,
+    maxMediaStorageMBPerArchive: 500,
+
+    // Interaction/security limits
     maxWallMessageLength: 500,
     maxFailedPinAttempts: 5,
     pinLockoutMinutes: 15,
-    editorSessionHours: 2,
-    retentionDays: 30
+    editorSessionHours: 2
   },
   reservedSlugs: [
     'admin',

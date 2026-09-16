@@ -1,93 +1,81 @@
-# OnceHere retry: changes and verification
+# OnceHere current QA and release status
 
-Date: 11 September 2026. This remains a targeted repair report, not a complete production certification.
+Last updated: 16 September 2026.
 
-## Render bandwidth and attachment-upload repair — 12 September 2026
+This document is the current QA summary. Earlier commits of this file contain the historical Supabase/Render repair notes; those older architecture notes are not the current production source of truth.
 
-- Removed the final base64 conversion from the direct object-storage upload path.
-- Timeline, member-portrait, and wall attachments now use signed direct uploads
-  instead of placing file bytes in API JSON.
-- Non-vault attachments are registered as durable media immediately, making
-  protected reads work and ensuring they count toward archive quotas.
-- A failed registration retry reuses the object already uploaded instead of
-  transferring the file a second time.
-- Render and Vercel API entry points now enforce the same 2 MB JSON and 256 KB
-  form limits.
-- Production now fails clearly when no stable session-signing secret exists,
-  instead of silently invalidating sessions after a restart.
-- Contributor PIN failures no longer reveal attempt counts or lockout thresholds.
-- Added `RENDER_OPERATIONS.md` with monitor recovery, monthly-reset, environment,
-  hosting-choice, and live acceptance-test instructions.
-- Verification: strict TypeScript passed; 61 tests across five files passed; the
-  Vite/Express production build and a separate Vercel API bundle passed. The
-  suspended production service and real Backblaze/Supabase operations remain
-  unverified.
+## Current production architecture
 
-## Production persistence recovery — 11 September 2026
+- Frontend/API hosting: Vercel.
+- Durable archive state: Turso/libSQL configuration.
+- Uploaded media: private S3-compatible object storage through browser-to-storage signed uploads.
+- Server-side session signing: stable production `SESSION_SECRET`.
+- Media bytes do not travel through API JSON.
 
-- Removed obsolete AI route imports that prevented the Render production build.
-- Made tenant snapshot reads independent so one damaged row cannot make every archive unavailable.
-- Added a compact archive index and lazy tenant hydration. Explore no longer reconstructs every archive's media, revisions and sessions during each server start.
-- Existing global snapshots remain a recovery source. Legacy-only archives are migrated individually when requested; large demo and tenant snapshots are never rewritten inside the Explore request path.
-- Tenant content and compact metadata are saved in one PostgREST upsert, avoiding a partial-save window.
-- The one-time production migration completed with all four public archives present and no PIN, recovery-key or owner-token fields in the response.
-- Five subsequent live `/api/archives` requests returned HTTP 200. External timings were 18.4–21.3 seconds; the same environment observed comparable delay on `/api/health`, so these figures do not isolate application processing or establish the Core Web Vitals targets.
-- Automated verification now passes 55 tests across five files. Strict TypeScript and the full production build pass.
+The current product/upload limits are documented in [CURRENT_LIMITS.md](CURRENT_LIMITS.md) and enforced by `server/r2.ts`.
 
-## Security follow-up — 4 September 2026
+## Latest verified automated gate
 
-Implemented additional fixes in the active `server/` source:
+For the owner-recovery and section-navigation repair on 16 September 2026, CI completed successfully with:
 
-- Central tenant visibility checks protect sections, timeline, members, media, wall and nested resources. Anonymous and other-tenant sessions cannot retrieve private/draft content through these endpoints.
-- Viewer sessions are read-only. Existing contributor sessions cannot mutate owner-only archives; open contributors cannot use PUT/PATCH/DELETE to modify existing content.
-- Drafts cannot leak through slug lookup. Locked private responses expose only a minimal archive descriptor.
-- Public member-message responses exclude private and hidden messages. Recipient-specific private-message access still needs an authenticated recipient identity design; this patch does not invent one.
-- Signed tokens now require an unexpired server session record and matching archive/role. Deleted archives reject sessions and recovery. Removed the unsigned cached-session fallbacks.
-- New tokens contain a cryptographically random nonce, so issuing a second session does not recreate an earlier revoked token.
-- Owner-only archives reject contributor PIN authentication even when an old PIN hash remains configured.
+- clean `npm ci` install;
+- TypeScript (`npm run lint`) pass;
+- 5 test files / 60 tests passed;
+- production Vite client build passed;
+- production Express/server bundle passed;
+- dependency audit reported 0 vulnerabilities during the clean install.
 
-Regression coverage adds five independent iterations of the private-resource permission matrix, viewer mutation rejection, revoked/deleted session rejection, independent session issuance, owner-only PIN rejection, deleted recovery rejection, draft slug protection and private/hidden message filtering. Persistence is stubbed: these tests do not read or write live Supabase data.
+Some storage tests intentionally use fake S3 credentials and therefore print expected credential/CORS errors while testing URL-generation behavior. Persistence-failure tests intentionally log simulated failures. Those test logs are not production incidents.
 
-The supported browser API was inspected again: it provides no viewport resizing/device-emulation capability. Therefore no additional mobile viewport or full browser E2E pass is claimed in this follow-up. The 9-size matrix and authenticated browser upload/crop/admin flows remain unverified. Completing them requires an isolated staging environment plus a mobile-capable test runner. A complete security sign-off also remains blocked by the sessionStorage bearer design, snapshot persistence, media validation/storage and AI remote-fetch concerns listed below. Do not deploy on the basis of this partial security repair.
+## Latest production verification
 
-## Yearbook-member-count repair — 4 September 2026
+After the same repair was merged to `main`, the Vercel production deployment reached READY. The production `/api/health` endpoint reported:
 
-- Archive-wide save now accepts and validates `approxPeopleCount`, so editing and saving an archive does not silently discard the planned yearbook size.
-- Public/editor responses preserve that saved number until individual member profiles exist. Once profiles are added, the displayed count becomes the real profile total.
-- New regression coverage creates, recovers, reloads and updates draft archives with 30, 31, 40 and 100 members. It also rejects zero. Existing archives are not reset, recreated or removed by this change; the application continues loading the persisted archive snapshot before serving requests.
+- `status: healthy`;
+- Turso configured;
+- session signing configured;
+- object storage configured;
+- durable storage configured;
+- build commit matching the intended GitHub `main` commit.
 
-## Changes
+`/api/storage-status` also reported the object store connected, and the immediate post-deploy production error/fatal log check was clean.
 
-- AI no longer returns canned captions when its key, image fetch, provider request or response fails. Errors are visible and preserve the previous caption. Rewrite context includes the current draft and recent suggestions; exact repeats and stale responses are rejected. Automatic AI upload analysis is now opt-in.
-- The Node server now loads `.env.local` and `.env`, matching the setup instructions. Host environment variables take precedence. `GEMINI_API_KEY` is server-only; `GEMINI_MODEL` can override the model.
-- Timeline images have explicit container sizing and no hidden-until-scroll gate. Horizontal navigation centers the selected milestone. Timeline and vault full-screen viewers render direct videos as video elements.
-- Image selection includes a preview/crop action. Square, landscape and portrait crops, zoom, reposition, Apply, Cancel and Escape are supported. Cropping changes the selected copy, not the original device file. Removing a selection cancels its pending file read.
-- The floating Explore/share control is now a small translucent icon, draggable within bounds, with full visibility on hover/focus. The menu can be closed without changing content.
-- Sample recovery-key help is restored and clearly labeled fictional-demo-only. Owner recovery remains separate from contributor/viewer PINs. Recovery requests time out visibly and have server-side attempt limits.
-- Removed the known fallback session-signing secret. Configure a stable random `SESSION_SECRET` in production; local fallback is process-random. The example configuration no longer provides usable shared admin/session keys.
-- New archives default to hidden from Explore. Admin Unhide never changes deployment status or privacy. Admin preview is read-only, has a properly bounded scroll container, bypasses hidden reveal states, uses current server wall data, and offers Refresh preview. The archive list refreshes every 30 seconds while the tab is visible without overwriting unsaved contact-setting edits.
-- Access-history responses now require the owner of that same archive.
-- Existing OnceHere branding and attribution links remain unchanged. A source search found no remaining `MemoryCanvas` or `Memory Canvas` references outside dependencies/build output.
+## Owner recovery behavior
 
-## Verification actually completed
+The server stores only a bcrypt hash of the Owner Master Recovery Key. It cannot derive the original plaintext key from that hash.
 
-- `npm run lint`: TypeScript check passed.
-- `npm test`: 39 tests across four files passed. These include five security permission-matrix iterations, five independent archive creation/recovery/admin-preview/privacy scenarios and five mocked AI rewrite-instruction scenarios. Provider errors, missing configuration and malformed AI responses are tested. These are not five complete browser end-to-end runs.
-- `npm run build`: client and Node server production builds passed. The client bundle remains approximately 835 KB minified / 222 KB gzip, and CSS approximately 185 KB / 23 KB gzip. Vite reports a large-chunk warning.
-- Browser: landing page and demo selector opened; Mary's archive loaded. All five timeline images were observed loaded with nonzero dimensions; the second/third/fourth/fifth were explicitly inspected. The floating menu opened and closed. An attempted five-cycle menu test hit a browser protocol timeout after opening; it is not reported as passed.
-- Browser console included development-preview WebSocket connection errors and an extension metadata error. No claim of a clean production console is made.
+When an owner successfully enters the recovery key through Key Access, OnceHere now keeps that exact entered key in the current tab's session storage. Access & Privacy can then reveal, copy, and download the same permanent recovery key. Contributor/editor PIN sessions do not receive it. The recovery-key replacement endpoint remains disabled.
 
-## Still required before production release
+## Section-navigation behavior
 
-1. **150 MB video upload is not implemented.** Current uploads use private object storage with signed browser-to-storage transfers, but the intentional live limit is 20 MB and uploads are not resumable. Reaching 150 MB still requires multipart/resumable uploads, server-side MIME inspection, thumbnail/poster generation and live boundary/failure testing. Raising API JSON limits is not a safe solution.
-2. **Live AI quality is unverified.** Tests mock the provider. Configure a valid server key and test diverse real images plus repeated rewrite requests, quotas and provider timeouts. Remote-image fetching also needs a dedicated SSRF/size-limit security review before broad untrusted production use.
-3. **Persistence is not a full multi-tenant transactional database implementation.** Existing code stores maps as one Supabase JSON snapshot. Concurrent servers, large data, failed-write rollback and migrations need work. No production storage write/restart test was run.
-4. **Security audit remains incomplete.** Existing bearer/session-storage authentication is not the full HTTP-only-cookie/CSRF design from the specification. HTTP-only cookies protect native media requests and are accepted by the API, but migrating every editor request without locking out existing owners remains unfinished. Review revocation, moderation, rate limiting and tenant isolation before a broad launch.
-5. **Browser coverage remains incomplete.** Crop output, real upload completion, admin modal interaction, horizontal timeline after uploads, all responsive sizes, all themes, keyboard-only flows and every button state still need repeated end-to-end tests. No real 14.8 MB or 150 MB upload was performed.
-6. **Performance and demo completeness remain unverified.** Core Web Vitals were not measured. The existing demos contain fewer assets than the full requested collection; this repair does not certify the original complete-platform specification.
-7. **Demo imagery is not release-ready.** The seed data contains 93 Unsplash image references but only 41 unique source photographs; several are reused many times and are remotely hotlinked. This fails the requested unique, locally controlled, documented Indian-student demo-asset standard. Replacing them requires an approved/licensed or fictional generated asset collection plus visual review; it was not safe to invent a passing image audit.
-8. **Dependency audit was not completed.** `npm audit` could not reach the package registry from this environment and was stopped. The lockfile must be checked from a network-enabled CI runner before release.
+Studio quick-jump and archive navigation now use explicit scrolling inside the correct preview/window scroller after layout settles, instead of relying on a one-shot `scrollIntoView()` call. This is intended to cover direct Journey → Yearbook / Media Vault / Memory Wall / Farewell jumps and nested Studio preview scrolling.
 
-## Deployment gate
+## What automated validation does not certify
 
-Keep the current live deployment unchanged until the blocking storage/security work and production acceptance tests pass. Apply changes to the active `src/` and `server/` trees; duplicate top-level component files were supplied in the original project and are not the active Vite application source. Do not copy an old top-level duplicate over a repaired component.
+Passing TypeScript, unit/API tests, build, health, and runtime-log checks does not prove every browser interaction on every real device. Before a broad public launch, run a small live acceptance pass on expendable/test data covering:
+
+1. owner recovery-key unlock followed by reveal/copy/download;
+2. contributor PIN and private viewer PIN permissions;
+3. Studio quick-jump between every visible section;
+4. one image upload in Vault, Journey, Yearbook portrait, and Memory Wall;
+5. one small video upload in Vault and Journey;
+6. refresh/reopen after saves;
+7. deletion of temporary media;
+8. mobile and desktop public archive navigation;
+9. all six themes and the main share controls;
+10. production console/network/runtime logs after the test.
+
+Do not use a real archive containing irreplaceable media as the acceptance-test target.
+
+## Known design/operational limits
+
+- Current videos are intentionally limited to 20 MB and are not transcoded or resumable. The older 59 MB/150 MB requirements in historical notes are not implemented current limits.
+- Vercel, Turso, and the object-storage provider each have independent plan quotas. There is no hard-coded global archive-count limit in OnceHere itself.
+- A permanent recovery key is simple for ownership continuity but has an unavoidable trade-off: if the plaintext key is stolen, it cannot currently be rotated. Store backups carefully.
+- The application currently relies on browser/session-based owner/editor workflows rather than an account system. This matches the product's account-free design but makes possession of owner credentials especially important.
+- Real high-concurrency/load capacity has not been benchmarked. Capacity estimates should be expressed in terms of media storage, provider quotas, and traffic rather than as a guaranteed number of archives.
+- GitHub Actions currently validates with Node 20; current builds pass, but the Actions/AWS SDK ecosystem is moving toward Node 22+, so upgrading the CI/runtime baseline is a future maintenance task.
+
+## Deployment rule
+
+A release may be merged only after the clean install, TypeScript, tests, and production build pass. After Vercel deploys it, verify the exact build commit, `/api/health`, `/api/storage-status`, and runtime errors before calling the deployment healthy.

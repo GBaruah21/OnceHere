@@ -1,55 +1,47 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# OnceHere
 
-# Run and deploy OnceHere
+OnceHere is a multi-tenant digital memory/archive platform for school batches, college classes, teams, trips, reunions, and communities. The active Vite application lives under `src/`; the Express/API implementation lives under `server/`.
 
-This contains everything you need to run your app locally.
+Production currently runs on Vercel. Durable archive state uses the configured Turso/libSQL database, while uploaded media is stored separately in private S3-compatible object storage through signed browser-to-storage transfers.
 
-View your app in AI Studio: https://ai.studio/apps/cff0c7f3-5e44-4dbc-905a-c4c4367dfb34
+## Run locally
 
-## Run Locally
+**Prerequisite:** Node.js.
 
-**Prerequisites:**  Node.js
+1. Install dependencies with `npm install` (or `npm ci` for a lockfile-clean install).
+2. Copy `.env.example` to your local environment file and fill the required server-side values.
+3. Run `npm run dev`.
 
+Never expose session, database, object-storage, or platform-admin secrets through `VITE_` variables.
 
-1. Install dependencies:
-   `npm install`
-2. Copy `.env.example` to `.env.local` and fill the server-side storage and session values
-3. Run the app:
-   `npm run dev`
+## Production validation
 
-## OnceHere repair notes
+Before merging a release, run:
 
-Read [RETRY-QA.md](RETRY-QA.md) before deploying. It lists the implemented repairs, actual test results and unresolved release blockers, including the 150 MB video requirement.
+```bash
+npm ci
+npm run lint
+npm test
+npm run build
+```
 
-The active application is under `src/`; server implementation is under `server/`. Configure server values from `.env.example` in `.env.local` for local development, or in your hosting environment for production. Never put Gemini, Supabase, session or admin secrets in frontend variables. The server now loads local environment files explicitly.
+After deployment, verify `/api/health`, `/api/storage-status`, the exact deployed Git commit, and production runtime logs. Automated unit/API/build checks do not replace a real browser acceptance pass for owner recovery, uploads, private archive access, responsive layout, and the public archive experience.
 
-Run `npm run lint`, `npm test`, and `npm run build` to repeat the checked validations. Start a built Node deployment with `NODE_ENV=production npm start` only after satisfying the deployment gate in the QA notes.
+The current enforced product limits are documented in [CURRENT_LIMITS.md](CURRENT_LIMITS.md). Server-side media enforcement is defined in `server/r2.ts`.
 
-### Backblaze B2 fast uploads
+## Recovery-key security
 
-OnceHere first uploads files directly from the browser to the private B2 bucket.
-There is deliberately no Render upload proxy fallback: a failed upload remains
-selected and retryable in the browser, avoiding a second transfer and protecting
-the hosting bandwidth allowance.
+The Owner Master Recovery Key is an owner credential, not a contributor credential. The server persists only its hash. When an owner successfully enters the recovery key through Key Access, the exact key is kept in that browser tab's session storage so Access & Privacy can reveal/copy/download a backup. A key that is truly lost everywhere cannot be reconstructed from the server hash.
 
-In the Backblaze bucket, open **CORS Rules** and add a rule for the exact deployed
-OnceHere origin (for example, `https://your-service.onrender.com`) with:
+## Object storage
 
-- Allowed operation: `s3_put`
-- Allowed origin: the exact HTTPS origin of the deployed app
-- Allowed header: `content-type`
-- Maximum age: `3600`
+OnceHere uploads media directly from the browser to private S3-compatible object storage using short-lived signed PUT URLs. This avoids relaying large media bodies through the Vercel API function and keeps API JSON small.
 
-Do not include a path or trailing slash in the origin. Add each production or
-preview origin explicitly. Keeping the bucket private is supported; CORS does not
-make stored objects public.
+- For Backblaze B2-compatible configuration, see [BACKBLAZE_B2_SETUP.md](BACKBLAZE_B2_SETUP.md).
+- For Cloudflare R2 configuration, see [R2_SETUP.md](R2_SETUP.md).
 
-### Render sleep and bandwidth
+## Historical/secondary hosting
 
-Do not use a 14-minute uptime monitor on a Free Render web service. It prevents
-idle spin-down, consumes the workspace's shared free instance hours, and makes
-every response count toward outbound bandwidth. See [RENDER_OPERATIONS.md](RENDER_OPERATIONS.md)
-for the recovery procedure, monitoring-account checklist, environment gate, and
-the honest hosting choices for removing the one-minute cold start.
+[RENDER_OPERATIONS.md](RENDER_OPERATIONS.md) is retained only as a secondary-host/legacy runbook. It is not the description of the current production deployment.
+
+[RETRY-QA.md](RETRY-QA.md) contains the current release-validation status plus links back to historical repair concerns. Do not treat old Supabase/Render/video-limit notes from previous commits as current production limits; use `CURRENT_LIMITS.md` and the active code.
