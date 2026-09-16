@@ -6,6 +6,7 @@ import { PLATFORM_CONFIG } from '../src/config/platform.js';
 import { db } from '../server/db.js';
 import { getRuntimeReadiness } from '../server/runtime-config.js';
 import { renderArchiveSharePage } from '../server/sharePage.js';
+import { enforceArchiveVideoLimit } from '../server/videoPolicy.js';
 
 // Vercel invokes this exported app for every /api/* request (see vercel.json).
 // The existing router remains the single source of truth for all API behavior.
@@ -35,7 +36,7 @@ app.get('/api/health', (_req, res) => {
 // archive itself continues to render at /s/:slug through the existing SPA.
 app.get('/api/share', renderArchiveSharePage);
 
-app.use('/api', apiRouter);
+app.use('/api', enforceArchiveVideoLimit, apiRouter);
 
 // API failures must stay JSON so the browser never receives Vercel's HTML error
 // page for an application exception.
