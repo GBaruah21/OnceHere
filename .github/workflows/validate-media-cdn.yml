@@ -1,0 +1,35 @@
+name: Validate media CDN integration
+
+on:
+  push:
+    paths:
+      - '.github/workflows/validate-media-cdn.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/cloudflare-media-cdn-2026-09-16
+      - name: Apply API integration patch
+        run: python3 .github/apply-media-cdn.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: Commit tested integration and remove one-time validator
+        run: |
+          rm .github/apply-media-cdn.py .github/workflows/validate-media-cdn.yml
+          git config user.name "OnceHere Fix Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Add optional Cloudflare media CDN"
+          git push origin HEAD:feat/cloudflare-media-cdn-2026-09-16
