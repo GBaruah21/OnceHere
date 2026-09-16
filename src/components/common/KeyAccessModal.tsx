@@ -62,14 +62,19 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
         throw new Error(data.error || 'Authentication failed. Please check your credentials.');
       }
 
-      // Save the verified owner session AND the exact recovery key that
-      // was just presented. The server stores only a hash, so it cannot safely
-      // reconstruct a lost plaintext key later. Keeping the entered key in this
-      // tab session lets the owner reveal/copy/download a backup immediately.
+      // Save the verified owner session. Plaintext recovery keys are never
+      // reconstructed by the server: the exact key entered here is cached only
+      // in this tab so the owner can copy/download it again. Master and backup
+      // keys use separate session slots so a backup login can never overwrite
+      // the remembered permanent master key.
       if (data.archive && data.token) {
         SessionStorage.setOwnerToken(data.archive.id, data.token);
         SessionStorage.setWorkspaceToken(data.workspaceSlug, data.token);
-        SessionStorage.setRecoveryKey(data.archive.id, archiveKey.trim());
+        if (data.keyKind === 'backup') {
+          SessionStorage.setBackupRecoveryKey(data.archive.id, archiveKey.trim());
+        } else {
+          SessionStorage.setRecoveryKey(data.archive.id, archiveKey.trim());
+        }
       }
 
       onSuccess(data.archive, data.workspaceSlug, data.token);
@@ -94,12 +99,13 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
             </div>
             <div>
               <h3 className="text-base sm:text-lg font-bold font-serif text-white">Recover Owner Access</h3>
-              <p className="text-xs text-neutral-400">Paste your recovery key or upload its text file. No PIN needed.</p>
+              <p className="text-xs text-neutral-400">Paste your master or current backup owner key. No PIN needed.</p>
             </div>
           </div>
           <button
             onClick={onClose}
             className="p-2 rounded-xl text-neutral-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+            aria-label="Close owner recovery"
           >
             <X className="w-5 h-5" />
           </button>
@@ -127,7 +133,7 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
                     setArchiveKey(e.target.value);
                     if (errorMsg) setErrorMsg(null);
                   }}
-                  placeholder="Paste the complete recovery key"
+                  placeholder="Paste the complete master or backup owner key"
                   className="w-full min-h-12 px-4 py-3 rounded-xl bg-neutral-950 border border-white/15 text-base font-mono text-white placeholder-neutral-500 focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400"
                   autoFocus
                   required
@@ -158,8 +164,7 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
             </div>
           </div>
 
-          {/* Recovery help */}
-          <p className="text-sm text-neutral-300">This screen is for the owner recovery key. To use a contributor PIN, open the archive and choose Contribute. A private archive asks for its viewer PIN before showing content.</p>
+          <p className="text-sm text-neutral-300">This screen is for owner recovery keys. To use a contributor PIN, open the archive and choose Contribute. A private archive asks for its viewer PIN before showing content.</p>
           <button type="button" onClick={() => {
             setArchiveKey('mc_rec_sample_key_123');
             setIdentifier('marys-convent-2025');
@@ -167,6 +172,7 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
           }} className="min-h-11 w-full rounded-xl border border-amber-400/30 text-amber-300 text-sm">
             Try sample key — fictional demo only
           </button>
+
           <div className="pt-2 border-t border-white/10 flex flex-col gap-2.5">
             <div className="flex items-center justify-between text-xs">
               <button
@@ -183,15 +189,14 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
               <div className="p-4 rounded-2xl bg-neutral-950/80 border border-white/10 text-xs text-neutral-300 space-y-2.5 animate-in fade-in">
                 <div className="font-semibold text-white flex items-center gap-1.5">
                   <FileText className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Security & Collision Protection:</span>
+                  <span>Owner-key safety:</span>
                 </div>
                 <ul className="list-disc pl-4 space-y-2 text-[11px] text-neutral-400 leading-relaxed">
-                  <li>
-                    <strong className="text-neutral-200">Owner Recovery Key:</strong> Generated when you create an archive (e.g. <code>mc_rec_...</code>). Keep it private: anyone with this key can recover owner access.
-                  </li>
-                  <li><strong className="text-neutral-200">Contributor PIN:</strong> enter it through Contribute on the archive. It never grants owner settings.</li>
+                  <li><strong className="text-neutral-200">Master Owner Key:</strong> generated when the archive is first created. It is permanent and never becomes invalid when a backup key is replaced.</li>
+                  <li><strong className="text-neutral-200">Backup Owner Key:</strong> optional secondary owner credential. Only a signed-in owner can create/replace it; replacing it invalidates only the previous backup.</li>
+                  <li><strong className="text-neutral-200">Contributor PIN:</strong> enter it through Contribute on the archive. It never grants owner-key controls.</li>
                   <li><strong className="text-neutral-200">Viewer PIN:</strong> enter it on a private archive. It only grants viewing.</li>
-                  <li>After recovery, open Access &amp; Privacy to replace a forgotten PIN.</li>
+                  <li>After owner recovery, open Owner Key Safety to save the appropriate key backup and Access &amp; Privacy to replace a forgotten PIN.</li>
                 </ul>
               </div>
             )}
