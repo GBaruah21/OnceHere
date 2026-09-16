@@ -273,6 +273,25 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
     void handleUpdateSections(updated);
   };
 
+  const jumpPreviewToSection = useCallback((stableType: string) => {
+    const foundSection = sections.find((section) => section.stableType === stableType);
+    setActiveTab(foundSection?.id || stableType);
+
+    const scrollNow = () => {
+      const stage = document.getElementById('editor-preview-stage');
+      if (!stage) return;
+      const target = stage.querySelector<HTMLElement>(`#section-${stableType}`);
+      if (!target) return;
+      const stageBounds = stage.getBoundingClientRect();
+      const targetBounds = target.getBoundingClientRect();
+      const top = stage.scrollTop + targetBounds.top - stageBounds.top - 132;
+      stage.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    };
+
+    window.requestAnimationFrame(() => window.requestAnimationFrame(scrollNow));
+    window.setTimeout(scrollNow, 240);
+  }, [sections]);
+
   // Sub-entity mutations
   const handleAddTimelineEvent = async (eventData: Partial<TimelineEvent>) => {
     const saveTimelineEvent = async () => {
@@ -748,7 +767,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
                     >
                       <button
                         onClick={() => {
-                          setActiveTab(sec.id);
+                          jumpPreviewToSection(sec.stableType);
                           setMobileStudioTab('inspector');
                         }}
                         className="flex-1 text-left truncate flex items-center gap-2 font-medium"
@@ -836,24 +855,7 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
                 return (
                   <button
                     key={item.id}
-                    onClick={() => {
-                      const foundSec = sections.find((s) => s.stableType === item.id);
-                      if (foundSec) {
-                        setActiveTab(foundSec.id);
-                      } else {
-                        setActiveTab(item.id);
-                      }
-                      // Resolve within this preview. A public page, modal, or
-                      // stale hidden preview can have the same section IDs.
-                      const stage = document.getElementById('editor-preview-stage');
-                      const el = stage?.querySelector<HTMLElement>(`#section-${item.id}, #${item.id}`) || null;
-                      if (el) {
-                        const stageBounds = stage?.getBoundingClientRect();
-                        const sectionBounds = el.getBoundingClientRect();
-                        const top = (stage?.scrollTop || 0) + sectionBounds.top - (stageBounds?.top || 0) - 76;
-                        stage?.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
-                      }
-                    }}
+                    onClick={() => jumpPreviewToSection(item.id)}
                     className={`px-3 py-1 rounded-xl text-[11px] font-medium transition-all cursor-pointer whitespace-nowrap ${
                       isItemActive
                         ? 'bg-amber-400 text-neutral-950 font-bold shadow-md'
