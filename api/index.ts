@@ -5,6 +5,7 @@ import { apiRouter } from '../server/api.js';
 import { PLATFORM_CONFIG } from '../src/config/platform.js';
 import { db } from '../server/db.js';
 import { getRuntimeReadiness } from '../server/runtime-config.js';
+import { renderArchiveSharePage } from '../server/sharePage.js';
 
 // Vercel invokes this exported app for every /api/* request (see vercel.json).
 // The existing router remains the single source of truth for all API behavior.
@@ -29,6 +30,10 @@ app.get('/api/health', (_req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// Crawler-friendly share bridge. Vercel rewrites /share/:slug here while the
+// archive itself continues to render at /s/:slug through the existing SPA.
+app.get('/api/share', renderArchiveSharePage);
 
 app.use('/api', apiRouter);
 
