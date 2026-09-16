@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, request as playwrightRequest } from '@playwright/test';
 
 test('landing and trust links render', async ({ page }) => {
   await page.goto('/');
@@ -49,9 +49,21 @@ test('private archive lifecycle enforces viewer access', async ({ request, page 
     });
     expect(deployed.ok()).toBeTruthy();
 
-    const locked = await request.get(`/api/archives/by-slug/${finalSlug}`);
-    expect(locked.ok()).toBeTruthy();
-    expect((await locked.json()).locked).toBe(true);
+    // Creation intentionally establishes an owner cookie on the fixture request
+    // context. Use a separate cookie-free context to prove anonymous visitors do
+    // not receive private archive content.
+    const anonymous = await playwrightRequest.newContext({ baseURL: 'http://127.0.0.1:4173' });
+    try {
+      const locked = await anonymous.get(`/api/archives/by-slug/${finalSlug}`);
+      expect(locked.ok()).toBeTruthy();
+      const lockedBody = await locked.json();
+      expect(lockedBody.locked).toBe(true);
+      expect(lockedBody.archive.visibility).toBe('private');
+      expect(lockedBody.sections).toBeUndefined();
+      expect(lockedBody.media).toBeUndefined();
+    } finally {
+      await anonymous.dispose();
+    }
 
     const viewerAuth = await request.post(`/api/archives/${archiveId}/auth/viewer-pin`, {
       data: { pin: viewerPin }
