@@ -1,6 +1,7 @@
 const ARCHIVE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const FILE_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
 const MEDIA_TYPE_PATTERN = /^(image|video)\//i;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 function noStore(status, body) {
   return new Response(body, {
@@ -50,13 +51,42 @@ export default {
     // reaching the origin for video segments.
     originHeaders.set('Accept-Encoding', 'identity');
 
+    const method = request.method === 'HEAD' ? 'HEAD' : 'GET';
     let upstream;
     try {
-      upstream = await fetch(originUrl, {
-        method: request.method === 'HEAD' ? 'HEAD' : 'GET',
+      // Do not let the shared origin secret follow the application's signed
+      // redirect to B2/S3. Fetch the OnceHere redirect first, then request the
+      // storage URL separately with a clean header set.
+      const originResponse = await fetch(originUrl, {
+        method,
         headers: originHeaders,
-        redirect: 'follow'
+        redirect: 'manual'
       });
+
+      if (REDIRECT_STATUSES.has(originResponse.status)) {
+        const location = originResponse.headers.get('location');
+        if (!location) return noStore(502, 'Media origin returned an invalid redirect');
+
+        let storageUrl;
+        try {
+          storageUrl = new URL(location, originUrl);
+        } catch {
+          return noStore(502, 'Media origin returned an invalid redirect');
+        }
+        if (storageUrl.protocol !== 'https:') {
+          return noStore(502, 'Media origin returned an unsafe redirect');
+        }
+
+        const storageHeaders = new Headers();
+        storageHeaders.set('Accept-Encoding', 'identity');
+        upstream = await fetch(storageUrl.toString(), {
+          method,
+          headers: storageHeaders,
+          redirect: 'follow'
+        });
+      } else {
+        upstream = originResponse;
+      }
     } catch {
       return noStore(502, 'Media origin unavailable');
     }
@@ -84,6 +114,7 @@ export default {
     headers.set('X-Content-Type-Options', 'nosniff');
     headers.set('Referrer-Policy', 'no-referrer');
     headers.set('Access-Control-Allow-Origin', '*');
+    headers.set('X-OnceHere-Media-CDN', 'worker');
 
     return new Response(request.method === 'HEAD' ? null : upstream.body, {
       status: 200,
