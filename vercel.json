@@ -34,6 +34,10 @@
       "destination": "/report.html"
     },
     {
+      "source": "/share/:slug",
+      "destination": "/api/share?slug=:slug"
+    },
+    {
       "source": "/api/:path*",
       "destination": "/api"
     },
