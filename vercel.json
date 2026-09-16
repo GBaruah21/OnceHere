@@ -34,6 +34,19 @@
       "destination": "/report.html"
     },
     {
+      "source": "/s/:slug",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": {
+            "re": ".*(facebookexternalhit|Facebot|Twitterbot|LinkedInBot|WhatsApp|TelegramBot|Discordbot|Slackbot|Pinterestbot|SkypeUriPreview).*"
+          }
+        }
+      ],
+      "destination": "/api/share?slug=:slug"
+    },
+    {
       "source": "/share/:slug",
       "destination": "/api/share?slug=:slug"
     },
