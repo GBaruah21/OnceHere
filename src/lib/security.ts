@@ -78,8 +78,8 @@ export function evaluatePin(pin: string): PinStrength {
 }
 
 /**
- * Generate a cryptographically random owner recovery key
- * Format: mc_rec_<32-character random string>
+ * Generate a cryptographically random owner recovery key for initial creation.
+ * Format: mc_rec_<24-character random string with readability separators>
  */
 export function generateRecoveryKey(): string {
   const chars = 'abcdefghjkmnpqrstuvwxyz23456789'; // Base32 without confusing chars (0/O, 1/I/L)
@@ -94,7 +94,7 @@ export function generateRecoveryKey(): string {
       }
     }
   } else {
-    // Fallback
+    // Development-only fallback for browsers without Web Crypto.
     for (let i = 0; i < 24; i++) {
       result += chars[Math.floor(Math.random() * chars.length)];
       if (i % 6 === 5 && i !== 23) {
@@ -106,29 +106,37 @@ export function generateRecoveryKey(): string {
 }
 
 /**
- * Helper to download recovery key as a text file for archive owner
+ * Helper to download an owner recovery key as a text file.
+ * The initial key should be labeled Master; an owner-created secondary key is Backup.
  */
-export function downloadRecoveryKeyFile(archiveTitle: string, recoveryKey: string) {
+export function downloadRecoveryKeyFile(
+  archiveTitle: string,
+  recoveryKey: string,
+  keyLabel = 'Master Owner Recovery Key'
+) {
+  if (!recoveryKey) return;
   const content = `================================================================================
-ONCEHERE ARCHIVE OWNER RECOVERY KEY
+ONCEHERE ${keyLabel.toUpperCase()}
 ================================================================================
 
 Archive Title: ${archiveTitle}
-Generated At: ${new Date().toISOString()}
+Saved At: ${new Date().toISOString()}
+Key Type: ${keyLabel}
 
 RECOVERY KEY:
 ${recoveryKey}
 
 IMPORTANT SECURITY NOTICE:
-- Keep this recovery key safe.
-- If you switch browsers, clear your browser cookies, or lose access, this key
-  is the ONLY way to regain administrative owner rights to your archive.
-- Never share this key with other contributors or in public chat channels.
+- Keep this key private and store the file somewhere you control.
+- The first Master Owner Recovery Key created with the archive is permanent and
+  remains valid even if a Backup Owner Key is later created or replaced.
+- A Backup Owner Key can be replaced only from an authenticated owner session.
+- Contributor/editor and private-viewer PINs never grant permission to replace
+  owner keys.
+- Never share an owner key with contributors or in public/group chats.
 - Contributor and private-viewer PINs are intentionally NOT included in this file.
-  Keeping every access secret together would make a stolen file much more harmful.
-- To restore access: open OnceHere, choose "Recover Archive", paste this key,
-  then open Access & Privacy to set a new contributor or viewer PIN if needed.
-- Share only the appropriate 4 or 6 digit PIN with collaborators or viewers.
+- To restore access: open OnceHere, choose "Recover Archive", and paste either
+  the permanent Master Owner Key or the current Backup Owner Key.
 
 ================================================================================
 `;
@@ -137,8 +145,9 @@ IMPORTANT SECURITY NOTICE:
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   const safeName = archiveTitle.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 30);
+  const kind = keyLabel.toLowerCase().includes('backup') ? 'backup_owner_key' : 'master_owner_key';
   link.href = url;
-  link.download = `recovery_key_${safeName}.txt`;
+  link.download = `${kind}_${safeName}.txt`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -146,7 +155,9 @@ IMPORTANT SECURITY NOTICE:
 }
 
 /**
- * Local storage / session storage wrapper for owner sessions and editor sessions
+ * Session-only browser cache for sensitive credentials. Server-side ownership
+ * is based on durable hashes and signed sessions; this cache only lets an owner
+ * copy/download a key again during the current browser tab.
  */
 export const SessionStorage = {
   getOwnerToken(archiveId: string): string | null {
@@ -180,6 +191,7 @@ export const SessionStorage = {
     sessionStorage.setItem(`mc_viewer_${slug}`, token);
   },
 
+  /** Plaintext permanent master key, only if this tab has actually seen it. */
   getRecoveryKey(archiveId: string): string | null {
     if (typeof window === 'undefined') return null;
     return sessionStorage.getItem(`mc_key_${archiveId}`);
@@ -187,6 +199,20 @@ export const SessionStorage = {
   setRecoveryKey(archiveId: string, key: string) {
     if (typeof window === 'undefined') return;
     sessionStorage.setItem(`mc_key_${archiveId}`, key);
+  },
+
+  /** Plaintext current backup key, kept separate so it never overwrites the master cache. */
+  getBackupRecoveryKey(archiveId: string): string | null {
+    if (typeof window === 'undefined') return null;
+    return sessionStorage.getItem(`mc_backup_key_${archiveId}`);
+  },
+  setBackupRecoveryKey(archiveId: string, key: string) {
+    if (typeof window === 'undefined') return;
+    sessionStorage.setItem(`mc_backup_key_${archiveId}`, key);
+  },
+  clearBackupRecoveryKey(archiveId: string) {
+    if (typeof window === 'undefined') return;
+    sessionStorage.removeItem(`mc_backup_key_${archiveId}`);
   },
 
   getEditorSession(archiveId: string): { token: string; expiresAt: number } | null {
