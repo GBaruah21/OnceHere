@@ -83,6 +83,75 @@ test('public share bridge emits archive metadata while private share bridge does
   }
 });
 
+test('archive-wide video limit spans Journey and Media Vault', async ({ request }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let archiveId = '';
+  let ownerToken = '';
+
+  try {
+    const createdResponse = await request.post('/api/archives', {
+      data: {
+        archiveType: 'school',
+        title: `Video quota ${suffix}`,
+        organizationName: 'OnceHere Quota E2E',
+        startYear: 2025,
+        endYear: 2026,
+        themeId: 'midnight-cinema',
+        visibility: 'unlisted',
+        contributionMode: 'owner-only',
+        recoveryKey: `e2e-video-recovery-${suffix}`
+      }
+    });
+    expect(createdResponse.status()).toBe(201);
+    const created = await createdResponse.json();
+    archiveId = created.archive.id;
+    ownerToken = created.ownerToken;
+    const headers = { Authorization: `Bearer ${ownerToken}` };
+
+    for (let index = 1; index <= 3; index += 1) {
+      const response = await request.post(`/api/archives/${archiveId}/timeline`, {
+        headers,
+        data: {
+          title: `Video milestone ${index}`,
+          description: `Video milestone ${index} description`,
+          yearLabel: '2026',
+          mediaUrl: `https://media.example.com/journey-${index}.mp4`
+        }
+      });
+      expect(response.status()).toBe(201);
+    }
+
+    for (let index = 1; index <= 2; index += 1) {
+      const response = await request.post(`/api/archives/${archiveId}/media`, {
+        headers,
+        data: {
+          type: 'video',
+          url: `https://media.example.com/vault-${index}.mp4`,
+          caption: `Vault video ${index}`
+        }
+      });
+      expect(response.status()).toBe(201);
+    }
+
+    const sixthVideo = await request.post(`/api/archives/${archiveId}/media`, {
+      headers,
+      data: {
+        type: 'video',
+        url: 'https://media.example.com/vault-3.mp4',
+        caption: 'Sixth video'
+      }
+    });
+    expect(sixthVideo.status()).toBe(413);
+    expect((await sixthVideo.json()).error).toContain('maximum of 5 videos');
+  } finally {
+    if (archiveId && ownerToken) {
+      await request.delete(`/api/archives/${archiveId}`, {
+        headers: { Authorization: `Bearer ${ownerToken}` }
+      }).catch(() => undefined);
+    }
+  }
+});
+
 test('private archive lifecycle enforces viewer access', async ({ request, page }) => {
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const title = `E2E Archive ${suffix}`;
