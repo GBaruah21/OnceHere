@@ -135,7 +135,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
       return;
     }
     downloadRecoveryKeyFile(archive.title, recoveryKey);
-    setPinMessage('Backup saved. This does not change or replace your original owner recovery key.');
+    setPinMessage('Recovery-key backup downloaded. The permanent owner key was not changed.');
   };
 
   useEffect(() => {
@@ -499,7 +499,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             <div className="p-3 rounded-2xl bg-neutral-900 border border-white/10 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-mono text-amber-300 select-all break-all">
-                  {getOrInitRecoveryKey() || 'Hidden for security — unlock with the original owner key on this device to save a backup'}
+                  {getOrInitRecoveryKey() || 'Owner key not cached in this tab — unlock with the original recovery key, then return here to copy or download it'}
                 </span>
                 <button
                   type="button"

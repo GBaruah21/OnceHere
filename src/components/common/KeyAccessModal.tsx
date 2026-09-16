@@ -62,10 +62,14 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
         throw new Error(data.error || 'Authentication failed. Please check your credentials.');
       }
 
-      // Save token in storage
+      // Save the verified owner session AND the exact recovery key that
+      // was just presented. The server stores only a hash, so it cannot safely
+      // reconstruct a lost plaintext key later. Keeping the entered key in this
+      // tab session lets the owner reveal/copy/download a backup immediately.
       if (data.archive && data.token) {
         SessionStorage.setOwnerToken(data.archive.id, data.token);
         SessionStorage.setWorkspaceToken(data.workspaceSlug, data.token);
+        SessionStorage.setRecoveryKey(data.archive.id, archiveKey.trim());
       }
 
       onSuccess(data.archive, data.workspaceSlug, data.token);

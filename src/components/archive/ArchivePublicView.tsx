@@ -336,18 +336,26 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   // scrolls the page behind those previews instead of their intended panel.
   // Keep section navigation contained when a preview scroller is present.
   const scrollElementInView = (element: HTMLElement, behavior: ScrollBehavior = 'smooth') => {
-    const previewScroller = viewRootRef.current?.closest<HTMLElement>('[data-archive-preview-scroll]');
-    if (!previewScroller) {
-      element.scrollIntoView({ behavior, block: 'start' });
-      return;
-    }
+    const performScroll = () => {
+      const previewScroller = viewRootRef.current?.closest<HTMLElement>('[data-archive-preview-scroll]');
+      const elementBounds = element.getBoundingClientRect();
 
-    const scrollerBounds = previewScroller.getBoundingClientRect();
-    const elementBounds = element.getBoundingClientRect();
-    // Leave a little room for the sticky archive navigation rather than
-    // hiding the section title immediately underneath it.
-    const top = previewScroller.scrollTop + elementBounds.top - scrollerBounds.top - 76;
-    previewScroller.scrollTo({ top: Math.max(0, top), behavior });
+      if (previewScroller) {
+        const scrollerBounds = previewScroller.getBoundingClientRect();
+        // Account for both the Studio jump bar and the archive's own sticky nav.
+        const top = previewScroller.scrollTop + elementBounds.top - scrollerBounds.top - 132;
+        previewScroller.scrollTo({ top: Math.max(0, top), behavior });
+        return;
+      }
+
+      // Standalone archive: scroll the window explicitly rather than relying on
+      // scrollIntoView(), which can choose the wrong ancestor around sticky UI.
+      const top = window.scrollY + elementBounds.top - 112;
+      window.scrollTo({ top: Math.max(0, top), behavior });
+    };
+
+    // Let React/motion finish the current layout pass before measuring.
+    window.requestAnimationFrame(() => window.requestAnimationFrame(performScroll));
   };
 
   const scrollViewToTop = () => {
