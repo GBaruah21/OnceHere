@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Check, Copy, Download, KeyRound, RefreshCw, ShieldCheck, X } from 'lucide-react';
+import { Check, Copy, Download, KeyRound, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react';
 import type { Archive } from '../../types';
 import { downloadRecoveryKeyFile, SessionStorage } from '../../lib/security';
 
@@ -18,6 +18,8 @@ export const OwnerKeySafetyModal: React.FC<OwnerKeySafetyModalProps> = ({ isOpen
   const masterKey = useMemo(() => SessionStorage.getRecoveryKey(archive.id) || '', [archive.id, isOpen]);
 
   if (!isOpen) return null;
+
+  const ownerToken = () => SessionStorage.getOwnerToken(archive.id) || SessionStorage.getWorkspaceToken(archive.workspaceSlug);
 
   const copy = async (value: string, kind: 'master' | 'backup') => {
     if (!value) return;
@@ -40,7 +42,7 @@ export const OwnerKeySafetyModal: React.FC<OwnerKeySafetyModalProps> = ({ isOpen
     try {
       setBusy(true);
       setMessage('');
-      const token = SessionStorage.getOwnerToken(archive.id) || SessionStorage.getWorkspaceToken(archive.workspaceSlug);
+      const token = ownerToken();
       const response = await fetch(`/api/archives/${encodeURIComponent(archive.id)}/auth/recovery/regenerate`, {
         method: 'POST',
         headers: token ? { Authorization: `Bearer ${token}` } : undefined
@@ -56,6 +58,37 @@ export const OwnerKeySafetyModal: React.FC<OwnerKeySafetyModalProps> = ({ isOpen
         : 'Backup Owner Key created. The original Master Owner Key still works.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not create the backup owner key.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revokeBackup = async () => {
+    if (busy) return;
+    const proceed = window.confirm(
+      'Revoke the current Backup Owner Key? It will stop working immediately. Your original Master Owner Key will remain valid permanently.'
+    );
+    if (!proceed) return;
+
+    try {
+      setBusy(true);
+      setMessage('');
+      const token = ownerToken();
+      const response = await fetch(`/api/archives/${encodeURIComponent(archive.id)}/auth/recovery/backup`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Could not revoke the backup owner key.');
+      }
+      SessionStorage.clearBackupRecoveryKey(archive.id);
+      setBackupKey('');
+      setMessage(data.revoked
+        ? 'Backup Owner Key revoked. Your original Master Owner Key still works.'
+        : 'No active backup key was stored. Your original Master Owner Key still works.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not revoke the backup owner key.');
     } finally {
       setBusy(false);
     }
@@ -117,7 +150,7 @@ export const OwnerKeySafetyModal: React.FC<OwnerKeySafetyModalProps> = ({ isOpen
               <ShieldCheck className="w-5 h-5 text-emerald-400" />
               <span>Owner Key Safety</span>
             </div>
-            <p className="text-[11px] text-neutral-400 mt-0.5">Only an authenticated owner session can change the backup key.</p>
+            <p className="text-[11px] text-neutral-400 mt-0.5">Only an authenticated owner session can manage the backup key.</p>
           </div>
           <button type="button" onClick={onClose} className="min-h-11 min-w-11 grid place-items-center rounded-xl text-neutral-300 hover:bg-white/10" aria-label="Close owner key safety">
             <X className="w-5 h-5" />
@@ -126,32 +159,43 @@ export const OwnerKeySafetyModal: React.FC<OwnerKeySafetyModalProps> = ({ isOpen
 
         <div className="p-4 sm:p-5 space-y-4 pb-[calc(1.25rem+env(safe-area-inset-bottom))]">
           <div className="rounded-2xl border border-emerald-400/25 bg-emerald-500/10 p-4 text-xs leading-relaxed text-emerald-100">
-            <strong>Your first key cannot be replaced.</strong> The Master Owner Key created with this archive remains valid permanently. Creating a new Backup Owner Key never changes or disables it. Contributor and viewer PINs cannot create or replace owner keys.
+            <strong>Your first key cannot be replaced.</strong> The Master Owner Key created with this archive remains valid permanently. Creating, replacing, or revoking a Backup Owner Key never changes or disables it. Contributor and viewer PINs cannot manage owner keys.
           </div>
 
           <KeyRow
             label="Permanent Master Owner Key"
             value={masterKey}
             kind="master"
-            description="The first recovery key. OnceHere stores only its hash. It remains valid even after backup-key replacement."
+            description="The first recovery key. OnceHere stores only its hash. It remains valid even after backup-key replacement or revocation."
           />
 
           <KeyRow
             label="Current Backup Owner Key"
             value={backupKey}
             kind="backup"
-            description="Optional secondary owner credential. Replacing it invalidates only the previous backup key, never the master key."
+            description="Optional secondary owner credential. Replacing or revoking it affects only the backup key, never the master key."
           />
 
-          <button
-            type="button"
-            onClick={() => void createOrReplaceBackup()}
-            disabled={busy}
-            className="w-full min-h-12 rounded-2xl bg-amber-400 text-neutral-950 font-bold text-sm hover:bg-amber-300 disabled:opacity-50 flex items-center justify-center gap-2"
-          >
-            <RefreshCw className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} />
-            {busy ? 'Saving backup key securely…' : 'Create / Replace Backup Owner Key'}
-          </button>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={() => void createOrReplaceBackup()}
+              disabled={busy}
+              className="min-h-12 rounded-2xl bg-amber-400 text-neutral-950 font-bold text-sm hover:bg-amber-300 disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              <RefreshCw className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} />
+              {busy ? 'Saving…' : 'Create / Replace Backup'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void revokeBackup()}
+              disabled={busy || !backupKey}
+              className="min-h-12 rounded-2xl border border-rose-400/30 bg-rose-500/10 text-rose-200 font-bold text-sm hover:bg-rose-500/20 disabled:opacity-40 flex items-center justify-center gap-2"
+            >
+              <Trash2 className="w-4 h-4" />
+              Revoke Backup Key
+            </button>
+          </div>
 
           {message && (
             <div role="status" aria-live="polite" className="rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs text-neutral-200">
