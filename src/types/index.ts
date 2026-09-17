@@ -93,10 +93,7 @@ export interface Archive {
   contributionMode: ContributionMode;
   editorPinHash?: string;
   viewerPinHash?: string;
-  /** Permanent first owner credential. This hash is never replaced. */
   recoveryKeyHash: string;
-  /** Optional owner-created backup credential. Rotating it never affects recoveryKeyHash. */
-  backupRecoveryKeyHash?: string;
   deploymentStatus: DeploymentStatus;
   /** Platform-owner control that removes a public archive from Explore without unpublishing it. */
   isHiddenFromExplore?: boolean;
@@ -181,8 +178,19 @@ export interface MediaItem {
   altText?: string;
   eventDate?: string;
   albumId?: string;
-  notes?: MediaNote[];
+  tags: string[];
+  /** Explicit creator-selected highlight, instead of guessing from caption length. */
+  isFeatured?: boolean;
+  /** Optional creator ordering used inside the editor and highlight views. */
   position?: number;
+  notes?: MediaNote[];
+  width?: number;
+  height?: number;
+  duration?: number;
+  /** R2 object metadata. Never contains storage credentials. */
+  storageKey?: string;
+  fileSize?: number;
+  contentType?: string;
   createdAt: string;
 }
 
@@ -191,29 +199,32 @@ export interface Album {
   archiveId: string;
   name: string;
   description?: string;
-  coverMediaId?: string;
-  createdAt: string;
+  coverMediaUrl?: string;
+  position: number;
 }
 
 export interface WallPost {
   id: string;
   archiveId: string;
   authorName: string;
+  authorRole?: string;
   text: string;
   imageUrl?: string;
   cardStyle: WallCardStyle;
+  isPinned: boolean;
   isApproved: boolean;
-  isHidden: boolean;
+  isHidden?: boolean;
+  likesCount: number;
   createdAt: string;
 }
 
 export interface Revision {
   id: string;
   archiveId: string;
-  entityType: 'archive' | 'sections' | 'timeline' | 'members' | 'media' | 'wall';
+  entityType: 'archive' | 'sections' | 'timeline' | 'members' | 'media' | 'wall' | 'full';
   summary: string;
-  actorRole: 'owner' | 'contributor';
-  snapshot: unknown;
+  actorType: 'owner' | 'contributor';
+  snapshotData: any;
   createdAt: string;
 }
 
@@ -224,22 +235,36 @@ export interface UserSession {
   expiresAt: string;
 }
 
+export interface DomainCheckResult {
+  slug: string;
+  available: boolean;
+  reason?: 'reserved' | 'taken' | 'invalid_format' | 'too_short' | 'too_long';
+  suggestedAlternatives?: string[];
+}
+
 export interface AccessHistoryEntry {
   id: string;
   archiveId: string;
   action: 'pin_entry' | 'recovery_key_unlock' | 'editor_save' | 'content_edit' | 'deploy_attempt';
-  actorRole: 'owner' | 'contributor' | 'viewer';
+  actorRole: 'owner' | 'contributor' | 'editor';
   summary: string;
-  success?: boolean;
   ipHint?: string;
   deviceInfo?: string;
+  success: boolean;
   timestamp: string;
+}
+
+export interface AnalyticsEvent {
+  name: string;
+  archiveId?: string;
+  timestamp: string;
+  metadata?: Record<string, string | number | boolean>;
 }
 
 export interface ShareActivity {
   id: string;
   archiveId: string;
-  channel: string;
-  action: string;
+  channel: 'instagram_story' | 'instagram_post' | 'whatsapp' | 'whatsapp_status' | 'native' | 'copy_link' | 'other';
+  action: 'opened' | 'copied' | 'downloaded' | 'shared';
   timestamp: string;
 }
