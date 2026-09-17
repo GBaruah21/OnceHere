@@ -5,9 +5,12 @@ import { apiRouter } from '../server/api.js';
 import { PLATFORM_CONFIG } from '../src/config/platform.js';
 import { db } from '../server/db.js';
 import { getRuntimeReadiness } from '../server/runtime-config.js';
+import { renderArchiveSharePage } from '../server/sharePage.js';
+import { enforceArchiveVideoLimit } from '../server/videoPolicy.js';
+import { ownerKeyRouter } from '../server/ownerKeyRouter.js';
 
 // Vercel invokes this exported app for every /api/* request (see vercel.json).
-// The existing router remains the single source of truth for all API behavior.
+// The existing router remains the single source of truth for ordinary API behavior.
 const app = express();
 
 // Media bytes are uploaded directly to private object storage. Keeping the API
@@ -30,7 +33,14 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.use('/api', apiRouter);
+// Crawler-friendly share bridge. Vercel rewrites /share/:slug here while the
+// archive itself continues to render at /s/:slug through the existing SPA.
+app.get('/api/share', renderArchiveSharePage);
+
+// Owner-key hardening must run before the legacy API routes so backup-key
+// creation/login can override the old disabled-regeneration endpoint while the
+// original master recovery key remains permanently valid.
+app.use('/api', ownerKeyRouter, enforceArchiveVideoLimit, apiRouter);
 
 // API failures must stay JSON so the browser never receives Vercel's HTML error
 // page for an application exception.

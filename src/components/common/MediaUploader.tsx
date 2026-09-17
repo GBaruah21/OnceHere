@@ -16,6 +16,9 @@ import {
 } from 'lucide-react';
 import { compressImageForUpload, IMAGE_SOURCE_LIMIT_BYTES, VIDEO_SOURCE_LIMIT_BYTES } from '../../lib/imageCompression';
 
+const IMAGE_SOURCE_LIMIT_MB = Math.round(IMAGE_SOURCE_LIMIT_BYTES / (1024 * 1024));
+const VIDEO_SOURCE_LIMIT_MB = Math.round(VIDEO_SOURCE_LIMIT_BYTES / (1024 * 1024));
+
 type UploadPhase = 'optimizing' | 'authorizing' | 'direct';
 type UploadPurpose = 'vault' | 'portrait' | 'timeline' | 'wall';
 type MediaKind = 'image' | 'video';
@@ -477,7 +480,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
 
     const maxBytes = isVideoFile ? VIDEO_SOURCE_LIMIT_BYTES : IMAGE_SOURCE_LIMIT_BYTES;
     if (file.size > maxBytes) {
-      setFileError(`${isVideoFile ? 'Video' : 'Image'} is too large. Choose a file of ${isVideoFile ? '20' : '10'} MB or less.`);
+      setFileError(`${isVideoFile ? 'Video' : 'Image'} is too large. Choose a file of ${isVideoFile ? VIDEO_SOURCE_LIMIT_MB : IMAGE_SOURCE_LIMIT_MB} MB or less.`);
       return;
     }
 
@@ -840,7 +843,9 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
                   {isProcessing ? processingText : 'Click to browse or drop file here'}
                 </div>
                 <div className="text-[10px] text-neutral-400">
-                  {acceptMode === 'image' ? 'Images up to 10 MB · preview before adding' : 'Images up to 10 MB · videos up to 20 MB · preview before adding'}
+                  {acceptMode === 'image'
+                    ? `Images up to ${IMAGE_SOURCE_LIMIT_MB} MB · preview before adding`
+                    : `Images up to ${IMAGE_SOURCE_LIMIT_MB} MB · videos up to ${VIDEO_SOURCE_LIMIT_MB} MB · preview before adding`}
                 </div>
               </div>
             </div>

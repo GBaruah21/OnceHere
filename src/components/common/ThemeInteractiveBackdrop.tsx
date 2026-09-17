@@ -19,7 +19,14 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!interactive) return;
+    if (!interactive || typeof window === 'undefined') return;
+
+    // Keep the atmospheric texture, but do not bind cursor animation for people
+    // who request reduced motion or on touch-first/coarse-pointer devices. This
+    // improves accessibility and avoids unnecessary animation work on phones.
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const coarsePointer = window.matchMedia('(pointer: coarse)');
+    if (reducedMotion.matches || coarsePointer.matches) return;
 
     const targetEl = containerRef.current?.parentElement;
     if (!targetEl) return;
@@ -75,8 +82,8 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
       if (frameId === null) frameId = window.requestAnimationFrame(paint);
     };
 
-    targetEl.addEventListener('mousemove', handleMouseMove);
-    targetEl.addEventListener('mouseleave', handleMouseLeave);
+    targetEl.addEventListener('mousemove', handleMouseMove, { passive: true });
+    targetEl.addEventListener('mouseleave', handleMouseLeave, { passive: true });
 
     return () => {
       targetEl.removeEventListener('mousemove', handleMouseMove);
@@ -91,6 +98,8 @@ export const ThemeInteractiveBackdrop: React.FC<ThemeInteractiveBackdropProps> =
   return (
     <div
       ref={containerRef}
+      data-theme-backdrop="true"
+      aria-hidden="true"
       className={`absolute inset-0 overflow-hidden pointer-events-none transition-opacity duration-700 select-none ${className}`}
       style={{
         opacity: opacityMultiplier,

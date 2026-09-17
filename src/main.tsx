@@ -2,12 +2,15 @@ import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import { AppErrorBoundary } from './components/common/AppErrorBoundary.tsx';
+import { OwnerKeySafetyLauncher } from './components/common/OwnerKeySafetyLauncher.tsx';
 import './index.css';
+import './accessibility.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <AppErrorBoundary>
       <App />
+      <OwnerKeySafetyLauncher />
     </AppErrorBoundary>
   </StrictMode>,
 );

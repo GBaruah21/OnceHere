@@ -49,7 +49,6 @@ export function evaluatePin(pin: string): PinStrength {
     };
   }
 
-  // Check repeating digits
   const uniqueDigits = new Set(clean.split('')).size;
   if (uniqueDigits <= 2 && clean.length === 6) {
     return {
@@ -77,58 +76,65 @@ export function evaluatePin(pin: string): PinStrength {
   };
 }
 
-/**
- * Generate a cryptographically random owner recovery key
- * Format: mc_rec_<32-character random string>
- */
-export function generateRecoveryKey(): string {
-  const chars = 'abcdefghjkmnpqrstuvwxyz23456789'; // Base32 without confusing chars (0/O, 1/I/L)
-  let result = 'mc_rec_';
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    const bytes = new Uint8Array(24);
-    crypto.getRandomValues(bytes);
-    for (let i = 0; i < bytes.length; i++) {
-      result += chars[bytes[i] % chars.length];
-      if (i % 6 === 5 && i !== bytes.length - 1) {
-        result += '-';
-      }
-    }
-  } else {
-    // Fallback
-    for (let i = 0; i < 24; i++) {
-      result += chars[Math.floor(Math.random() * chars.length)];
-      if (i % 6 === 5 && i !== 23) {
-        result += '-';
-      }
-    }
+const OWNER_KEY_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+const OWNER_KEY_RANDOM_CHARACTERS = 52; // 52 base32 characters = 260 bits of entropy.
+
+function randomOwnerKeyPayload(): string {
+  if (typeof crypto === 'undefined' || typeof crypto.getRandomValues !== 'function') {
+    throw new Error('Secure key generation is unavailable in this browser. Update the browser and try again.');
   }
-  return result;
+
+  const bytes = new Uint8Array(OWNER_KEY_RANDOM_CHARACTERS);
+  crypto.getRandomValues(bytes);
+  let payload = '';
+  for (let index = 0; index < bytes.length; index += 1) {
+    payload += OWNER_KEY_ALPHABET[bytes[index] % OWNER_KEY_ALPHABET.length];
+    if (index % 6 === 5 && index !== bytes.length - 1) payload += '-';
+  }
+  return payload;
 }
 
 /**
- * Helper to download recovery key as a text file for archive owner
+ * Generate the permanent master owner recovery key at archive creation.
+ * The 52-character base32 payload carries 260 bits of cryptographic entropy.
+ * Its complete UTF-8 length remains below bcrypt's 72-byte input boundary.
  */
-export function downloadRecoveryKeyFile(archiveTitle: string, recoveryKey: string) {
+export function generateRecoveryKey(): string {
+  return `mc_rec_${randomOwnerKeyPayload()}`;
+}
+
+/**
+ * Helper to download an owner recovery key as a text file.
+ * The initial key should be labeled Master; an owner-created secondary key is Backup.
+ */
+export function downloadRecoveryKeyFile(
+  archiveTitle: string,
+  recoveryKey: string,
+  keyLabel = 'Master Owner Recovery Key'
+) {
+  if (!recoveryKey) return;
   const content = `================================================================================
-ONCEHERE ARCHIVE OWNER RECOVERY KEY
+ONCEHERE ${keyLabel.toUpperCase()}
 ================================================================================
 
 Archive Title: ${archiveTitle}
-Generated At: ${new Date().toISOString()}
+Saved At: ${new Date().toISOString()}
+Key Type: ${keyLabel}
 
 RECOVERY KEY:
 ${recoveryKey}
 
 IMPORTANT SECURITY NOTICE:
-- Keep this recovery key safe.
-- If you switch browsers, clear your browser cookies, or lose access, this key
-  is the ONLY way to regain administrative owner rights to your archive.
-- Never share this key with other contributors or in public chat channels.
+- Keep this key private and store the file somewhere you control.
+- The first Master Owner Recovery Key created with the archive is permanent and
+  remains valid even if a Backup Owner Key is later created or replaced.
+- A Backup Owner Key can be replaced only from an authenticated owner session.
+- Contributor/editor and private-viewer PINs never grant permission to replace
+  owner keys.
+- Never share an owner key with contributors or in public/group chats.
 - Contributor and private-viewer PINs are intentionally NOT included in this file.
-  Keeping every access secret together would make a stolen file much more harmful.
-- To restore access: open OnceHere, choose "Recover Archive", paste this key,
-  then open Access & Privacy to set a new contributor or viewer PIN if needed.
-- Share only the appropriate 4 or 6 digit PIN with collaborators or viewers.
+- To restore access: open OnceHere, choose "Recover Archive", and paste either
+  the permanent Master Owner Key or the current Backup Owner Key.
 
 ================================================================================
 `;
@@ -137,21 +143,79 @@ IMPORTANT SECURITY NOTICE:
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   const safeName = archiveTitle.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 30);
+  const kind = keyLabel.toLowerCase().includes('backup') ? 'backup_owner_key' : 'master_owner_key';
   link.href = url;
-  link.download = `recovery_key_${safeName}.txt`;
+  link.download = `${kind}_${safeName}.txt`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
 
+export type WorkspaceRoleHint = 'owner' | 'contributor' | 'viewer' | 'unknown';
+
 /**
- * Local storage / session storage wrapper for owner sessions and editor sessions
+ * Session tokens are signed server-side; this parser is deliberately only a UI
+ * hint. Never use it to authorize an API request or grant a permission. The
+ * server independently verifies every token and role.
+ */
+export function getSessionRoleHint(token: string | null | undefined): WorkspaceRoleHint {
+  if (!token) return 'unknown';
+  const parts = token.split('.');
+  const role = parts[1];
+  return role === 'owner' || role === 'contributor' || role === 'viewer' ? role : 'unknown';
+}
+
+function exposeWorkspaceRoleHint(token: string | null) {
+  if (typeof document === 'undefined') return;
+  const role = getSessionRoleHint(token);
+  if (role === 'unknown') delete document.documentElement.dataset.oncehereWorkspaceRole;
+  else document.documentElement.dataset.oncehereWorkspaceRole = role;
+}
+
+function activeWorkspaceToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  const match = window.location.pathname.match(/^\/workspace\/([^/?#]+)/i);
+  if (!match) return null;
+  let workspaceSlug = match[1];
+  try {
+    workspaceSlug = decodeURIComponent(workspaceSlug);
+  } catch {
+    // Keep the raw slug; malformed URL encoding must not weaken credential precedence.
+  }
+  return sessionStorage.getItem(`mc_workspace_${workspaceSlug}`);
+}
+
+/**
+ * If the current workspace has a newer/different bearer token than the cached
+ * owner token, treat the workspace token as authoritative. This prevents an old
+ * owner session in the same tab from silently upgrading a later contributor
+ * session. The server already enforces the same explicit-bearer precedence.
+ */
+function hasConflictingWorkspaceToken(ownerToken: string | null): boolean {
+  if (!ownerToken) return false;
+  const workspaceToken = activeWorkspaceToken();
+  return Boolean(workspaceToken && workspaceToken !== ownerToken);
+}
+
+/**
+ * Session-only browser cache for sensitive credentials. Server-side ownership
+ * is based on durable hashes and signed sessions; this cache only lets an owner
+ * copy/download a key again during the current browser tab.
  */
 export const SessionStorage = {
   getOwnerToken(archiveId: string): string | null {
     if (typeof window === 'undefined') return null;
-    return sessionStorage.getItem(`mc_owner_${archiveId}`);
+    const ownerToken = sessionStorage.getItem(`mc_owner_${archiveId}`);
+    if (hasConflictingWorkspaceToken(ownerToken)) {
+      // A contributor session has become authoritative for this workspace.
+      // Remove stale owner-only plaintext/session material from the shared tab.
+      sessionStorage.removeItem(`mc_owner_${archiveId}`);
+      sessionStorage.removeItem(`mc_key_${archiveId}`);
+      sessionStorage.removeItem(`mc_backup_key_${archiveId}`);
+      return null;
+    }
+    return ownerToken;
   },
   setOwnerToken(archiveId: string, token: string) {
     if (typeof window === 'undefined') return;
@@ -164,11 +228,14 @@ export const SessionStorage = {
 
   getWorkspaceToken(workspaceSlug: string): string | null {
     if (typeof window === 'undefined') return null;
-    return sessionStorage.getItem(`mc_workspace_${workspaceSlug}`);
+    const token = sessionStorage.getItem(`mc_workspace_${workspaceSlug}`);
+    exposeWorkspaceRoleHint(token);
+    return token;
   },
   setWorkspaceToken(workspaceSlug: string, token: string) {
     if (typeof window === 'undefined') return;
     sessionStorage.setItem(`mc_workspace_${workspaceSlug}`, token);
+    exposeWorkspaceRoleHint(token);
   },
 
   getViewerToken(slug: string): string | null {
@@ -180,13 +247,36 @@ export const SessionStorage = {
     sessionStorage.setItem(`mc_viewer_${slug}`, token);
   },
 
+  /** Plaintext permanent master key, only if this tab has actually seen it. */
   getRecoveryKey(archiveId: string): string | null {
     if (typeof window === 'undefined') return null;
+    const ownerToken = sessionStorage.getItem(`mc_owner_${archiveId}`);
+    if (hasConflictingWorkspaceToken(ownerToken)) return null;
     return sessionStorage.getItem(`mc_key_${archiveId}`);
   },
   setRecoveryKey(archiveId: string, key: string) {
     if (typeof window === 'undefined') return;
     sessionStorage.setItem(`mc_key_${archiveId}`, key);
+  },
+  clearRecoveryKey(archiveId: string) {
+    if (typeof window === 'undefined') return;
+    sessionStorage.removeItem(`mc_key_${archiveId}`);
+  },
+
+  /** Plaintext current backup key, kept separate so it never overwrites the master cache. */
+  getBackupRecoveryKey(archiveId: string): string | null {
+    if (typeof window === 'undefined') return null;
+    const ownerToken = sessionStorage.getItem(`mc_owner_${archiveId}`);
+    if (hasConflictingWorkspaceToken(ownerToken)) return null;
+    return sessionStorage.getItem(`mc_backup_key_${archiveId}`);
+  },
+  setBackupRecoveryKey(archiveId: string, key: string) {
+    if (typeof window === 'undefined') return;
+    sessionStorage.setItem(`mc_backup_key_${archiveId}`, key);
+  },
+  clearBackupRecoveryKey(archiveId: string) {
+    if (typeof window === 'undefined') return;
+    sessionStorage.removeItem(`mc_backup_key_${archiveId}`);
   },
 
   getEditorSession(archiveId: string): { token: string; expiresAt: number } | null {

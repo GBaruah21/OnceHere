@@ -51,11 +51,12 @@ describe('S3-compatible object storage uploads', () => {
 
   it('enforces storage-saving source and per-archive limits', () => {
     expect(R2_LIMITS.imageBytes).toBe(10 * 1024 * 1024);
-    expect(R2_LIMITS.videoBytes).toBe(20 * 1024 * 1024);
+    expect(R2_LIMITS.videoBytes).toBe(59 * 1024 * 1024);
+    expect(R2_LIMITS.maxArchiveVideos).toBe(5);
     expect(R2_LIMITS.maxTotalBytesPerArchive).toBe(500 * 1024 * 1024);
     expect(validateUpload('image/jpeg', R2_LIMITS.imageBytes)).toBe('image');
     expect(validateUpload('video/mp4', R2_LIMITS.videoBytes)).toBe('video');
     expect(() => validateUpload('image/jpeg', R2_LIMITS.imageBytes + 1)).toThrow('10 MB');
-    expect(() => validateUpload('video/mp4', R2_LIMITS.videoBytes + 1)).toThrow('20 MB');
+    expect(() => validateUpload('video/mp4', R2_LIMITS.videoBytes + 1)).toThrow('59 MB');
   });
 });

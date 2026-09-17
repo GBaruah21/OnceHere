@@ -1,6 +1,6 @@
 # OnceHere current limits
 
-Last aligned with production code: 16 September 2026.
+Last aligned with production code: 17 September 2026.
 
 This file describes the limits enforced by the current application. The server-side enforcement source of truth for uploaded media is `server/r2.ts` (`R2_LIMITS`). If this document and the server ever disagree, the server wins.
 
@@ -9,25 +9,30 @@ This file describes the limits enforced by the current application. The server-s
 | Area | Current enforced limit |
 | --- | --- |
 | Source image file | 10 MB maximum |
-| Source video file | 20 MB maximum |
+| Source video file | 59 MB maximum |
 | Media Vault | 100 total attachments, including at most 5 videos |
 | Journey | 20 media attachments, including at most 3 videos |
+| Archive-wide video total | 5 videos maximum across Media Vault + Journey combined |
 | Yearbook | 250 uploaded portrait allowance |
 | Memory Notes / Memory Wall | 5 image-attached notes; videos are not allowed; text-only notes can continue after the image limit |
 | Shared uploaded-media storage | 500 MB maximum physical object-storage usage per archive |
 | Memory Note text | 500 characters |
 
-The section allowances are independent, but all uploaded objects share the same 500 MB physical-media ceiling. Count limits therefore do not guarantee that every slot can be filled with a maximum-size file.
+The section allowances are independent except for videos: Media Vault can contain up to 5 videos and Journey up to 3, but an archive may contain only 5 videos across those two sections combined. All uploaded objects also share the same 500 MB physical-media ceiling. Count limits therefore do not guarantee that every slot can be filled with a maximum-size file.
 
-The maximum number of video slots across the current Journey and Media Vault rules is 8 (3 + 5). With no videos, the listed media/portrait/image-attachment allowances total 375 slots (250 Yearbook + 20 Journey + 100 Vault + 5 Wall). The 500 MB physical storage ceiling normally becomes the practical limit before all slots can contain very large files.
+With no videos, the listed media/portrait/image-attachment allowances total 375 slots (250 Yearbook + 20 Journey + 100 Vault + 5 Wall). The 500 MB physical storage ceiling normally becomes the practical limit before all slots can contain very large files.
 
 ### Image optimization
 
 OnceHere accepts source images up to 10 MB. Non-GIF images that benefit from optimization are resized to a maximum dimension of 2048 px and browser-compressed toward approximately 1.25 MB as high-quality WebP. If re-encoding would make the file larger, the original is kept. Animated GIFs are kept as supplied. Videos are not transcoded by OnceHere.
 
+### Video uploads
+
+Videos up to 59 MB are uploaded directly from the browser to private S3-compatible object storage through a short-lived signed PUT URL. They do not pass through Vercel/Render API JSON. The uploader reports progress and uses an inactivity timeout rather than a tiny fixed total-request timeout. Videos are currently not transcoded or resumable, so keeping the original file locally remains important if a connection is interrupted.
+
 ### Direct media URLs
 
-Direct external image/video file URLs can be attached where the UI allows them. They still count against the relevant section attachment count, but their bytes are hosted externally and therefore do not consume OnceHere object-storage bytes. Ordinary YouTube, Instagram, TikTok, Facebook, X/Twitter page URLs are not direct media files and are rejected by the uploader.
+Direct external image/video file URLs can be attached where the UI allows them. They still count against the relevant section attachment and archive-wide video counts, but their bytes are hosted externally and therefore do not consume OnceHere object-storage bytes. Ordinary YouTube, Instagram, TikTok, Facebook, X/Twitter page URLs are not direct media files and are rejected by the uploader.
 
 ## Archive count
 

@@ -7,6 +7,9 @@ import { apiRouter } from './server/api';
 import { PLATFORM_CONFIG } from './src/config/platform';
 import { db } from './server/db';
 import { getRuntimeReadiness } from './server/runtime-config';
+import { renderArchiveSharePage } from './server/sharePage';
+import { enforceArchiveVideoLimit } from './server/videoPolicy';
+import { ownerKeyRouter } from './server/ownerKeyRouter';
 
 const portFlag = process.argv.indexOf('--port');
 const PORT = Number(portFlag >= 0 ? process.argv[portFlag + 1] : process.env.PORT || 3000);
@@ -36,12 +39,17 @@ async function startServer() {
     });
   });
 
-  // Mount API Router after health so infrastructure checks never trigger a
-  // database load and cannot make a healthy server look unavailable.
-  app.use('/api', apiRouter);
+  // Social crawlers receive archive-specific metadata here and human visitors
+  // immediately continue to the existing /s/:slug SPA route.
+  app.get('/share/:slug', renderArchiveSharePage);
 
-  // Serve public static folder (favicon, icons, etc.)
-  app.use(express.static(path.join(process.cwd(), 'public'), { maxAge: '1d' }));
+  // Mount owner-key protection before the ordinary API router. This keeps the
+  // first master recovery key immutable while allowing an owner-only backup key.
+  app.use('/api', ownerKeyRouter, enforceArchiveVideoLimit, apiRouter);
+
+  // Serve public static folder (favicon, trust pages, icons, etc.). HTML
+  // extensions let /privacy resolve to public/privacy.html outside Vercel too.
+  app.use(express.static(path.join(process.cwd(), 'public'), { maxAge: '1d', extensions: ['html'] }));
 
   // Vite development middleware or production static serving
   if (process.env.NODE_ENV !== 'production') {

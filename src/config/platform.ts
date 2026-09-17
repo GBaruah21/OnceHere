@@ -36,15 +36,17 @@ export const PLATFORM_CONFIG = {
   limits: {
     // File limits
     maxImageSizeMB: 10,
-    maxVideoSizeMB: 20,
+    maxVideoSizeMB: 59,
 
     // Section quotas. These are attachment/portrait allowances, not a single
-    // combined media count. The shared 500 MB archive-storage cap also applies.
+    // combined media count. The shared archive-wide video and 500 MB storage
+    // ceilings also apply.
     maxVaultAttachments: 100,
     maxVaultVideos: 5,
     maxMemberPortraits: 250,
     maxTimelineAttachments: 20,
     maxTimelineVideos: 3,
+    maxArchiveVideos: 5,
     maxWallImageAttachments: 5,
     maxMediaStorageMBPerArchive: 500,
 
