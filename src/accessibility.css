@@ -13,6 +13,19 @@ textarea:focus-visible,
   border-radius: 0.5rem;
 }
 
+/*
+ * Contributor workspaces share the same editor shell, but owner-only security
+ * and deployment controls must not be presented as available actions. The
+ * signed token is still verified by the server for every request; this role
+ * hint only keeps the browser UI aligned with those server permissions.
+ */
+html[data-oncehere-workspace-role="contributor"] #open-deploy-modal-btn,
+html[data-oncehere-workspace-role="contributor"] button[title^="View Security & Access History"],
+html[data-oncehere-workspace-role="contributor"] aside button:has(svg.lucide-key-round),
+html[data-oncehere-workspace-role="contributor"] aside button:has(svg.lucide-shield-check) {
+  display: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto !important;
