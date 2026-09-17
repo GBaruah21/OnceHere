@@ -17,7 +17,11 @@ export default defineConfig({
     command: 'cd .. && npm run dev -- --host 127.0.0.1 --port 4173 --strictPort',
     url: 'http://127.0.0.1:4173/',
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000
+    timeout: 120_000,
+    env: {
+      ...process.env,
+      PLATFORM_ADMIN_KEY: process.env.PLATFORM_ADMIN_KEY || 'oncehere-e2e-admin-key'
+    }
   },
   projects: [
     {
