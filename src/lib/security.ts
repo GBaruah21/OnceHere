@@ -152,6 +152,31 @@ IMPORTANT SECURITY NOTICE:
   URL.revokeObjectURL(url);
 }
 
+function activeWorkspaceToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  const match = window.location.pathname.match(/^\/workspace\/([^/?#]+)/i);
+  if (!match) return null;
+  let workspaceSlug = match[1];
+  try {
+    workspaceSlug = decodeURIComponent(workspaceSlug);
+  } catch {
+    // Keep the raw slug; malformed URL encoding must not weaken credential precedence.
+  }
+  return sessionStorage.getItem(`mc_workspace_${workspaceSlug}`);
+}
+
+/**
+ * If the current workspace has a newer/different bearer token than the cached
+ * owner token, treat the workspace token as authoritative. This prevents an old
+ * owner session in the same tab from silently upgrading a later contributor
+ * session. The server already enforces the same explicit-bearer precedence.
+ */
+function hasConflictingWorkspaceToken(ownerToken: string | null): boolean {
+  if (!ownerToken) return false;
+  const workspaceToken = activeWorkspaceToken();
+  return Boolean(workspaceToken && workspaceToken !== ownerToken);
+}
+
 /**
  * Session-only browser cache for sensitive credentials. Server-side ownership
  * is based on durable hashes and signed sessions; this cache only lets an owner
@@ -160,7 +185,16 @@ IMPORTANT SECURITY NOTICE:
 export const SessionStorage = {
   getOwnerToken(archiveId: string): string | null {
     if (typeof window === 'undefined') return null;
-    return sessionStorage.getItem(`mc_owner_${archiveId}`);
+    const ownerToken = sessionStorage.getItem(`mc_owner_${archiveId}`);
+    if (hasConflictingWorkspaceToken(ownerToken)) {
+      // A contributor session has become authoritative for this workspace.
+      // Remove stale owner-only plaintext/session material from the shared tab.
+      sessionStorage.removeItem(`mc_owner_${archiveId}`);
+      sessionStorage.removeItem(`mc_key_${archiveId}`);
+      sessionStorage.removeItem(`mc_backup_key_${archiveId}`);
+      return null;
+    }
+    return ownerToken;
   },
   setOwnerToken(archiveId: string, token: string) {
     if (typeof window === 'undefined') return;
@@ -192,16 +226,24 @@ export const SessionStorage = {
   /** Plaintext permanent master key, only if this tab has actually seen it. */
   getRecoveryKey(archiveId: string): string | null {
     if (typeof window === 'undefined') return null;
+    const ownerToken = sessionStorage.getItem(`mc_owner_${archiveId}`);
+    if (hasConflictingWorkspaceToken(ownerToken)) return null;
     return sessionStorage.getItem(`mc_key_${archiveId}`);
   },
   setRecoveryKey(archiveId: string, key: string) {
     if (typeof window === 'undefined') return;
     sessionStorage.setItem(`mc_key_${archiveId}`, key);
   },
+  clearRecoveryKey(archiveId: string) {
+    if (typeof window === 'undefined') return;
+    sessionStorage.removeItem(`mc_key_${archiveId}`);
+  },
 
   /** Plaintext current backup key, kept separate so it never overwrites the master cache. */
   getBackupRecoveryKey(archiveId: string): string | null {
     if (typeof window === 'undefined') return null;
+    const ownerToken = sessionStorage.getItem(`mc_owner_${archiveId}`);
+    if (hasConflictingWorkspaceToken(ownerToken)) return null;
     return sessionStorage.getItem(`mc_backup_key_${archiveId}`);
   },
   setBackupRecoveryKey(archiveId: string, key: string) {
