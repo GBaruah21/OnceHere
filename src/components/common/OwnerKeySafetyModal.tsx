@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Check, Copy, Download, KeyRound, RefreshCw, ShieldCheck, Trash2, X } from 'lucide-react';
 import type { Archive } from '../../types';
 import { downloadRecoveryKeyFile, SessionStorage } from '../../lib/security';
@@ -11,15 +11,48 @@ interface OwnerKeySafetyModalProps {
 
 export const OwnerKeySafetyModal: React.FC<OwnerKeySafetyModalProps> = ({ isOpen, onClose, archive }) => {
   const [backupKey, setBackupKey] = useState(() => SessionStorage.getBackupRecoveryKey(archive.id) || '');
+  const [backupConfigured, setBackupConfigured] = useState(Boolean(SessionStorage.getBackupRecoveryKey(archive.id)));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [copied, setCopied] = useState<'master' | 'backup' | null>(null);
 
   const masterKey = useMemo(() => SessionStorage.getRecoveryKey(archive.id) || '', [archive.id, isOpen]);
+  const ownerToken = () => SessionStorage.getOwnerToken(archive.id) || SessionStorage.getWorkspaceToken(archive.workspaceSlug);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const controller = new AbortController();
+    const refreshStatus = async () => {
+      try {
+        const token = ownerToken();
+        const response = await fetch(`/api/archives/${encodeURIComponent(archive.id)}/auth/recovery/status`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          signal: controller.signal
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403) setMessage(data.error || 'Owner access expired. Recover the archive again to manage owner keys.');
+          return;
+        }
+        const configured = Boolean(data.backupConfigured);
+        setBackupConfigured(configured);
+        if (!configured) {
+          SessionStorage.clearBackupRecoveryKey(archive.id);
+          setBackupKey('');
+        } else {
+          setBackupKey(SessionStorage.getBackupRecoveryKey(archive.id) || '');
+        }
+      } catch (error) {
+        if ((error as Error)?.name !== 'AbortError') {
+          setMessage('Could not refresh backup-key status. Your existing owner keys were not changed.');
+        }
+      }
+    };
+    void refreshStatus();
+    return () => controller.abort();
+  }, [archive.id, archive.workspaceSlug, isOpen]);
 
   if (!isOpen) return null;
-
-  const ownerToken = () => SessionStorage.getOwnerToken(archive.id) || SessionStorage.getWorkspaceToken(archive.workspaceSlug);
 
   const copy = async (value: string, kind: 'master' | 'backup') => {
     if (!value) return;
@@ -53,6 +86,7 @@ export const OwnerKeySafetyModal: React.FC<OwnerKeySafetyModalProps> = ({ isOpen
       }
       SessionStorage.setBackupRecoveryKey(archive.id, data.recoveryKey);
       setBackupKey(data.recoveryKey);
+      setBackupConfigured(true);
       setMessage(data.replacedPreviousBackup
         ? 'Backup Owner Key replaced. The original Master Owner Key still works.'
         : 'Backup Owner Key created. The original Master Owner Key still works.');
@@ -84,6 +118,7 @@ export const OwnerKeySafetyModal: React.FC<OwnerKeySafetyModalProps> = ({ isOpen
       }
       SessionStorage.clearBackupRecoveryKey(archive.id);
       setBackupKey('');
+      setBackupConfigured(false);
       setMessage(data.revoked
         ? 'Backup Owner Key revoked. Your original Master Owner Key still works.'
         : 'No active backup key was stored. Your original Master Owner Key still works.');
@@ -116,7 +151,9 @@ export const OwnerKeySafetyModal: React.FC<OwnerKeySafetyModalProps> = ({ isOpen
       <div className="rounded-xl border border-white/10 bg-black/30 p-3 text-[11px] font-mono text-amber-200 break-all select-all min-h-11">
         {value || (kind === 'master'
           ? 'Master key is not cached in this tab. Recover with the original master key to reveal/download it here.'
-          : 'No backup key is cached in this tab. You may create or replace one below.')}
+          : backupConfigured
+            ? 'An active Backup Owner Key exists, but its plaintext is not cached on this device. You can replace or revoke it below.'
+            : 'No Backup Owner Key is active. You may create one below.')}
       </div>
       <div className="flex flex-wrap gap-2">
         <button
@@ -189,7 +226,7 @@ export const OwnerKeySafetyModal: React.FC<OwnerKeySafetyModalProps> = ({ isOpen
             <button
               type="button"
               onClick={() => void revokeBackup()}
-              disabled={busy || !backupKey}
+              disabled={busy || !backupConfigured}
               className="min-h-12 rounded-2xl border border-rose-400/30 bg-rose-500/10 text-rose-200 font-bold text-sm hover:bg-rose-500/20 disabled:opacity-40 flex items-center justify-center gap-2"
             >
               <Trash2 className="w-4 h-4" />
