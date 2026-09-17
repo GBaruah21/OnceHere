@@ -152,6 +152,118 @@ test('archive-wide video limit spans Journey and Media Vault', async ({ request 
   }
 });
 
+test('creator master key survives editor access and backup-key rotation', async ({ request }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const masterKey = `mc_rec_e2e-master-${suffix}`;
+  const editorPin = '583921';
+  let archiveId = '';
+  let ownerToken = '';
+
+  try {
+    const createdResponse = await request.post('/api/archives', {
+      data: {
+        archiveType: 'school',
+        title: `Ownership E2E ${suffix}`,
+        organizationName: 'OnceHere Ownership E2E',
+        startYear: 2025,
+        endYear: 2026,
+        themeId: 'midnight-cinema',
+        visibility: 'unlisted',
+        contributionMode: 'pin-protected',
+        editorPin,
+        recoveryKey: masterKey
+      }
+    });
+    expect(createdResponse.status()).toBe(201);
+    const created = await createdResponse.json();
+    archiveId = created.archive.id;
+    ownerToken = created.ownerToken;
+
+    const contributorAuth = await request.post(`/api/archives/${archiveId}/auth/pin`, { data: { pin: editorPin } });
+    expect(contributorAuth.ok()).toBeTruthy();
+    const contributorToken = (await contributorAuth.json()).token as string;
+
+    const contributorRotate = await request.post(`/api/archives/${archiveId}/auth/recovery/regenerate`, {
+      headers: { Authorization: `Bearer ${contributorToken}` }
+    });
+    expect(contributorRotate.status()).toBe(403);
+
+    const contributorSettingsAttack = await request.patch(`/api/archives/${archiveId}`, {
+      headers: { Authorization: `Bearer ${contributorToken}` },
+      data: { recoveryKeyHash: 'attacker-controlled', backupRecoveryKeyHash: 'attacker-controlled', title: 'Taken Over' }
+    });
+    expect(contributorSettingsAttack.status()).toBe(403);
+
+    const firstRotation = await request.post(`/api/archives/${archiveId}/auth/recovery/regenerate`, {
+      headers: { Authorization: `Bearer ${ownerToken}` }
+    });
+    expect(firstRotation.ok()).toBeTruthy();
+    const firstRotationBody = await firstRotation.json();
+    const firstBackup = firstRotationBody.recoveryKey as string;
+    expect(firstRotationBody.masterKeyStillValid).toBe(true);
+    expect(firstBackup).toMatch(/^mc_backup_/);
+
+    const firstBackupLogin = await request.post(`/api/archives/${archiveId}/auth/recovery`, {
+      data: { recoveryKey: firstBackup }
+    });
+    expect(firstBackupLogin.ok()).toBeTruthy();
+    expect((await firstBackupLogin.json()).keyKind).toBe('backup');
+
+    const secondRotation = await request.post(`/api/archives/${archiveId}/auth/recovery/regenerate`, {
+      headers: { Authorization: `Bearer ${ownerToken}` }
+    });
+    expect(secondRotation.ok()).toBeTruthy();
+    const secondBackup = (await secondRotation.json()).recoveryKey as string;
+    expect(secondBackup).not.toBe(firstBackup);
+
+    const oldBackupLogin = await request.post(`/api/archives/${archiveId}/auth/recovery`, {
+      data: { recoveryKey: firstBackup }
+    });
+    expect(oldBackupLogin.status()).toBe(401);
+
+    const newBackupLogin = await request.post(`/api/archives/${archiveId}/auth/recovery`, {
+      data: { recoveryKey: secondBackup }
+    });
+    expect(newBackupLogin.ok()).toBeTruthy();
+    expect((await newBackupLogin.json()).keyKind).toBe('backup');
+
+    const masterLogin = await request.post(`/api/archives/${archiveId}/auth/recovery`, {
+      data: { recoveryKey: masterKey }
+    });
+    expect(masterLogin.ok()).toBeTruthy();
+    expect((await masterLogin.json()).keyKind).toBe('master');
+
+    const status = await request.get(`/api/archives/${archiveId}/auth/recovery/status`, {
+      headers: { Authorization: `Bearer ${ownerToken}` }
+    });
+    expect(status.ok()).toBeTruthy();
+    expect(await status.json()).toMatchObject({ masterKeyImmutable: true, backupConfigured: true });
+
+    const revoke = await request.delete(`/api/archives/${archiveId}/auth/recovery/backup`, {
+      headers: { Authorization: `Bearer ${ownerToken}` }
+    });
+    expect(revoke.ok()).toBeTruthy();
+    expect((await revoke.json()).masterKeyStillValid).toBe(true);
+
+    const revokedBackupLogin = await request.post(`/api/archives/${archiveId}/auth/recovery`, {
+      data: { recoveryKey: secondBackup }
+    });
+    expect(revokedBackupLogin.status()).toBe(401);
+
+    const masterStillWorks = await request.post(`/api/archives/${archiveId}/auth/recovery`, {
+      data: { recoveryKey: masterKey }
+    });
+    expect(masterStillWorks.ok()).toBeTruthy();
+    expect((await masterStillWorks.json()).keyKind).toBe('master');
+  } finally {
+    if (archiveId && ownerToken) {
+      await request.delete(`/api/archives/${archiveId}`, {
+        headers: { Authorization: `Bearer ${ownerToken}` }
+      }).catch(() => undefined);
+    }
+  }
+});
+
 test('private archive lifecycle enforces viewer access', async ({ request, page }) => {
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const title = `E2E Archive ${suffix}`;
