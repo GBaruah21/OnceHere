@@ -8,6 +8,7 @@ import { getRuntimeReadiness } from '../server/runtime-config.js';
 import { renderArchiveSharePage } from '../server/sharePage.js';
 import { enforceArchiveVideoLimit } from '../server/videoPolicy.js';
 import { ownerKeyRouter } from '../server/ownerKeyRouter.js';
+import { adminHealthRouter } from '../server/adminHealthRouter.js';
 
 // Vercel invokes this exported app for every /api/* request (see vercel.json).
 // The existing router remains the single source of truth for ordinary API behavior.
@@ -36,6 +37,11 @@ app.get('/api/health', (_req, res) => {
 // Crawler-friendly share bridge. Vercel rewrites /share/:slug here while the
 // archive itself continues to render at /s/:slug through the existing SPA.
 app.get('/api/share', renderArchiveSharePage);
+
+// Keep owner-only operational diagnostics isolated from ordinary archive API
+// behavior. The same private platform-admin key protects Owner Tools and this
+// health/capacity endpoint.
+app.use('/api', adminHealthRouter);
 
 // Owner-key hardening must run before the legacy API routes so backup-key
 // creation/login can override the old disabled-regeneration endpoint while the

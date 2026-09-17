@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Album, Archive, MediaItem, Member, Section, ShareActivity, TimelineEvent, WallPost } from '../../types';
 import { ArchivePublicView } from '../archive/ArchivePublicView';
+import { AdminHealthPanel } from './AdminHealthPanel';
 import {
   ArrowLeft, CalendarDays, ExternalLink, Eye, EyeOff, FileText,
   Save, Search, Share2, ShieldCheck, Trash2, X
@@ -148,7 +149,7 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
           <div>
             <p className="text-amber-400 text-xs font-bold uppercase tracking-widest">Private Owner Access</p>
             <h1 className="text-3xl font-serif font-bold mt-2">OnceHere Owner Tools</h1>
-            <p className="text-sm text-neutral-400 mt-2">Inspect creator archives, preview drafts, and manage Explore visibility.</p>
+            <p className="text-sm text-neutral-400 mt-2">Inspect creator archives, monitor platform health, preview drafts, and manage Explore visibility.</p>
           </div>
           <button onClick={onClose} className="inline-flex items-center gap-2 text-sm px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15">
             <ArrowLeft className="w-4 h-4" />Return
@@ -156,6 +157,8 @@ export function OwnerTools({ ownerKey, onClose }: { ownerKey: string; onClose: (
         </div>
 
         {notice && <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">{notice}</div>}
+
+        <AdminHealthPanel ownerKey={ownerKey} />
 
         <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 sm:p-6 space-y-4">
           <h2 className="text-lg font-bold">Public contact links</h2>

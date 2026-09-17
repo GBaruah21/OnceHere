@@ -9,7 +9,7 @@ This file describes the limits enforced by the current application. The server-s
 | Area | Current enforced limit |
 | --- | --- |
 | Source image file | 10 MB maximum |
-| Source video file | 59 MB maximum |
+| Source video file | 20 MB maximum |
 | Media Vault | 100 total attachments, including at most 5 videos |
 | Journey | 20 media attachments, including at most 3 videos |
 | Archive-wide video total | 5 videos maximum across Media Vault + Journey combined |
@@ -28,7 +28,7 @@ OnceHere accepts source images up to 10 MB. Non-GIF images that benefit from opt
 
 ### Video uploads
 
-Videos up to 59 MB are uploaded directly from the browser to private S3-compatible object storage through a short-lived signed PUT URL. They do not pass through Vercel/Render API JSON. The uploader reports progress and uses an inactivity timeout rather than a tiny fixed total-request timeout. Videos are currently not transcoded or resumable, so keeping the original file locally remains important if a connection is interrupted.
+Videos up to 20 MB are uploaded directly from the browser to private S3-compatible object storage through a short-lived signed PUT URL. They do not pass through Vercel/Render API JSON. The uploader reports progress and uses an inactivity timeout rather than a tiny fixed total-request timeout. Videos are currently not transcoded or resumable, so keeping the original file locally remains important if a connection is interrupted.
 
 ### Direct media URLs
 

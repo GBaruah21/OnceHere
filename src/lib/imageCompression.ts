@@ -1,7 +1,7 @@
 const MB = 1024 * 1024;
 
 export const IMAGE_SOURCE_LIMIT_BYTES = 10 * MB;
-export const VIDEO_SOURCE_LIMIT_BYTES = 59 * MB;
+export const VIDEO_SOURCE_LIMIT_BYTES = 20 * MB;
 export const IMAGE_COMPRESSION_TARGET_BYTES = 1.25 * MB;
 const MAX_IMAGE_DIMENSION = 2048;
 
