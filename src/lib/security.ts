@@ -152,6 +152,27 @@ IMPORTANT SECURITY NOTICE:
   URL.revokeObjectURL(url);
 }
 
+export type WorkspaceRoleHint = 'owner' | 'contributor' | 'viewer' | 'unknown';
+
+/**
+ * Session tokens are signed server-side; this parser is deliberately only a UI
+ * hint. Never use it to authorize an API request or grant a permission. The
+ * server independently verifies every token and role.
+ */
+export function getSessionRoleHint(token: string | null | undefined): WorkspaceRoleHint {
+  if (!token) return 'unknown';
+  const parts = token.split('.');
+  const role = parts[1];
+  return role === 'owner' || role === 'contributor' || role === 'viewer' ? role : 'unknown';
+}
+
+function exposeWorkspaceRoleHint(token: string | null) {
+  if (typeof document === 'undefined') return;
+  const role = getSessionRoleHint(token);
+  if (role === 'unknown') delete document.documentElement.dataset.oncehereWorkspaceRole;
+  else document.documentElement.dataset.oncehereWorkspaceRole = role;
+}
+
 function activeWorkspaceToken(): string | null {
   if (typeof window === 'undefined') return null;
   const match = window.location.pathname.match(/^\/workspace\/([^/?#]+)/i);
@@ -207,11 +228,14 @@ export const SessionStorage = {
 
   getWorkspaceToken(workspaceSlug: string): string | null {
     if (typeof window === 'undefined') return null;
-    return sessionStorage.getItem(`mc_workspace_${workspaceSlug}`);
+    const token = sessionStorage.getItem(`mc_workspace_${workspaceSlug}`);
+    exposeWorkspaceRoleHint(token);
+    return token;
   },
   setWorkspaceToken(workspaceSlug: string, token: string) {
     if (typeof window === 'undefined') return;
     sessionStorage.setItem(`mc_workspace_${workspaceSlug}`, token);
+    exposeWorkspaceRoleHint(token);
   },
 
   getViewerToken(slug: string): string | null {
