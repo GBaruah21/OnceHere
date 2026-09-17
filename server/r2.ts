@@ -12,7 +12,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 export const R2_LIMITS = {
   imageBytes: 10 * 1024 * 1024,
-  videoBytes: 59 * 1024 * 1024,
+  videoBytes: 20 * 1024 * 1024,
   // Media Vault: 100 total attachments, of which at most 5 may be videos.
   maxVaultAttachments: 100,
   maxVaultVideos: 5,
@@ -171,6 +171,31 @@ export async function checkStorageConnection(): Promise<{ connected: boolean; co
       : 'connection-failed';
     return { connected: false, code };
   }
+}
+
+/**
+ * Physical media currently stored by OnceHere in its configured bucket.
+ * This intentionally scans only the archives/ prefix so unrelated bucket
+ * objects cannot distort the product-usage number shown to the platform owner.
+ */
+export async function getPlatformStorageUsage(): Promise<{ bytes: number; objects: number }> {
+  if (!isR2Configured()) return { bytes: 0, objects: 0 };
+  let continuationToken: string | undefined;
+  let bytes = 0;
+  let objects = 0;
+  do {
+    const page = await client().send(new ListObjectsV2Command({
+      Bucket: bucketName(),
+      Prefix: 'archives/',
+      ContinuationToken: continuationToken
+    }));
+    for (const object of page.Contents || []) {
+      bytes += Number(object.Size || 0);
+      objects += 1;
+    }
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return { bytes, objects };
 }
 
 /** Total physical media bytes for one archive, including section attachments. */
