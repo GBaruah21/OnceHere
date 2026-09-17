@@ -10,6 +10,7 @@ import { getRuntimeReadiness } from './server/runtime-config';
 import { renderArchiveSharePage } from './server/sharePage';
 import { enforceArchiveVideoLimit } from './server/videoPolicy';
 import { ownerKeyRouter } from './server/ownerKeyRouter';
+import { adminHealthRouter } from './server/adminHealthRouter';
 
 const portFlag = process.argv.indexOf('--port');
 const PORT = Number(portFlag >= 0 ? process.argv[portFlag + 1] : process.env.PORT || 3000);
@@ -42,6 +43,10 @@ async function startServer() {
   // Social crawlers receive archive-specific metadata here and human visitors
   // immediately continue to the existing /s/:slug SPA route.
   app.get('/share/:slug', renderArchiveSharePage);
+
+  // Keep platform-owner operational diagnostics separate from ordinary archive
+  // routes so Vercel and Render expose the same protected health dashboard.
+  app.use('/api', adminHealthRouter);
 
   // Mount owner-key protection before the ordinary API router. This keeps the
   // first master recovery key immutable while allowing an owner-only backup key.
