@@ -111,7 +111,7 @@ async function matchRecoveryKey(archive: ArchiveWithBackupKey, rawKey: string): 
 function generateBackupOwnerKey(): string {
   const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
   const bytes = crypto.randomBytes(24);
-  let result = 'mc_rec_';
+  let result = 'mc_backup_';
   for (let index = 0; index < bytes.length; index += 1) {
     result += chars[bytes[index] % chars.length];
     if (index % 6 === 5 && index !== bytes.length - 1) result += '-';
@@ -125,6 +125,17 @@ async function loadArchive(id: string): Promise<ArchiveWithBackupKey | undefined
   if (!archive) return undefined;
   await db.ensureArchiveLoaded(id);
   return db.findById(id) as ArchiveWithBackupKey | undefined;
+}
+
+function addOwnerKeyAudit(archiveId: string, req: Request, summary: string) {
+  const info = clientInfo(req);
+  db.addAccessLog(archiveId, {
+    action: 'recovery_key_unlock',
+    actorRole: 'owner',
+    summary,
+    ipHint: info.ipHint,
+    deviceInfo: info.device
+  });
 }
 
 // Specific archive recovery: both permanent master and current backup key work.
@@ -144,14 +155,9 @@ ownerKeyRouter.post('/archives/:id/auth/recovery', async (req: Request, res: Res
     clearRecoveryAttempts(req);
     const token = createSignedToken(archive.id, 'owner', 24 * 30);
     setOwnerCookie(res, token);
-    const info = clientInfo(req);
-    db.addAccessLog(archive.id, {
-      action: 'recovery_key_unlock',
-      actorRole: 'owner',
-      summary: keyKind === 'master' ? 'Master Owner Recovery Key Authenticated' : 'Backup Owner Recovery Key Authenticated',
-      ipHint: info.ipHint,
-      deviceInfo: info.device
-    });
+    addOwnerKeyAudit(archive.id, req, keyKind === 'master'
+      ? 'Master Owner Recovery Key Authenticated'
+      : 'Backup Owner Recovery Key Authenticated');
     void db.persistArchive(archive.id).catch((error) => console.error('Failed to persist owner recovery activity:', error));
     return res.json({ success: true, token, keyKind });
   } catch (error) {
@@ -159,7 +165,9 @@ ownerKeyRouter.post('/archives/:id/auth/recovery', async (req: Request, res: Res
   }
 });
 
-// Universal key login: preserve the existing master-key lookup and add backup-key fallback.
+// Universal key login. The helper can match either key, then we independently
+// identify which credential succeeded so a backup login never overwrites the
+// browser's cached permanent master key.
 ownerKeyRouter.post('/archives/auth/key-access', async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!consumeRecoveryAttempt(req, res)) return;
@@ -169,46 +177,27 @@ ownerKeyRouter.post('/archives/auth/key-access', async (req: Request, res: Respo
     }
 
     await db.ensureLoaded();
-    const primary = await findArchiveAndVerifyKey(key, identifier);
-    let archive = primary.success && primary.archive ? primary.archive as ArchiveWithBackupKey : undefined;
-    let keyKind: RecoveryKeyKind | null = archive ? 'master' : null;
-    let token = primary.success ? primary.token : undefined;
-
+    const match = await findArchiveAndVerifyKey(key, identifier);
+    const archive = match.success && match.archive ? match.archive as ArchiveWithBackupKey : undefined;
     if (!archive) {
-      const cleanKey = normalizeRecoveryKeyInput(key);
-      const candidates = Array.from(db.archives.values())
-        .filter((candidate) => !candidate.deletedAt)
-        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()) as ArchiveWithBackupKey[];
-
-      for (const candidate of candidates) {
-        if (!candidate.backupRecoveryKeyHash) continue;
-        if (await bcrypt.compare(cleanKey, candidate.backupRecoveryKeyHash)) {
-          archive = candidate;
-          keyKind = 'backup';
-          token = createSignedToken(candidate.id, 'owner', 24 * 30);
-          break;
-        }
-      }
-    }
-
-    if (!archive || !token || !keyKind) {
       return res.status(401).json({ success: false, error: 'Invalid recovery key. Enter the complete owner recovery key from your saved file.' });
     }
 
     await db.ensureArchiveLoaded(archive.id);
+    const current = db.findById(archive.id) as ArchiveWithBackupKey;
+    const keyKind = await matchRecoveryKey(current, key);
+    if (!keyKind) {
+      return res.status(401).json({ success: false, error: 'Invalid recovery key. Enter the complete owner recovery key from your saved file.' });
+    }
+
+    const token = match.token || createSignedToken(current.id, 'owner', 24 * 30);
     clearRecoveryAttempts(req);
     setOwnerCookie(res, token);
-    const info = clientInfo(req);
-    db.addAccessLog(archive.id, {
-      action: 'recovery_key_unlock',
-      actorRole: 'owner',
-      summary: keyKind === 'master' ? 'Master Owner Recovery Key Login' : 'Backup Owner Recovery Key Login',
-      ipHint: info.ipHint,
-      deviceInfo: info.device
-    });
-    void db.persistArchive(archive.id).catch((error) => console.error('Failed to persist owner key login activity:', error));
+    addOwnerKeyAudit(current.id, req, keyKind === 'master'
+      ? 'Master Owner Recovery Key Login'
+      : 'Backup Owner Recovery Key Login');
+    void db.persistArchive(current.id).catch((error) => console.error('Failed to persist owner key login activity:', error));
 
-    const current = db.findById(archive.id) as ArchiveWithBackupKey;
     return res.json({
       success: true,
       token,
@@ -216,6 +205,22 @@ ownerKeyRouter.post('/archives/auth/key-access', async (req: Request, res: Respo
       workspaceSlug: current.workspaceSlug,
       slug: current.slug,
       archive: current
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Owner-only status. It reveals no key and no hash.
+ownerKeyRouter.get('/archives/:id/auth/recovery/status', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const archive = await loadArchive(req.params.id);
+    if (!archive) return res.status(404).json({ error: 'Archive not found.' });
+    if (!ownerSessionFor(req, archive.id)) return res.status(403).json({ error: 'Owner access required.' });
+    return res.json({
+      success: true,
+      masterKeyImmutable: true,
+      backupConfigured: Boolean(archive.backupRecoveryKeyHash)
     });
   } catch (error) {
     next(error);
@@ -262,6 +267,46 @@ ownerKeyRouter.post('/archives/:id/auth/recovery/regenerate', async (req: Reques
       masterKeyStillValid: true,
       replacedPreviousBackup: hadBackup
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// An authenticated owner may revoke only the secondary backup key. The original
+// master hash is deliberately never writable through any endpoint.
+ownerKeyRouter.delete('/archives/:id/auth/recovery/backup', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const archive = await loadArchive(req.params.id);
+    if (!archive) return res.status(404).json({ error: 'Archive not found.' });
+    if (!ownerSessionFor(req, archive.id)) return res.status(403).json({ error: 'Owner access required.' });
+
+    if (!archive.backupRecoveryKeyHash) {
+      return res.json({ success: true, revoked: false, masterKeyStillValid: true });
+    }
+
+    const previousBackupHash = archive.backupRecoveryKeyHash;
+    const previousUpdatedAt = archive.updatedAt;
+    archive.backupRecoveryKeyHash = undefined;
+    archive.updatedAt = new Date().toISOString();
+
+    try {
+      await db.persistArchive(archive.id);
+    } catch (error) {
+      archive.backupRecoveryKeyHash = previousBackupHash;
+      archive.updatedAt = previousUpdatedAt;
+      return res.status(503).json({ error: 'The backup key could not be revoked durably. Existing owner keys are unchanged.' });
+    }
+
+    const info = clientInfo(req);
+    db.addAccessLog(archive.id, {
+      action: 'content_edit',
+      actorRole: 'owner',
+      summary: 'Revoked Backup Owner Recovery Key',
+      ipHint: info.ipHint,
+      deviceInfo: info.device
+    });
+    void db.persistArchive(archive.id).catch(() => undefined);
+    return res.json({ success: true, revoked: true, masterKeyStillValid: true });
   } catch (error) {
     next(error);
   }
