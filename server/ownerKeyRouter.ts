@@ -62,17 +62,22 @@ function setOwnerCookie(res: Response, token: string) {
   });
 }
 
+/**
+ * Explicit bearer credentials are authoritative. If a caller supplies a
+ * contributor/viewer bearer token, an older owner cookie in the same browser
+ * must never silently upgrade that request to owner privileges.
+ */
 function ownerSessionFor(req: Request, archiveId: string): boolean {
-  const bearer = req.headers.authorization;
-  const candidates = [
-    bearer?.startsWith('Bearer ') ? bearer.slice(7) : '',
-    req.cookies?.mc_owner_token
-  ].filter((token): token is string => Boolean(token));
-
-  return candidates.some((token) => {
-    const verified = verifySignedToken(token);
+  const authorization = req.headers.authorization;
+  if (authorization?.startsWith('Bearer ')) {
+    const verified = verifySignedToken(authorization.slice(7));
     return verified.valid && verified.archiveId === archiveId && verified.role === 'owner';
-  });
+  }
+
+  const cookieToken = req.cookies?.mc_owner_token;
+  if (!cookieToken) return false;
+  const verified = verifySignedToken(cookieToken);
+  return verified.valid && verified.archiveId === archiveId && verified.role === 'owner';
 }
 
 function recoveryRateKey(req: Request) {
@@ -110,12 +115,13 @@ async function matchRecoveryKey(archive: ArchiveWithBackupKey, rawKey: string): 
 
 function generateBackupOwnerKey(): string {
   const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
-  const bytes = crypto.randomBytes(24);
+  const bytes = crypto.randomBytes(52); // 52 base32 characters = 260 bits.
   let result = 'mc_backup_';
   for (let index = 0; index < bytes.length; index += 1) {
     result += chars[bytes[index] % chars.length];
     if (index % 6 === 5 && index !== bytes.length - 1) result += '-';
   }
+  // Prefix + payload + separators = 70 bytes, below bcrypt's 72-byte boundary.
   return result;
 }
 
