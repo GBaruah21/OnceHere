@@ -49,7 +49,6 @@ export function evaluatePin(pin: string): PinStrength {
     };
   }
 
-  // Check repeating digits
   const uniqueDigits = new Set(clean.split('')).size;
   if (uniqueDigits <= 2 && clean.length === 6) {
     return {
@@ -77,32 +76,31 @@ export function evaluatePin(pin: string): PinStrength {
   };
 }
 
+const OWNER_KEY_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+const OWNER_KEY_RANDOM_CHARACTERS = 52; // 52 base32 characters = 260 bits of entropy.
+
+function randomOwnerKeyPayload(): string {
+  if (typeof crypto === 'undefined' || typeof crypto.getRandomValues !== 'function') {
+    throw new Error('Secure key generation is unavailable in this browser. Update the browser and try again.');
+  }
+
+  const bytes = new Uint8Array(OWNER_KEY_RANDOM_CHARACTERS);
+  crypto.getRandomValues(bytes);
+  let payload = '';
+  for (let index = 0; index < bytes.length; index += 1) {
+    payload += OWNER_KEY_ALPHABET[bytes[index] % OWNER_KEY_ALPHABET.length];
+    if (index % 6 === 5 && index !== bytes.length - 1) payload += '-';
+  }
+  return payload;
+}
+
 /**
- * Generate a cryptographically random owner recovery key for initial creation.
- * Format: mc_rec_<24-character random string with readability separators>
+ * Generate the permanent master owner recovery key at archive creation.
+ * The 52-character base32 payload carries 260 bits of cryptographic entropy.
+ * Its complete UTF-8 length remains below bcrypt's 72-byte input boundary.
  */
 export function generateRecoveryKey(): string {
-  const chars = 'abcdefghjkmnpqrstuvwxyz23456789'; // Base32 without confusing chars (0/O, 1/I/L)
-  let result = 'mc_rec_';
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    const bytes = new Uint8Array(24);
-    crypto.getRandomValues(bytes);
-    for (let i = 0; i < bytes.length; i++) {
-      result += chars[bytes[i] % chars.length];
-      if (i % 6 === 5 && i !== bytes.length - 1) {
-        result += '-';
-      }
-    }
-  } else {
-    // Development-only fallback for browsers without Web Crypto.
-    for (let i = 0; i < 24; i++) {
-      result += chars[Math.floor(Math.random() * chars.length)];
-      if (i % 6 === 5 && i !== 23) {
-        result += '-';
-      }
-    }
-  }
-  return result;
+  return `mc_rec_${randomOwnerKeyPayload()}`;
 }
 
 /**
