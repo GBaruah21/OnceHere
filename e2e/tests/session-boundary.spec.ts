@@ -44,19 +44,25 @@ test('a contributor workspace token cannot inherit a stale owner token or cached
     }, { archiveId, workspaceSlug, ownerToken, contributorToken, masterKey });
 
     await page.goto(`/workspace/${workspaceSlug}`);
-    await expect(page.getByText('Owner Studio Active')).toBeVisible();
+    await expect(page.getByRole('button', { name: /Visual Themes/i })).toBeVisible();
 
     const cached = await page.evaluate(({ archiveId, workspaceSlug }) => ({
       owner: sessionStorage.getItem(`mc_owner_${archiveId}`),
       master: sessionStorage.getItem(`mc_key_${archiveId}`),
       backup: sessionStorage.getItem(`mc_backup_key_${archiveId}`),
-      workspace: sessionStorage.getItem(`mc_workspace_${workspaceSlug}`)
+      workspace: sessionStorage.getItem(`mc_workspace_${workspaceSlug}`),
+      roleHint: document.documentElement.dataset.oncehereWorkspaceRole
     }), { archiveId, workspaceSlug });
 
     expect(cached.workspace).toBe(contributorToken);
     expect(cached.owner).toBeNull();
     expect(cached.master).toBeNull();
     expect(cached.backup).toBeNull();
+    expect(cached.roleHint).toBe('contributor');
+
+    await expect(page.locator('#open-deploy-modal-btn')).toBeHidden();
+    await expect(page.getByRole('button', { name: /Access & Privacy/i })).toBeHidden();
+    await expect(page.getByRole('button', { name: /Access Log/i })).toBeHidden();
     await expect(page.getByRole('button', { name: 'Open owner key safety' })).toHaveCount(0);
   } finally {
     if (archiveId && ownerToken) {
