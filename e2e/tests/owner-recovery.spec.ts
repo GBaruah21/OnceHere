@@ -38,6 +38,12 @@ test('master owner key remains permanent while backup keys rotate owner-only', a
     });
     expect(contributorRotate.status()).toBe(403);
 
+    const contributorSettingsAttack = await request.patch(`/api/archives/${archiveId}`, {
+      headers: { Authorization: `Bearer ${contributorToken}` },
+      data: { recoveryKeyHash: 'attacker', backupRecoveryKeyHash: 'attacker', title: 'Taken Over' }
+    });
+    expect(contributorSettingsAttack.status()).toBe(403);
+
     const firstBackupResponse = await request.post(`/api/archives/${archiveId}/auth/recovery/regenerate`, {
       headers: { Authorization: `Bearer ${ownerToken}` }
     });
@@ -45,7 +51,7 @@ test('master owner key remains permanent while backup keys rotate owner-only', a
     const firstBackupBody = await firstBackupResponse.json();
     expect(firstBackupBody.keyKind).toBe('backup');
     expect(firstBackupBody.masterKeyStillValid).toBe(true);
-    expect(firstBackupBody.recoveryKey).toMatch(/^mc_rec_/);
+    expect(firstBackupBody.recoveryKey).toMatch(/^mc_backup_/);
     const firstBackup = firstBackupBody.recoveryKey as string;
 
     const anonymous = await playwrightRequest.newContext({ baseURL: 'http://127.0.0.1:4173' });
@@ -85,6 +91,17 @@ test('master owner key remains permanent while backup keys rotate owner-only', a
       });
       expect(newBackupLogin.ok()).toBeTruthy();
       expect((await newBackupLogin.json()).keyKind).toBe('backup');
+
+      const revoke = await anonymous.delete(`/api/archives/${archiveId}/auth/recovery/backup`, {
+        headers: { Authorization: `Bearer ${masterLoginBody.token}` }
+      });
+      expect(revoke.ok()).toBeTruthy();
+      expect((await revoke.json()).masterKeyStillValid).toBe(true);
+
+      const revokedBackupLogin = await anonymous.post('/api/archives/auth/key-access', {
+        data: { key: secondBackup, identifier: archiveId }
+      });
+      expect(revokedBackupLogin.status()).toBe(401);
 
       const masterStillWorks = await anonymous.post('/api/archives/auth/key-access', {
         data: { key: masterKey, identifier: archiveId }
