@@ -243,6 +243,15 @@ export default function App() {
             <button onClick={() => setActiveArchiveLoadAttempt((attempt) => attempt + 1)} className="min-h-11 px-5 py-2.5 rounded-xl bg-amber-400 text-neutral-950 text-xs font-bold hover:brightness-110 inline-flex items-center gap-2">
               <RefreshCw className="w-4 h-4" /> Retry
             </button>
+            <button
+              onClick={() => {
+                navigateTo('/');
+                setIsKeyAccessModalOpen(true);
+              }}
+              className="min-h-11 px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold text-white transition-colors inline-flex items-center gap-2"
+            >
+              <Lock className="w-4 h-4" /> Recover owner access
+            </button>
             <button onClick={() => window.location.reload()} className="min-h-11 px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold text-white transition-colors">Refresh page</button>
             <button onClick={() => navigateTo('/')} className="min-h-11 px-5 py-2.5 rounded-xl border border-white/10 hover:bg-white/10 text-xs font-semibold text-neutral-300 transition-colors">Return to platform</button>
           </div>
