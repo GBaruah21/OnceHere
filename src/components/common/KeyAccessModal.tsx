@@ -122,11 +122,12 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
 
           <div className="space-y-4">
             <div>
-              <label className="block text-xs font-semibold text-neutral-200 mb-1.5 flex items-center justify-between">
+              <label htmlFor="owner-recovery-key" className="block text-xs font-semibold text-neutral-200 mb-1.5 flex items-center justify-between">
                 <span>Owner Recovery Key *</span>
               </label>
               <div className="relative">
                 <input
+                  id="owner-recovery-key"
                   type="text"
                   value={archiveKey}
                   onChange={(e) => {
@@ -145,13 +146,14 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center justify-between">
+              <label htmlFor="archive-recovery-identifier" className="block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center justify-between">
                 <span>
                   Archive Slug, Title, or URL <span className="text-neutral-500 font-normal">(Optional)</span>
                 </span>
                 <span className="text-[10px] text-neutral-400">Auto-detected if left blank</span>
               </label>
               <input
+                id="archive-recovery-identifier"
                 type="text"
                 value={identifier}
                 onChange={(e) => {
