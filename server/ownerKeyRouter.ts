@@ -105,6 +105,22 @@ function clearRecoveryAttempts(req: Request) {
   db.rateLimits.delete(recoveryRateKey(req));
 }
 
+/**
+ * A freshly issued owner token must be durable before it leaves this request.
+ * On serverless hosts the next workspace request may land on another instance;
+ * returning first and persisting in the background creates a real login race.
+ */
+async function persistIssuedOwnerSession(archiveId: string, token: string): Promise<boolean> {
+  try {
+    await db.persistArchive(archiveId);
+    return true;
+  } catch (error) {
+    db.sessions.delete(token);
+    console.error('Failed to persist newly issued owner session:', error);
+    return false;
+  }
+}
+
 async function matchRecoveryKey(archive: ArchiveWithBackupKey, rawKey: string): Promise<RecoveryKeyKind | null> {
   const key = normalizeRecoveryKeyInput(rawKey);
   if (!key) return null;
@@ -160,11 +176,15 @@ ownerKeyRouter.post('/archives/:id/auth/recovery', async (req: Request, res: Res
 
     clearRecoveryAttempts(req);
     const token = createSignedToken(archive.id, 'owner', 24 * 30);
-    setOwnerCookie(res, token);
     addOwnerKeyAudit(archive.id, req, keyKind === 'master'
       ? 'Master Owner Recovery Key Authenticated'
       : 'Backup Owner Recovery Key Authenticated');
-    void db.persistArchive(archive.id).catch((error) => console.error('Failed to persist owner recovery activity:', error));
+    if (!await persistIssuedOwnerSession(archive.id, token)) {
+      return res.status(503).json({
+        error: 'Owner session could not be saved durably. Your recovery key is still valid; please try again.'
+      });
+    }
+    setOwnerCookie(res, token);
     return res.json({ success: true, token, keyKind });
   } catch (error) {
     next(error);
@@ -198,11 +218,16 @@ ownerKeyRouter.post('/archives/auth/key-access', async (req: Request, res: Respo
 
     const token = match.token || createSignedToken(current.id, 'owner', 24 * 30);
     clearRecoveryAttempts(req);
-    setOwnerCookie(res, token);
     addOwnerKeyAudit(current.id, req, keyKind === 'master'
       ? 'Master Owner Recovery Key Login'
       : 'Backup Owner Recovery Key Login');
-    void db.persistArchive(current.id).catch((error) => console.error('Failed to persist owner key login activity:', error));
+    if (!await persistIssuedOwnerSession(current.id, token)) {
+      return res.status(503).json({
+        success: false,
+        error: 'Owner session could not be saved durably. Your recovery key is still valid; please try again.'
+      });
+    }
+    setOwnerCookie(res, token);
 
     return res.json({
       success: true,

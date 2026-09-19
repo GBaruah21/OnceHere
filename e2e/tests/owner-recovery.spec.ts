@@ -119,3 +119,48 @@ test('master owner key remains permanent while backup keys rotate owner-only', a
     }
   }
 });
+
+test('owner recovery opens the Studio workspace immediately with the issued durable session', async ({ page, request }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const masterKey = `mc_rec_ui-${suffix}-owner-workspace`;
+  let archiveId = '';
+  let workspaceSlug = '';
+  let cleanupToken = '';
+
+  try {
+    const createdResponse = await request.post('/api/archives', {
+      data: {
+        archiveType: 'school',
+        title: `Owner Workspace Handoff ${suffix}`,
+        organizationName: 'OnceHere Session Handoff E2E',
+        startYear: 2025,
+        endYear: 2026,
+        themeId: 'midnight-cinema',
+        visibility: 'unlisted',
+        contributionMode: 'owner-only',
+        recoveryKey: masterKey
+      }
+    });
+    expect(createdResponse.status()).toBe(201);
+    const created = await createdResponse.json();
+    archiveId = created.archive.id;
+    workspaceSlug = created.workspaceSlug;
+    cleanupToken = created.ownerToken;
+
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Key Access' }).click();
+    await page.getByLabel('Owner Recovery Key *').fill(masterKey);
+    await page.getByLabel(/Archive Slug, Title, or URL/i).fill(workspaceSlug);
+    await page.getByRole('button', { name: /Unlock & Open Studio/i }).click();
+
+    await expect(page).toHaveURL(new RegExp(`/workspace/${workspaceSlug}$`));
+    await expect(page.getByText(workspaceSlug, { exact: true })).toBeVisible();
+    await expect(page.getByText('Could not open this workspace')).toHaveCount(0);
+  } finally {
+    if (archiveId && cleanupToken) {
+      await request.delete(`/api/archives/${archiveId}`, {
+        headers: { Authorization: `Bearer ${cleanupToken}` }
+      }).catch(() => undefined);
+    }
+  }
+});

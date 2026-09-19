@@ -135,7 +135,11 @@ apiRouter.use(async (req, res, next) => {
         || responseBody.archive?.id
         || responseBody.archiveId;
       const persistence = archiveId ? db.persistArchive(archiveId) : db.persist();
-      const nonBlockingAuth = req.path.includes('/auth/');
+      // Session-issuing auth responses (contributor/viewer PIN and legacy owner
+      // recovery) must wait for Turso. Otherwise an immediate follow-up request
+      // can land on another serverless instance before the new token exists there.
+      // session-cookie does not issue a new session, so it may stay non-blocking.
+      const nonBlockingAuth = req.path.endsWith('/auth/session-cookie');
 
       if (nonBlockingAuth) {
         sendJson(body);
