@@ -126,9 +126,9 @@ adminHealthRouter.get('/admin/health', async (req: Request, res: Response) => {
   if (budget.bytes == null) {
     issues.push({ level: 'info', message: 'No storage budget is configured, so remaining-capacity percentage is unavailable.' });
   }
-  if (!cdn.enabled) {
-    issues.push({ level: 'info', message: 'Media CDN is intentionally disabled; signed object-storage delivery remains active.' });
-  }
+  // A disabled CDN is not an operational issue. Direct signed object-storage
+  // delivery is the supported production path and is already checked above.
+  // Keep CDN state visible in Live services without inflating the issue count.
 
   const critical = issues.some((issue) => issue.level === 'critical');
   const warning = issues.some((issue) => issue.level === 'warning');
