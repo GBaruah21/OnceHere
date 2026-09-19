@@ -16,6 +16,7 @@ test('platform health endpoint stays private and reports the 20 MB video limit',
   expect(body.storage).toHaveProperty('remainingBytes');
   expect(body.services).toHaveProperty('databaseConfigured');
   expect(body.monitoring.persistentRuntimeErrorHistory).toBe(false);
+  expect(body.issues.some((issue: { message?: string }) => /cdn.*disabled/i.test(issue.message || ''))).toBe(false);
 });
 
 test('owner tools displays live system health and current limits', async ({ page }) => {
@@ -30,4 +31,5 @@ test('owner tools displays live system health and current limits', async ({ page
   await expect(page.getByText('Video file', { exact: true })).toBeVisible();
   await expect(page.getByText('20.0 MB', { exact: true })).toBeVisible();
   await expect(page.getByText(/Historical function\/runtime errors remain in the active hosting provider logs/i)).toBeVisible();
+  await expect(page.getByText(/Media CDN is intentionally disabled/i)).toHaveCount(0);
 });
