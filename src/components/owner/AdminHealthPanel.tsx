@@ -263,7 +263,7 @@ export function AdminHealthPanel({ ownerKey }: { ownerKey: string }) {
                 ))}
               </div>
             )}
-            <p className="text-[11px] leading-relaxed text-neutral-600">{health.monitoring.note}</p>
+            <p className="text-[11px] leading-relaxed text-neutral-500">{health.monitoring.note}</p>
           </div>
 
           <div className="text-[11px] text-neutral-600">
