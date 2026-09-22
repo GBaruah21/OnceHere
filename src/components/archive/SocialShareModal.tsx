@@ -24,6 +24,7 @@ import { THEMES } from '../../config/themes';
 import { InstagramStoryModal } from './InstagramStoryModal';
 import { PLATFORM_CONFIG } from '../../config/platform';
 import { recordArchiveShare } from '../../lib/share';
+import { copyTextToClipboard } from '../../lib/clipboard';
 
 interface SocialShareModalProps {
   isOpen: boolean;
@@ -66,19 +67,7 @@ export const SocialShareModal: React.FC<SocialShareModalProps> = ({
   // Copy to clipboard with visual feedback & confetti
   const handleCopyLink = async () => {
     try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(shareUrl);
-      } else {
-        const textArea = document.createElement('textarea');
-        textArea.value = shareUrl;
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-999999px';
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-      }
+      await copyTextToClipboard(shareUrl);
 
       setCopied(true);
       recordArchiveShare(archive.id, 'copy_link', 'copied');
@@ -96,7 +85,7 @@ export const SocialShareModal: React.FC<SocialShareModalProps> = ({
   const handleCopyEmbed = async () => {
     const embedCode = `<iframe src="${shareUrl}" width="100%" height="700" frameborder="0" allowfullscreen style="border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,0.2);"></iframe>`;
     try {
-      await navigator.clipboard.writeText(embedCode);
+      await copyTextToClipboard(embedCode);
       setCopiedEmbed(true);
       setTimeout(() => setCopiedEmbed(false), 2500);
     } catch (err) {
@@ -108,9 +97,7 @@ export const SocialShareModal: React.FC<SocialShareModalProps> = ({
   const handleCopyWhatsAppStatus = async () => {
     const statusText = `🎓 ${archive.title} (${batchLabel})\n"${archive.subtitle || 'Every memory etched in stone.'}"\n\nExplore our batch memories & sign the wall:\n${shareUrl}\n\n${PLATFORM_CONFIG.attribution.shareCredit}`;
     try {
-      if (navigator.clipboard) {
-        await navigator.clipboard.writeText(statusText);
-      }
+      await copyTextToClipboard(statusText);
       setCopiedStatus(true);
       recordArchiveShare(archive.id, 'whatsapp_status', 'copied');
       confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 } });

@@ -215,6 +215,8 @@ export interface WallPost {
   isApproved: boolean;
   isHidden?: boolean;
   likesCount: number;
+  /** Optional creator-selected ordering; older notes fall back to pinned/date order. */
+  position?: number;
   createdAt: string;
 }
 

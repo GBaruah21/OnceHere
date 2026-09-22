@@ -13,7 +13,7 @@ function sessionSecret(): string {
   const configured = getSessionSecret();
   if (configured) return configured;
   if (process.env.NODE_ENV === 'production') {
-    throw new Error('Production requires SESSION_SECRET (or a stable Supabase secret) so owner sessions survive restarts.');
+    throw new Error('Production requires SESSION_SECRET or stable Turso credentials so owner sessions survive restarts.');
   }
   developmentSessionSecret ||= crypto.randomBytes(32).toString('hex');
   return developmentSessionSecret;

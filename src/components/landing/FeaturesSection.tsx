@@ -25,8 +25,8 @@ export const FeaturesSection: React.FC = () => {
     },
     {
       icon: Palette,
-      title: 'Five Distinct Visual Themes',
-      description: 'Midnight Cinema, Aurora Glass, Paper & Polaroids, Neon Afterglow, and Forest Chronicle with refined tokens and textures.',
+      title: 'Six Distinct Visual Themes',
+      description: 'Midnight Cinema, Aurora Glass, Paper & Polaroids, Neon Afterglow, Forest Chronicle, and Heritage Noir with refined tokens and textures.',
       tag: 'Aesthetic'
     },
     {

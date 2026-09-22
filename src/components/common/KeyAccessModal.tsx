@@ -56,7 +56,15 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
         })
       });
 
-      const data = await res.json();
+      const responseText = await res.text();
+      let data: any = {};
+      try {
+        data = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        throw new Error(res.ok
+          ? 'The server returned an unreadable response. Please try again.'
+          : 'Owner recovery is temporarily unavailable. Your key has not been rejected; please try again.');
+      }
 
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Authentication failed. Please check your credentials.');
@@ -78,6 +86,8 @@ export const KeyAccessModal: React.FC<KeyAccessModalProps> = ({
       }
 
       onSuccess(data.archive, data.workspaceSlug, data.token);
+      setArchiveKey('');
+      setErrorMsg(null);
       onClose();
     } catch (err: any) {
       setErrorMsg(err.name === 'TimeoutError' || err.name === 'AbortError'

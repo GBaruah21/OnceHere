@@ -1117,6 +1117,45 @@ apiRouter.put('/archives/:id/timeline/reorder', (req: Request, res: Response) =>
   return res.json({ success: true, events });
 });
 
+apiRouter.put('/archives/:id/members/reorder', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const auth = getAuthContext(req);
+  if (auth.archiveId !== id || (auth.role !== 'owner' && auth.role !== 'contributor')) {
+    return res.status(403).json({ error: 'Permission denied.' });
+  }
+  const parsed = z.object({ orderedIds: z.array(z.string().min(1)).max(500) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid member order.' });
+  const members = db.reorderMembers(id, parsed.data.orderedIds);
+  if (!members) return res.status(409).json({ error: 'Members changed. Refresh the list and try reordering again.' });
+  return res.json({ success: true, members });
+});
+
+apiRouter.put('/archives/:id/media/reorder', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const auth = getAuthContext(req);
+  if (auth.archiveId !== id || (auth.role !== 'owner' && auth.role !== 'contributor')) {
+    return res.status(403).json({ error: 'Permission denied.' });
+  }
+  const parsed = z.object({ orderedIds: z.array(z.string().min(1)).max(500) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid media order.' });
+  const items = db.reorderMediaItems(id, parsed.data.orderedIds);
+  if (!items) return res.status(409).json({ error: 'Media changed. Refresh the vault and try reordering again.' });
+  return res.json({ success: true, items });
+});
+
+apiRouter.put('/archives/:id/wall/reorder', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const auth = getAuthContext(req);
+  if (auth.archiveId !== id || (auth.role !== 'owner' && auth.role !== 'contributor')) {
+    return res.status(403).json({ error: 'Owner or editor access is required to reorder Memory Wall notes.' });
+  }
+  const parsed = z.object({ orderedIds: z.array(z.string().min(1)).max(500) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid Memory Wall order.' });
+  const posts = db.reorderWallPosts(id, parsed.data.orderedIds, auth.role);
+  if (!posts) return res.status(409).json({ error: 'Notes changed. Refresh the wall and try reordering again.' });
+  return res.json({ success: true, posts });
+});
+
 apiRouter.patch('/archives/:id/timeline/:eventId', (req: Request, res: Response) => {
   const { id, eventId } = req.params;
   const auth = getAuthContext(req);
@@ -1745,6 +1784,7 @@ apiRouter.post('/archives/:id/wall', (req: Request, res: Response) => {
     isApproved: true,
     isHidden: false,
     likesCount: 0,
+    position: db.getWallPosts(targetId, true).length,
     createdAt: new Date().toISOString()
   };
 

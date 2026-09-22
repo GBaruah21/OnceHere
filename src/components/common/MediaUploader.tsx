@@ -14,7 +14,12 @@ import {
   AlertTriangle,
   Loader2
 } from 'lucide-react';
-import { compressImageForUpload, IMAGE_SOURCE_LIMIT_BYTES, VIDEO_SOURCE_LIMIT_BYTES } from '../../lib/imageCompression';
+import {
+  canUploadOriginalImage,
+  compressImageForUpload,
+  IMAGE_SOURCE_LIMIT_BYTES,
+  VIDEO_SOURCE_LIMIT_BYTES
+} from '../../lib/imageCompression';
 
 const IMAGE_SOURCE_LIMIT_MB = Math.round(IMAGE_SOURCE_LIMIT_BYTES / (1024 * 1024));
 const VIDEO_SOURCE_LIMIT_MB = Math.round(VIDEO_SOURCE_LIMIT_BYTES / (1024 * 1024));
@@ -120,7 +125,13 @@ function uploadErrorMessage(error: unknown): string {
 }
 
 export function directUploadTimeoutMs(file: Pick<File, 'size' | 'type'>): number {
-  if (file.type.startsWith('image/')) return 4_000;
+  // This is an inactivity deadline, not a total upload deadline. Four seconds
+  // was too aggressive for mobile radios that pause briefly while reconnecting
+  // or waking from power saving. Keep images responsive while allowing a slow
+  // connection enough time to begin or resume sending bytes.
+  if (file.type.startsWith('image/')) {
+    return Math.min(45_000, Math.max(15_000, Math.ceil(file.size / (128 * 1024)) * 1_000));
+  }
   return Math.min(90_000, Math.max(30_000, Math.ceil(file.size / (256 * 1024)) * 1_000));
 }
 
@@ -492,10 +503,17 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         setUploadProgress(null);
         uploadFile = await compressImageForUpload(file);
       } catch (error) {
-        setIsProcessing(false);
-        setUploadPhase(null);
-        setFileError(error instanceof Error ? error.message : 'Image compression failed. Please try another image.');
-        return;
+        // Canvas/WebP encoding is not equally reliable in every browser. A
+        // supported original is still safe to upload within the source limit;
+        // optimization is helpful, but it must never make a valid memory
+        // impossible to save.
+        if (!canUploadOriginalImage(file)) {
+          setIsProcessing(false);
+          setUploadPhase(null);
+          setFileError(error instanceof Error ? error.message : 'Image compression failed. Please try another image.');
+          return;
+        }
+        uploadFile = file;
       }
     }
 

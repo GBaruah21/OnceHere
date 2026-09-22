@@ -44,9 +44,17 @@ const ALLOWED_TYPES = new Set([
 // access; this only lets browsers perform the required OPTIONS preflight.
 let corsConfiguredBucket: string | undefined;
 
+export const OBJECT_STORAGE_BROWSER_ORIGINS = [
+  'https://oncehere.vercel.app',
+  // Vercel branch/commit preview hosts. Uploads still require a short-lived,
+  // server-signed PUT URL, so CORS alone grants no bucket write access.
+  'https://*.vercel.app',
+  'https://oncehere-the-forever-home-of-memories.onrender.com'
+] as const;
+
 function required(name: string): string {
   const value = process.env[name]?.trim();
-  if (!value) throw new Error(`R2 is not configured: missing ${name}`);
+  if (!value) throw new Error(`Object storage is not configured: missing ${name}`);
   return value;
 }
 
@@ -115,17 +123,12 @@ async function ensureBrowserCors(): Promise<void> {
         CORSRules: [{
           AllowedHeaders: ['*'],
           AllowedMethods: ['GET', 'HEAD', 'PUT'],
-          AllowedOrigins: [
-            'https://oncehere.vercel.app',
-            'https://oncehere-gbaruah-projects.vercel.app',
-            'https://oncehere-git-main-gbaruah-projects.vercel.app',
-            'https://oncehere-the-forever-home-of-memories.onrender.com'
-          ],
+          AllowedOrigins: [...OBJECT_STORAGE_BROWSER_ORIGINS],
           ExposeHeaders: ['ETag'],
           MaxAgeSeconds: 3600
         }]
       }
-    }));
+    }), { abortSignal: AbortSignal.timeout(4_000) });
     corsConfiguredBucket = bucket;
   } catch (error) {
     // Do not turn a provider-side CORS-management limitation into an outage.

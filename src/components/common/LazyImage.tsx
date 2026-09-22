@@ -11,29 +11,29 @@ interface LazyImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   showSkeleton?: boolean;
 }
 
-const DEFAULT_MEMORY_FALLBACK = 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?w=800&auto=format&fit=crop&q=80';
-
 export const LazyImage: React.FC<LazyImageProps> = ({
   src,
   alt,
   className = '',
   containerClassName = '',
   aspectRatio,
-  fallbackSrc = DEFAULT_MEMORY_FALLBACK,
+  fallbackSrc,
   showSkeleton = true,
   ...props
 }) => {
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
-  const [currentSrc, setCurrentSrc] = useState<string>(src || fallbackSrc);
+  const [currentSrc, setCurrentSrc] = useState<string>(src || fallbackSrc || '');
   const [triedFallback, setTriedFallback] = useState(false);
+  const [retriedMediaRoute, setRetriedMediaRoute] = useState(false);
   const imgRef = useRef<HTMLImageElement | null>(null);
 
   useEffect(() => {
-    setCurrentSrc(src || fallbackSrc);
+    setCurrentSrc(src || fallbackSrc || '');
     setIsLoaded(false);
     setHasError(false);
     setTriedFallback(false);
+    setRetriedMediaRoute(false);
   }, [src, fallbackSrc]);
 
   // Check if image is already cached/complete on mount
@@ -52,7 +52,10 @@ export const LazyImage: React.FC<LazyImageProps> = ({
   };
 
   const handleError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
-    if (!triedFallback && fallbackSrc && currentSrc !== fallbackSrc) {
+    if (!retriedMediaRoute && src.includes('/media-object/')) {
+      setRetriedMediaRoute(true);
+      setCurrentSrc(`${src}${src.includes('?') ? '&' : '?'}retry=${Date.now()}`);
+    } else if (!triedFallback && fallbackSrc && currentSrc !== fallbackSrc) {
       setTriedFallback(true);
       setCurrentSrc(fallbackSrc);
     } else {
