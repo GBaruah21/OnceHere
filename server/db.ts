@@ -654,6 +654,17 @@ export class MemoryDatabase {
     return true;
   }
 
+  reorderMembers(archiveId: string, orderedIds: string[]): Member[] | undefined {
+    const current = this.members.get(archiveId) || [];
+    if (orderedIds.length !== current.length || new Set(orderedIds).size !== current.length) return undefined;
+    const byId = new Map(current.map((member) => [member.id, member]));
+    if (orderedIds.some((id) => !byId.has(id))) return undefined;
+    const reordered = orderedIds.map((id, position) => ({ ...byId.get(id)!, position }));
+    this.members.set(archiveId, reordered);
+    this.addRevision(archiveId, 'members', 'Reordered yearbook members', 'contributor', reordered);
+    return reordered;
+  }
+
   // --- Member Messages ---
   getMemberMessages(archiveId: string, memberId: string): MemberMessage[] {
     const all = this.memberMessages.get(archiveId) || [];
@@ -670,7 +681,8 @@ export class MemoryDatabase {
   // --- Media Vault ---
   getMediaItems(archiveId: string): MediaItem[] {
     return (this.mediaItems.get(archiveId) || []).sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      (a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER)
+        || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
   }
 
@@ -732,6 +744,17 @@ export class MemoryDatabase {
     return true;
   }
 
+  reorderMediaItems(archiveId: string, orderedIds: string[]): MediaItem[] | undefined {
+    const current = this.mediaItems.get(archiveId) || [];
+    if (orderedIds.length !== current.length || new Set(orderedIds).size !== current.length) return undefined;
+    const byId = new Map(current.map((item) => [item.id, item]));
+    if (orderedIds.some((id) => !byId.has(id))) return undefined;
+    const reordered = orderedIds.map((id, position) => ({ ...byId.get(id)!, position }));
+    this.mediaItems.set(archiveId, reordered);
+    this.addRevision(archiveId, 'media', 'Reordered Memory Vault items', 'contributor', reordered);
+    return reordered;
+  }
+
   getAlbums(archiveId: string): Album[] {
     return (this.albums.get(archiveId) || []).sort((a, b) => a.position - b.position);
   }
@@ -747,7 +770,9 @@ export class MemoryDatabase {
   getWallPosts(archiveId: string, includeHidden: boolean = false): WallPost[] {
     return (this.wallPosts.get(archiveId) || [])
       .filter((p) => includeHidden ? true : (p.isApproved !== false && !p.isHidden))
-      .sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0) || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      .sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER)
+        || (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)
+        || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
   addWallPost(archiveId: string, post: WallPost): WallPost {
@@ -784,6 +809,17 @@ export class MemoryDatabase {
     if (filtered.length === list.length) return false;
     this.wallPosts.set(archiveId, filtered);
     return true;
+  }
+
+  reorderWallPosts(archiveId: string, orderedIds: string[]): WallPost[] | undefined {
+    const current = this.wallPosts.get(archiveId) || [];
+    if (orderedIds.length !== current.length || new Set(orderedIds).size !== current.length) return undefined;
+    const byId = new Map(current.map((post) => [post.id, post]));
+    if (orderedIds.some((id) => !byId.has(id))) return undefined;
+    const reordered = orderedIds.map((id, position) => ({ ...byId.get(id)!, position }));
+    this.wallPosts.set(archiveId, reordered);
+    this.addRevision(archiveId, 'wall', 'Reordered Memory Wall notes', 'owner', reordered);
+    return reordered;
   }
 
   // --- Revisions & History ---

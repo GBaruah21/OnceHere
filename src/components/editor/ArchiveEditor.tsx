@@ -423,6 +423,27 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
     }).catch(() => undefined);
   };
 
+  const handleReorderMembers = async (ordered: Member[]) => {
+    const previous = members;
+    const normalized = ordered.map((member, position) => ({ ...member, position }));
+    setMembers(normalized);
+    try {
+      await saveWithRetry(async () => {
+        const response = await fetch(`/api/archives/${archive.id}/members/reorder`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken || ''}` },
+          body: JSON.stringify({ orderedIds: normalized.map((member) => member.id) })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) throw new Error(data.error || 'Could not save member order.');
+        if (Array.isArray(data.members)) setMembers(data.members);
+      });
+    } catch {
+      setMembers(previous);
+      throw new Error('Could not save member order. Use Retry save to try again.');
+    }
+  };
+
   const handleAddMedia = async (mediaData: Partial<MediaItem>) => {
     const registerMedia = async () => {
       const res = await fetch(`/api/archives/${archive.id}/media`, {
@@ -481,6 +502,48 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
       if (!response.ok) throw new Error(await responseError(response, 'Could not delete this media item.'));
       setMedia((current) => current.filter((item) => item.id !== id));
     }).catch(() => undefined);
+  };
+
+  const handleReorderMedia = async (ordered: MediaItem[]) => {
+    const previous = media;
+    const normalized = ordered.map((item, position) => ({ ...item, position }));
+    setMedia(normalized);
+    try {
+      await saveWithRetry(async () => {
+        const response = await fetch(`/api/archives/${archive.id}/media/reorder`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken || ''}` },
+          body: JSON.stringify({ orderedIds: normalized.map((item) => item.id) })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) throw new Error(data.error || 'Could not save media order.');
+        if (Array.isArray(data.items)) setMedia(data.items);
+      });
+    } catch {
+      setMedia(previous);
+      throw new Error('Could not save media order. Use Retry save to try again.');
+    }
+  };
+
+  const handleReorderWall = async (ordered: WallPost[]) => {
+    const previous = wall;
+    const normalized = ordered.map((post, position) => ({ ...post, position }));
+    setWall(normalized);
+    try {
+      await saveWithRetry(async () => {
+        const response = await fetch(`/api/archives/${archive.id}/wall/reorder`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken || ''}` },
+          body: JSON.stringify({ orderedIds: normalized.map((post) => post.id) })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) throw new Error(data.error || 'Could not save Memory Wall order.');
+        if (Array.isArray(data.posts)) setWall(data.posts);
+      });
+    } catch {
+      setWall(previous);
+      throw new Error('Could not save Memory Wall order. Use Retry save to try again.');
+    }
   };
 
   const handleAddWallPost = async (wallData: Partial<WallPost>) => {
@@ -957,12 +1020,15 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
             onAddMember={handleAddMember}
             onUpdateMember={handleUpdateMember}
             onDeleteMember={handleDeleteMember}
+            onReorderMembers={handleReorderMembers}
             onAddMedia={handleAddMedia}
             onUpdateMedia={handleUpdateMedia}
             onDeleteMedia={handleDeleteMedia}
+            onReorderMedia={handleReorderMedia}
             onAddWallPost={handleAddWallPost}
             onDeleteWallPost={handleDeleteWallPost}
             onToggleHideWallPost={handleToggleHideWallPost}
+            onReorderWall={handleReorderWall}
           />
         </aside>
 

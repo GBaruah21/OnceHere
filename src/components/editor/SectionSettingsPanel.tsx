@@ -80,12 +80,15 @@ interface SectionSettingsPanelProps {
   onAddMember: (member: Partial<Member>) => void;
   onUpdateMember: (id: string, updates: Partial<Member>) => void;
   onDeleteMember: (id: string) => void;
+  onReorderMembers: (members: Member[]) => Promise<void>;
   onAddMedia: (media: Partial<MediaItem>) => Promise<void>;
   onUpdateMedia: (id: string, updates: Partial<MediaItem>) => void;
   onDeleteMedia: (id: string) => void;
+  onReorderMedia: (media: MediaItem[]) => Promise<void>;
   onAddWallPost?: (post: Partial<WallPost>) => void;
   onDeleteWallPost: (id: string) => void;
   onToggleHideWallPost?: (id: string, isHidden: boolean) => void;
+  onReorderWall: (posts: WallPost[]) => Promise<void>;
 }
 
 export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
@@ -109,12 +112,15 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   onAddMember,
   onUpdateMember,
   onDeleteMember,
+  onReorderMembers,
   onAddMedia,
   onUpdateMedia,
   onDeleteMedia,
+  onReorderMedia,
   onAddWallPost,
   onDeleteWallPost,
-  onToggleHideWallPost
+  onToggleHideWallPost,
+  onReorderWall
 }) => {
   // Access History State
   const [accessLogs, setAccessLogs] = useState<AccessHistoryEntry[]>([]);
@@ -167,6 +173,9 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
   const [newEventImg, setNewEventImg] = useState('');
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [draggedEventId, setDraggedEventId] = useState<string | null>(null);
+  const [draggedMemberId, setDraggedMemberId] = useState<string | null>(null);
+  const [draggedMediaId, setDraggedMediaId] = useState<string | null>(null);
+  const [draggedWallId, setDraggedWallId] = useState<string | null>(null);
   const [timelineSaveError, setTimelineSaveError] = useState<string | null>(null);
   const [isSavingTimeline, setIsSavingTimeline] = useState(false);
   const [isTimelineMediaBusy, setIsTimelineMediaBusy] = useState(false);
@@ -254,6 +263,27 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
     } catch (error) {
       setTimelineSaveError(error instanceof Error ? error.message : 'Could not save milestone order.');
     }
+  };
+
+  async function reorderList<T extends { id: string }>(items: T[], sourceId: string, targetId: string, save: (next: T[]) => Promise<void>) {
+    if (sourceId === targetId) return;
+    const ordered = [...items];
+    const sourceIndex = ordered.findIndex((item) => item.id === sourceId);
+    const targetIndex = ordered.findIndex((item) => item.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    const [moved] = ordered.splice(sourceIndex, 1);
+    ordered.splice(targetIndex, 0, moved);
+    await save(ordered);
+  };
+
+  async function moveListBy<T extends { id: string }>(items: T[], id: string, direction: -1 | 1, save: (next: T[]) => Promise<void>) {
+    const ordered = [...items];
+    const index = ordered.findIndex((item) => item.id === id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= ordered.length) return;
+    const [moved] = ordered.splice(index, 1);
+    ordered.splice(target, 0, moved);
+    await save(ordered);
   };
 
   const activeSection = sections.find(
@@ -1138,12 +1168,21 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
           {/* List members */}
           <div className="space-y-2">
             <div className="text-xs font-semibold text-neutral-400">Classmates in Directory ({members.length})</div>
-            {members.map((member) => (
+            {[...members].sort((a, b) => a.position - b.position).map((member, index, orderedMembers) => (
               <div
                 key={member.id}
+                draggable
+                onDragStart={() => setDraggedMemberId(member.id)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={() => {
+                  if (draggedMemberId) void reorderList(orderedMembers, draggedMemberId, member.id, onReorderMembers);
+                  setDraggedMemberId(null);
+                }}
+                onDragEnd={() => setDraggedMemberId(null)}
                 className="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between gap-3 text-xs"
               >
                 <div className="flex items-center gap-2.5 truncate">
+                  <GripVertical className="w-4 h-4 text-neutral-500 cursor-grab shrink-0" aria-label="Drag to reorder member" />
                   <div className="w-8 h-8 rounded-full bg-neutral-800 overflow-hidden flex-shrink-0">
                     <img src={member.imageUrl} alt={member.name} className="w-full h-full object-cover" />
                   </div>
@@ -1154,6 +1193,8 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 </div>
 
                 <div className="flex items-center gap-1 shrink-0">
+                  <button type="button" onClick={() => void moveListBy(orderedMembers, member.id, -1, onReorderMembers)} disabled={index === 0} className="min-w-9 min-h-9 p-1 rounded-lg text-neutral-400 bg-white/5 disabled:opacity-20" title="Move member earlier"><ChevronUp className="w-3.5 h-3.5" /></button>
+                  <button type="button" onClick={() => void moveListBy(orderedMembers, member.id, 1, onReorderMembers)} disabled={index === orderedMembers.length - 1} className="min-w-9 min-h-9 p-1 rounded-lg text-neutral-400 bg-white/5 disabled:opacity-20" title="Move member later"><ChevronDown className="w-3.5 h-3.5" /></button>
                   <button type="button" onClick={() => {
                     setEditingMemberId(member.id);
                     setNewMemberName(member.name);
@@ -1344,8 +1385,19 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
           <div className="space-y-2">
             <div className="text-xs font-semibold text-neutral-400">Vault Media Items ({media.length})</div>
             <div className="grid grid-cols-2 gap-2.5">
-              {media.map((item) => (
-                <div key={item.id} className="relative aspect-video rounded-xl overflow-hidden group border border-white/10 bg-black">
+              {[...media].sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER)).map((item, index, orderedMedia) => (
+                <div
+                  key={item.id}
+                  draggable
+                  onDragStart={() => setDraggedMediaId(item.id)}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={() => {
+                    if (draggedMediaId) void reorderList(orderedMedia, draggedMediaId, item.id, onReorderMedia);
+                    setDraggedMediaId(null);
+                  }}
+                  onDragEnd={() => setDraggedMediaId(null)}
+                  className="relative aspect-video rounded-xl overflow-hidden group border border-white/10 bg-black"
+                >
                   {item.type === 'video' || item.url.startsWith('data:video') || item.url.endsWith('.mp4') ? (
                     <video src={item.url} className="w-full h-full object-cover" muted playsInline />
                   ) : (
@@ -1355,6 +1407,8 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                   {/* Overlay caption & note count */}
                   <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent opacity-100 transition-opacity p-2 flex flex-col justify-between">
                     <div className="flex justify-end gap-1">
+                      <button type="button" onClick={() => void moveListBy(orderedMedia, item.id, -1, onReorderMedia)} disabled={index === 0} title="Move memory earlier" className="min-w-8 min-h-8 p-1 rounded-md bg-black/70 text-neutral-300 disabled:opacity-30"><ChevronUp className="w-3.5 h-3.5" /></button>
+                      <button type="button" onClick={() => void moveListBy(orderedMedia, item.id, 1, onReorderMedia)} disabled={index === orderedMedia.length - 1} title="Move memory later" className="min-w-8 min-h-8 p-1 rounded-md bg-black/70 text-neutral-300 disabled:opacity-30"><ChevronDown className="w-3.5 h-3.5" /></button>
                       <button
                         type="button"
                         onClick={() => {
@@ -1508,18 +1562,28 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                 </span>
               )}
             </div>
-            {wall.map((post) => {
+            {[...wall].sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER)).map((post, index, orderedWall) => {
               const isHidden = Boolean(post.isHidden);
               return (
                 <div
                   key={post.id}
+                  draggable
+                  onDragStart={() => setDraggedWallId(post.id)}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={() => {
+                    if (draggedWallId) void reorderList(orderedWall, draggedWallId, post.id, onReorderWall);
+                    setDraggedWallId(null);
+                  }}
+                  onDragEnd={() => setDraggedWallId(null)}
                   className={`p-3 rounded-xl border flex items-start justify-between gap-3 text-xs transition-colors ${
                     isHidden
                       ? 'bg-amber-950/20 border-amber-500/30'
                       : 'bg-neutral-950 border-white/10'
                   }`}
                 >
-                  <div className="space-y-1.5 flex-1 min-w-0">
+                  <div className="space-y-1.5 flex-1 min-w-0 flex items-start gap-2">
+                    <GripVertical className="w-4 h-4 text-neutral-500 cursor-grab shrink-0 mt-0.5" aria-label="Drag to reorder note" />
+                    <div className="space-y-1.5 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-bold text-amber-300 truncate">{post.authorName}</span>
                       {post.authorRole && (
@@ -1540,8 +1604,11 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                         <img src={post.imageUrl} alt="Attached scribble" className="w-full h-full object-cover" />
                       </div>
                     )}
+                    </div>
                   </div>
                   <div className="flex items-center gap-1">
+                    <button type="button" onClick={() => void moveListBy(orderedWall, post.id, -1, onReorderWall)} disabled={index === 0} title="Move note earlier" className="min-w-9 min-h-9 p-1 rounded-lg text-neutral-400 bg-white/5 disabled:opacity-20"><ChevronUp className="w-3.5 h-3.5" /></button>
+                    <button type="button" onClick={() => void moveListBy(orderedWall, post.id, 1, onReorderWall)} disabled={index === orderedWall.length - 1} title="Move note later" className="min-w-9 min-h-9 p-1 rounded-lg text-neutral-400 bg-white/5 disabled:opacity-20"><ChevronDown className="w-3.5 h-3.5" /></button>
                     {onToggleHideWallPost && (
                       <button
                         type="button"

@@ -128,7 +128,7 @@ async function ensureBrowserCors(): Promise<void> {
           MaxAgeSeconds: 3600
         }]
       }
-    }));
+    }), { abortSignal: AbortSignal.timeout(4_000) });
     corsConfiguredBucket = bucket;
   } catch (error) {
     // Do not turn a provider-side CORS-management limitation into an outage.
