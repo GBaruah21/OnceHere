@@ -494,7 +494,10 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   // Local interaction states
   const [memberSearch, setMemberSearch] = useState('');
   const [selectedMemberGroup, setSelectedMemberGroup] = useState<string>('all');
-  const [visibleMemberCount, setVisibleMemberCount] = useState(COLLECTION_PAGE_SIZE);
+  const memberSection = sections.find((section) => section.stableType === 'members');
+  const memberInitialDisplayCount = Math.max(1, Number(memberSection?.settings?.initialDisplayCount ?? COLLECTION_PAGE_SIZE));
+  const memberViewMoreBatchSize = Math.max(1, Number(memberSection?.settings?.viewMoreBatchSize ?? COLLECTION_PAGE_SIZE));
+  const [visibleMemberCount, setVisibleMemberCount] = useState(memberInitialDisplayCount);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [selectedMember, setSelectedMember] = useState<Member | null>(null);
   const [memberMessages, setMemberMessages] = useState<MemberMessage[]>([]);
@@ -660,12 +663,12 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   const [mediaLayout, setMediaLayout] = useState<'grid' | 'masonry' | 'polaroid'>('grid');
   const [mediaSearch, setMediaSearch] = useState<string>('');
   const [showAllMediaCategories, setShowAllMediaCategories] = useState(false);
-  // Old archives could save 100 here, which makes the first render heavy and
-  // defeats the intended “View more” experience.
-  const defaultMediaDisplayCount = Math.min(
-    COLLECTION_PAGE_SIZE,
-    Math.max(4, archive.settings?.mediaInitialDisplayCount || COLLECTION_PAGE_SIZE)
+  const mediaSection = sections.find((section) => section.stableType === 'media-vault');
+  const defaultMediaDisplayCount = Math.max(
+    1,
+    Number(mediaSection?.settings?.initialDisplayCount ?? archive.settings?.mediaInitialDisplayCount ?? COLLECTION_PAGE_SIZE)
   );
+  const mediaViewMoreBatchSize = Math.max(1, Number(mediaSection?.settings?.viewMoreBatchSize ?? defaultMediaDisplayCount));
   const [visibleMediaCount, setVisibleMediaCount] = useState(defaultMediaDisplayCount);
 
   // Social sharing modal & quick copy toast
@@ -706,6 +709,10 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
       return wall || [];
     }
   });
+  const wallSection = sections.find((section) => section.stableType === 'memory-wall');
+  const wallInitialDisplayCount = Math.max(1, Number(wallSection?.settings?.initialDisplayCount ?? COLLECTION_PAGE_SIZE));
+  const wallViewMoreBatchSize = Math.max(1, Number(wallSection?.settings?.viewMoreBatchSize ?? COLLECTION_PAGE_SIZE));
+  const [visibleWallCount, setVisibleWallCount] = useState(wallInitialDisplayCount);
   const [likedPosts, setLikedPosts] = useState<Set<string>>(new Set());
   const [isAddingNote, setIsAddingNote] = useState(false);
   const [newNoteAuthor, setNewNoteAuthor] = useState('');
@@ -837,19 +844,21 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
   // Filtered members
   const filteredMembers = useMemo(() => {
-    return members.filter((m) => {
+    return [...members]
+      .sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER))
+      .filter((m) => {
       const matchesSearch =
         m.name.toLowerCase().includes(memberSearch.toLowerCase()) ||
         (m.quote && m.quote.toLowerCase().includes(memberSearch.toLowerCase())) ||
         (m.nickname && m.nickname.toLowerCase().includes(memberSearch.toLowerCase()));
       const matchesGroup = selectedMemberGroup === 'all' || m.groupLabel === selectedMemberGroup;
       return matchesSearch && matchesGroup;
-    });
+          });
   }, [members, memberSearch, selectedMemberGroup]);
 
   useEffect(() => {
-    setVisibleMemberCount(COLLECTION_PAGE_SIZE);
-  }, [members, memberSearch, selectedMemberGroup]);
+    setVisibleMemberCount(memberInitialDisplayCount);
+  }, [members, memberSearch, selectedMemberGroup, memberInitialDisplayCount]);
 
   const displayedMembers = filteredMembers.slice(0, visibleMemberCount);
 
@@ -1161,13 +1170,21 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
     }
   };
 
-  // Filtered wall posts for display: Creators see all (with status badges), visitors see only visible/approved notes
-  const displayedWallPosts = useMemo(() => {
-    if (canModerateNotes) {
-      return wallPosts;
-    }
-    return wallPosts.filter((p) => !p.isHidden && p.isApproved !== false);
+  const availableWallPosts = useMemo(() => {
+    const allowed = canModerateNotes
+      ? wallPosts
+      : wallPosts.filter((p) => !p.isHidden && p.isApproved !== false);
+    return [...allowed].sort(
+      (a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER)
+        || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
   }, [wallPosts, canModerateNotes]);
+
+  useEffect(() => {
+    setVisibleWallCount(wallInitialDisplayCount);
+  }, [archive.id, canModerateNotes, wallInitialDisplayCount]);
+
+  const displayedWallPosts = availableWallPosts.slice(0, visibleWallCount);
   // Theme-specific class names and atmospheric textures
   const themeBg = theme.styleClasses.container || (
     archive.themeId === 'paper-polaroids'
@@ -1751,12 +1768,12 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                   ))}
                 </motion.div>
 
-                {filteredMembers.length > COLLECTION_PAGE_SIZE && (
+                {filteredMembers.length > memberInitialDisplayCount && (
                   <div className="flex justify-center gap-2">
                     {visibleMemberCount < filteredMembers.length ? (
                       <button
                         type="button"
-                        onClick={() => setVisibleMemberCount((count) => Math.min(count + COLLECTION_PAGE_SIZE, filteredMembers.length))}
+                        onClick={() => setVisibleMemberCount((count) => Math.min(count + memberViewMoreBatchSize, filteredMembers.length))}
                         className="px-5 py-2.5 rounded-full bg-amber-400 text-neutral-950 text-xs font-bold hover:brightness-110 transition-all"
                       >
                         View more people ({filteredMembers.length - visibleMemberCount})
@@ -1764,7 +1781,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                     ) : (
                       <button
                         type="button"
-                        onClick={() => setVisibleMemberCount(COLLECTION_PAGE_SIZE)}
+                        onClick={() => setVisibleMemberCount(memberInitialDisplayCount)}
                         className="px-5 py-2.5 rounded-full bg-white/10 border border-white/15 text-white text-xs font-semibold hover:bg-white/15 transition-all"
                       >
                         Show fewer people
@@ -2030,7 +2047,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                     {visibleMediaCount < sortedAndFilteredMedia.length ? (
                       <button
                         type="button"
-                        onClick={() => setVisibleMediaCount((count) => Math.min(count + defaultMediaDisplayCount, sortedAndFilteredMedia.length))}
+                        onClick={() => setVisibleMediaCount((count) => Math.min(count + mediaViewMoreBatchSize, sortedAndFilteredMedia.length))}
                         className="px-5 py-2.5 rounded-full bg-amber-400 text-neutral-950 text-xs font-bold hover:brightness-110"
                       >
                         View more memories ({sortedAndFilteredMedia.length - visibleMediaCount})
@@ -2111,6 +2128,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
                 {/* Dynamic Masonry-Style Scribbles Grid with Smooth Layout Animations */}
                 {displayedWallPosts.length > 0 ? (
+                  <>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
                     <AnimatePresence mode="popLayout" initial={false}>
                       {displayedWallPosts.map((post) => {
@@ -2278,6 +2296,28 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                       })}
                     </AnimatePresence>
                   </div>
+                  {availableWallPosts.length > wallInitialDisplayCount && (
+                    <div className="flex justify-center gap-2 pt-2">
+                      {visibleWallCount < availableWallPosts.length ? (
+                        <button
+                          type="button"
+                          onClick={() => setVisibleWallCount((count) => Math.min(count + wallViewMoreBatchSize, availableWallPosts.length))}
+                          className="px-5 py-2.5 rounded-full bg-amber-400 text-neutral-950 text-xs font-bold hover:brightness-110 transition-all"
+                        >
+                          View more notes ({availableWallPosts.length - visibleWallCount})
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setVisibleWallCount(wallInitialDisplayCount)}
+                          className="px-5 py-2.5 rounded-full bg-white/10 border border-white/15 text-white text-xs font-semibold hover:bg-white/15 transition-all"
+                        >
+                          Show fewer notes
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  </>
                 ) : (
                   <div className={`p-8 sm:p-12 rounded-3xl border text-center space-y-4 max-w-lg mx-auto ${cardBg}`}>
                     <div className="w-12 h-12 rounded-full bg-amber-400/20 text-amber-400 mx-auto flex items-center justify-center">

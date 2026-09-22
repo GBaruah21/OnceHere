@@ -292,6 +292,67 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
       s.stableType === activeTab ||
       (activeTab.startsWith('section-') && s.stableType === activeTab.replace('section-', ''))
   );
+  const updateActiveSectionPaging = (key: 'initialDisplayCount' | 'viewMoreBatchSize', value: number) => {
+    if (!activeSection) return;
+    const updated = sections.map((section) =>
+      section.id === activeSection.id || section.stableType === activeSection.stableType
+        ? { ...section, settings: { ...(section.settings || {}), [key]: value } }
+        : section
+    );
+    onUpdateSections(updated);
+  };
+
+  const audiencePagingControls = ({
+    defaultInitial,
+    defaultBatch,
+    initialOptions,
+    batchOptions,
+    allowAll = false,
+    itemLabel
+  }: {
+    defaultInitial: number;
+    defaultBatch: number;
+    initialOptions: number[];
+    batchOptions: number[];
+    allowAll?: boolean;
+    itemLabel: string;
+  }) => {
+    const initialValue = Number(activeSection?.settings?.initialDisplayCount ?? defaultInitial);
+    const batchValue = Number(activeSection?.settings?.viewMoreBatchSize ?? defaultBatch);
+    return (
+      <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-2">
+        <div className="text-xs font-semibold text-neutral-200">Audience display order</div>
+        <p className="text-[10px] leading-relaxed text-neutral-500">
+          Drag the best {itemLabel} to the top. Visitors see that curated order first; the rest stay behind “View more”.
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="space-y-1">
+            <span className="text-[10px] font-semibold text-neutral-400">Show first</span>
+            <select
+              value={initialValue}
+              onChange={(event) => updateActiveSectionPaging('initialDisplayCount', Number(event.target.value))}
+              className="w-full px-2.5 py-2 rounded-lg bg-neutral-950 border border-white/15 text-xs text-white"
+            >
+              {allowAll && <option value={0}>All {itemLabel}</option>}
+              {initialOptions.map((count) => <option key={count} value={count}>{count}</option>)}
+            </select>
+          </label>
+          <label className="space-y-1">
+            <span className="text-[10px] font-semibold text-neutral-400">Each “View more” reveals</span>
+            <select
+              value={batchValue}
+              onChange={(event) => updateActiveSectionPaging('viewMoreBatchSize', Number(event.target.value))}
+              disabled={allowAll && initialValue === 0}
+              className="w-full px-2.5 py-2 rounded-lg bg-neutral-950 border border-white/15 text-xs text-white disabled:opacity-40"
+            >
+              {batchOptions.map((count) => <option key={count} value={count}>{count}</option>)}
+            </select>
+          </label>
+        </div>
+      </div>
+    );
+  };
+
 
   // Update specific section property
   const handleUpdateSectionTitle = (title: string) => {
@@ -832,6 +893,16 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             </div>
           </div>
 
+          {audiencePagingControls({
+            defaultInitial: 0,
+            defaultBatch: 4,
+            initialOptions: [4, 6, 8, 12, 16, 20],
+            batchOptions: [2, 4, 6, 8, 12, 20],
+            allowAll: true,
+            itemLabel: 'milestones'
+          })}
+
+
           {/* Add new milestone card */}
           <div className="p-4 rounded-2xl bg-neutral-950 border border-white/10 space-y-3">
             <div className="flex items-center justify-between">
@@ -1025,6 +1096,15 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             <h3 className="text-base font-bold font-serif text-white">Yearbook & Members</h3>
             <p className="text-xs text-neutral-400">Add portraits, yearbook quotes, and roles.</p>
           </div>
+
+          {audiencePagingControls({
+            defaultInitial: 12,
+            defaultBatch: 12,
+            initialOptions: [4, 8, 12, 16, 24, 40],
+            batchOptions: [4, 8, 12, 16, 24, 40],
+            itemLabel: 'people'
+          })}
+
 
           {/* Add Member Card */}
           <div className="p-4 rounded-2xl bg-neutral-950 border border-white/10 space-y-3">
@@ -1222,20 +1302,13 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             <h3 className="text-base font-bold font-serif text-white">Media Vault</h3>
             <p className="text-xs text-neutral-400">High-resolution photo dumps, video highlights, and AI-generated nostalgic captions & notes.</p>
           </div>
-
-          <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-1.5">
-            <label className="text-xs font-semibold text-neutral-300">Memories visible before “Show more”</label>
-            <select
-              value={archive.settings?.mediaInitialDisplayCount || 12}
-              onChange={(e) => onUpdateArchive({
-                settings: { ...archive.settings, mediaInitialDisplayCount: Number(e.target.value) }
-              })}
-              className="w-full px-3 py-2 rounded-xl bg-neutral-950 border border-white/15 text-xs text-white"
-            >
-              {[4, 8, 12, 16, 24, 40].map((count) => <option key={count} value={count}>{count} memories</option>)}
-            </select>
-            <p className="text-[10px] text-neutral-500">Visitors can still filter categories or open the remaining memories.</p>
-          </div>
+          {audiencePagingControls({
+            defaultInitial: Number(archive.settings?.mediaInitialDisplayCount ?? 12),
+            defaultBatch: 12,
+            initialOptions: [4, 8, 12, 16, 24, 40],
+            batchOptions: [4, 8, 12, 16, 24, 40],
+            itemLabel: 'memories'
+          })}
 
           {/* Add media */}
           <div className="p-4 rounded-2xl bg-neutral-950 border border-white/10 space-y-3.5">
@@ -1454,6 +1527,15 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
             <h3 className="text-base font-bold font-serif text-white">Memory Wall & Scribbles</h3>
             <p className="text-xs text-neutral-400">Notes, inside jokes, photo scribbles, and farewell messages.</p>
           </div>
+
+          {audiencePagingControls({
+            defaultInitial: 12,
+            defaultBatch: 12,
+            initialOptions: [4, 8, 12, 16, 24, 40],
+            batchOptions: [4, 8, 12, 16, 24, 40],
+            itemLabel: 'notes'
+          })}
+
 
           {/* Add Scribble Note Form */}
           <div className="p-4 rounded-2xl bg-neutral-950 border border-white/10 space-y-3">
