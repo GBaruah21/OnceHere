@@ -2128,6 +2128,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
                 {/* Dynamic Masonry-Style Scribbles Grid with Smooth Layout Animations */}
                 {displayedWallPosts.length > 0 ? (
+                  <>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
                     <AnimatePresence mode="popLayout" initial={false}>
                       {displayedWallPosts.map((post) => {
@@ -2316,6 +2317,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                       )}
                     </div>
                   )}
+                  </>
                 ) : (
                   <div className={`p-8 sm:p-12 rounded-3xl border text-center space-y-4 max-w-lg mx-auto ${cardBg}`}>
                     <div className="w-12 h-12 rounded-full bg-amber-400/20 text-amber-400 mx-auto flex items-center justify-center">
