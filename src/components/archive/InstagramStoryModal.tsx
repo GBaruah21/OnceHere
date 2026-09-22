@@ -21,6 +21,7 @@ import { Archive, MediaItem } from '../../types';
 import { THEMES } from '../../config/themes';
 import { PLATFORM_CONFIG } from '../../config/platform';
 import { recordArchiveShare } from '../../lib/share';
+import { copyTextToClipboard } from '../../lib/clipboard';
 
 interface InstagramStoryModalProps {
   isOpen: boolean;
@@ -437,9 +438,7 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
   // Copy Instagram Caption
   const handleCopyCaption = async () => {
     try {
-      if (navigator.clipboard) {
-        await navigator.clipboard.writeText(instagramCaption);
-      }
+      await copyTextToClipboard(instagramCaption);
       recordArchiveShare(archive.id, mode === 'story' ? 'instagram_story' : 'instagram_post', 'copied');
       setCopiedCaption(true);
       confetti({ particleCount: 30, spread: 50, origin: { y: 0.8 } });
@@ -451,7 +450,7 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
 
   const handleCopyHandle = async () => {
     try {
-      await navigator.clipboard.writeText(PLATFORM_CONFIG.author.displayHandle);
+      await copyTextToClipboard(PLATFORM_CONFIG.author.displayHandle);
       setCopiedHandle(true);
       setTimeout(() => setCopiedHandle(false), 2200);
     } catch (err) {
@@ -462,9 +461,7 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
   // Copy Archive Link
   const handleCopyLink = async () => {
     try {
-      if (navigator.clipboard) {
-        await navigator.clipboard.writeText(shareUrl);
-      }
+      await copyTextToClipboard(shareUrl);
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2500);
     } catch (err) {

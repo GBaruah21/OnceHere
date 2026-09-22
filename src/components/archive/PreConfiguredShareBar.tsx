@@ -22,6 +22,7 @@ import { THEMES } from '../../config/themes';
 import { InstagramStoryModal } from './InstagramStoryModal';
 import { PLATFORM_CONFIG } from '../../config/platform';
 import { recordArchiveShare } from '../../lib/share';
+import { copyTextToClipboard } from '../../lib/clipboard';
 
 interface PreConfiguredShareBarProps {
   archive: Archive;
@@ -67,18 +68,7 @@ export const PreConfiguredShareBar: React.FC<PreConfiguredShareBarProps> = ({
   // Copy Link Handler
   const handleCopyLink = async () => {
     try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(shareUrl);
-      } else {
-        const textArea = document.createElement('textarea');
-        textArea.value = shareUrl;
-        textArea.style.position = 'fixed';
-        textArea.style.opacity = '0';
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-      }
+      await copyTextToClipboard(shareUrl);
 
       setCopied(true);
       recordArchiveShare(archive.id, 'copy_link', 'copied');
@@ -103,9 +93,7 @@ export const PreConfiguredShareBar: React.FC<PreConfiguredShareBarProps> = ({
   // WhatsApp Status Copy & Prompt
   const handleShareWhatsAppStatus = async () => {
     try {
-      if (navigator.clipboard) {
-        await navigator.clipboard.writeText(whatsappStatusText);
-      }
+      await copyTextToClipboard(whatsappStatusText);
       setCopiedStatus(true);
       recordArchiveShare(archive.id, 'whatsapp_status', 'copied');
       confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 } });

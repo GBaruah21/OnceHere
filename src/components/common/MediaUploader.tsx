@@ -120,7 +120,13 @@ function uploadErrorMessage(error: unknown): string {
 }
 
 export function directUploadTimeoutMs(file: Pick<File, 'size' | 'type'>): number {
-  if (file.type.startsWith('image/')) return 4_000;
+  // This is an inactivity deadline, not a total upload deadline. Four seconds
+  // was too aggressive for mobile radios that pause briefly while reconnecting
+  // or waking from power saving. Keep images responsive while allowing a slow
+  // connection enough time to begin or resume sending bytes.
+  if (file.type.startsWith('image/')) {
+    return Math.min(45_000, Math.max(15_000, Math.ceil(file.size / (128 * 1024)) * 1_000));
+  }
   return Math.min(90_000, Math.max(30_000, Math.ceil(file.size / (256 * 1024)) * 1_000));
 }
 
