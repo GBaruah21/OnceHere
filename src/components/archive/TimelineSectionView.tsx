@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { motion } from 'motion/react';
 import {
   Calendar,
@@ -54,12 +54,32 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
   // State for horizontal slider
   const [activeSliderIdx, setActiveSliderIdx] = useState(0);
   const sliderScrollRef = useRef<HTMLDivElement>(null);
-
   // State for active image zoom preview
   const [expandedImage, setExpandedImage] = useState<{ url: string; title: string; location?: string; year?: string } | null>(null);
 
+  const orderedTimeline = useMemo(
+    () => [...timeline].sort(
+      (a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER)
+        || new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+    ),
+    [timeline]
+  );
+  const configuredInitial = Number(section.settings?.initialDisplayCount ?? 0);
+  const initialMilestoneCount = configuredInitial === 0
+    ? orderedTimeline.length
+    : Math.max(1, Math.min(configuredInitial, orderedTimeline.length));
+  const viewMoreBatchSize = Math.max(1, Number(section.settings?.viewMoreBatchSize ?? 4));
+  const [visibleMilestoneCount, setVisibleMilestoneCount] = useState(initialMilestoneCount);
+
+  useEffect(() => {
+    setVisibleMilestoneCount(initialMilestoneCount);
+    setActiveSliderIdx(0);
+  }, [initialMilestoneCount, section.id]);
+
+  const displayedTimeline = orderedTimeline.slice(0, visibleMilestoneCount);
+
   const scrollSlider = (direction: 'prev' | 'next') => {
-    scrollToMilestone(Math.max(0, Math.min(timeline.length - 1, activeSliderIdx + (direction === 'prev' ? -1 : 1))));
+    scrollToMilestone(Math.max(0, Math.min(displayedTimeline.length - 1, activeSliderIdx + (direction === 'prev' ? -1 : 1))));
   };
 
   const scrollToMilestone = (idx: number) => {
@@ -74,7 +94,7 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
     }
   };
 
-  if (!timeline || timeline.length === 0) {
+  if (orderedTimeline.length === 0) {
     return (
       <motion.section
         id="section-timeline"
@@ -136,7 +156,7 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
             viewport={{ once: true, amount: 0.08, margin: '0px 0px -40px 0px' }}
             className="space-y-12 sm:space-y-20 relative"
           >
-            {timeline.map((event, idx) => {
+            {displayedTimeline.map((event, idx) => {
               const isEven = idx % 2 === 0;
               return (
                 <motion.div key={event.id} variants={staggerCardVariants} className="relative">
@@ -343,7 +363,7 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
             {/* Quick Milestone Scrub Buttons */}
             <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
-              {timeline.map((item, idx) => (
+              {displayedTimeline.map((item, idx) => (
                 <button
                   key={item.id}
                   type="button"
@@ -363,7 +383,7 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
             {/* Slider Navigation Buttons */}
             <div className="flex items-center gap-2 shrink-0">
               <span className="text-xs font-mono opacity-60 hidden sm:inline mr-2">
-                Milestone {activeSliderIdx + 1} of {timeline.length}
+                Milestone {activeSliderIdx + 1} of {displayedTimeline.length}
               </span>
               <button
                 type="button"
@@ -390,7 +410,7 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
             className="relative flex gap-6 overflow-x-auto pb-6 pt-2 snap-x snap-mandatory scroll-smooth no-scrollbar"
             style={{ scrollbarWidth: 'none' }}
           >
-            {timeline.map((event, idx) => (
+            {displayedTimeline.map((event, idx) => (
               <div
                 key={event.id}
                 className="timeline-slider-card snap-center shrink-0 w-[85vw] sm:w-[420px] md:w-[460px] rounded-3xl border overflow-hidden flex flex-col shadow-2xl transition-transform hover:-translate-y-1 duration-300 group"
@@ -468,7 +488,7 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
       {/* ============================================================ */}
       {layout === 'stacked-cards' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-8">
-          {timeline.map((event, idx) => (
+          {displayedTimeline.map((event, idx) => (
             <div
               key={event.id}
               className={`p-6 sm:p-8 rounded-3xl border ${cardBg} shadow-2xl flex flex-col justify-between space-y-5 relative group hover:border-amber-400/40 transition-all`}
@@ -543,7 +563,7 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
       {/* ============================================================ */}
       {layout === 'chapter-story' && (
         <div className="space-y-16 sm:space-y-24">
-          {timeline.map((event, idx) => {
+          {displayedTimeline.map((event, idx) => {
             const romanIdx = ROMAN_NUMERALS[idx] || `${idx + 1}`;
             return (
               <div
@@ -625,6 +645,29 @@ export const TimelineSectionView: React.FC<TimelineSectionViewProps> = ({
           })}
         </div>
       )}
+
+      {configuredInitial !== 0 && orderedTimeline.length > initialMilestoneCount && (
+        <div className="flex justify-center gap-2 pt-2">
+          {visibleMilestoneCount < orderedTimeline.length ? (
+            <button
+              type="button"
+              onClick={() => setVisibleMilestoneCount((count) => Math.min(count + viewMoreBatchSize, orderedTimeline.length))}
+              className="px-5 py-2.5 rounded-full bg-amber-400 text-neutral-950 text-xs font-bold hover:brightness-110 transition-all"
+            >
+              View more journey memories ({orderedTimeline.length - visibleMilestoneCount})
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setVisibleMilestoneCount(initialMilestoneCount)}
+              className="px-5 py-2.5 rounded-full bg-white/10 border border-white/15 text-white text-xs font-semibold hover:bg-white/15 transition-all"
+            >
+              Show fewer journey memories
+            </button>
+          )}
+        </div>
+      )}
+
 
       {/* Lightbox / Zoom Dialog for Timeline Images */}
       {expandedImage && (

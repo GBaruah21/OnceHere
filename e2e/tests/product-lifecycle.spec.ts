@@ -454,3 +454,83 @@ test('editor curated ordering persists into the live audience archive', async ({
     }
   }
 });
+
+test('section curation settings persist and reorder controls stay editor-only', async ({ request }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const editorPin = '583921';
+  const viewerPin = '492731';
+  let archiveId = '';
+  let ownerToken = '';
+
+  try {
+    const createdResponse = await request.post('/api/archives', {
+      data: {
+        archiveType: 'school',
+        title: `Curation controls ${suffix}`,
+        organizationName: 'OnceHere Curation E2E',
+        startYear: 2025,
+        endYear: 2026,
+        themeId: 'midnight-cinema',
+        visibility: 'private',
+        contributionMode: 'pin-protected',
+        editorPin,
+        viewerPin,
+        recoveryKey: `mc_rec_curation-${suffix}`
+      }
+    });
+    expect(createdResponse.status()).toBe(201);
+    const created = await createdResponse.json();
+    archiveId = created.archive.id;
+    ownerToken = created.ownerToken;
+
+    const contributorAuth = await request.post(`/api/archives/${archiveId}/auth/pin`, { data: { pin: editorPin } });
+    expect(contributorAuth.ok()).toBeTruthy();
+    const contributorToken = (await contributorAuth.json()).token as string;
+
+    const sectionsResponse = await request.get(`/api/archives/${archiveId}/sections`, {
+      headers: { Authorization: `Bearer ${ownerToken}` }
+    });
+    const sections = (await sectionsResponse.json()).sections;
+    const updatedSections = sections.map((section: any) => {
+      if (section.stableType === 'timeline') return { ...section, settings: { ...(section.settings || {}), initialDisplayCount: 0, viewMoreBatchSize: 4 } };
+      if (section.stableType === 'members') return { ...section, settings: { ...(section.settings || {}), initialDisplayCount: 8, viewMoreBatchSize: 4 } };
+      if (section.stableType === 'media-vault') return { ...section, settings: { ...(section.settings || {}), initialDisplayCount: 12, viewMoreBatchSize: 8 } };
+      if (section.stableType === 'memory-wall') return { ...section, settings: { ...(section.settings || {}), initialDisplayCount: 4, viewMoreBatchSize: 4 } };
+      return section;
+    });
+
+    const sectionSave = await request.put(`/api/archives/${archiveId}/sections`, {
+      headers: { Authorization: `Bearer ${contributorToken}` },
+      data: { sections: updatedSections }
+    });
+    expect(sectionSave.ok()).toBeTruthy();
+    const saved = (await sectionSave.json()).sections;
+    expect(saved.find((section: any) => section.stableType === 'timeline').settings.initialDisplayCount).toBe(0);
+    expect(saved.find((section: any) => section.stableType === 'members').settings.viewMoreBatchSize).toBe(4);
+    expect(saved.find((section: any) => section.stableType === 'media-vault').settings.initialDisplayCount).toBe(12);
+    expect(saved.find((section: any) => section.stableType === 'memory-wall').settings.viewMoreBatchSize).toBe(4);
+
+    const viewerAuth = await request.post(`/api/archives/${archiveId}/auth/viewer-pin`, { data: { pin: viewerPin } });
+    expect(viewerAuth.ok()).toBeTruthy();
+    const viewerToken = (await viewerAuth.json()).token as string;
+
+    for (const route of ['timeline', 'members', 'media', 'wall']) {
+      const viewerReorder = await request.put(`/api/archives/${archiveId}/${route}/reorder`, {
+        headers: { Authorization: `Bearer ${viewerToken}` },
+        data: { orderedIds: [] }
+      });
+      expect(viewerReorder.status()).toBe(403);
+
+      const anonymousReorder = await request.put(`/api/archives/${archiveId}/${route}/reorder`, {
+        data: { orderedIds: [] }
+      });
+      expect(anonymousReorder.status()).toBe(403);
+    }
+  } finally {
+    if (archiveId && ownerToken) {
+      await request.delete(`/api/archives/${archiveId}`, {
+        headers: { Authorization: `Bearer ${ownerToken}` }
+      }).catch(() => undefined);
+    }
+  }
+});
