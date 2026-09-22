@@ -514,17 +514,22 @@ test('section curation settings persist and reorder controls stay editor-only', 
     expect(viewerAuth.ok()).toBeTruthy();
     const viewerToken = (await viewerAuth.json()).token as string;
 
-    for (const route of ['timeline', 'members', 'media', 'wall']) {
-      const viewerReorder = await request.put(`/api/archives/${archiveId}/${route}/reorder`, {
-        headers: { Authorization: `Bearer ${viewerToken}` },
-        data: { orderedIds: [] }
-      });
-      expect(viewerReorder.status()).toBe(403);
+    const anonymousRequest = await playwrightRequest.newContext({ baseURL: 'http://127.0.0.1:4173' });
+    try {
+      for (const route of ['timeline', 'members', 'media', 'wall']) {
+        const viewerReorder = await request.put(`/api/archives/${archiveId}/${route}/reorder`, {
+          headers: { Authorization: `Bearer ${viewerToken}` },
+          data: { orderedIds: [] }
+        });
+        expect(viewerReorder.status()).toBe(403);
 
-      const anonymousReorder = await request.put(`/api/archives/${archiveId}/${route}/reorder`, {
-        data: { orderedIds: [] }
-      });
-      expect(anonymousReorder.status()).toBe(403);
+        const anonymousReorder = await anonymousRequest.put(`/api/archives/${archiveId}/${route}/reorder`, {
+          data: { orderedIds: [] }
+        });
+        expect(anonymousReorder.status()).toBe(403);
+      }
+    } finally {
+      await anonymousRequest.dispose();
     }
   } finally {
     if (archiveId && ownerToken) {
