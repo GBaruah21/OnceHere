@@ -14,7 +14,12 @@ import {
   AlertTriangle,
   Loader2
 } from 'lucide-react';
-import { compressImageForUpload, IMAGE_SOURCE_LIMIT_BYTES, VIDEO_SOURCE_LIMIT_BYTES } from '../../lib/imageCompression';
+import {
+  canUploadOriginalImage,
+  compressImageForUpload,
+  IMAGE_SOURCE_LIMIT_BYTES,
+  VIDEO_SOURCE_LIMIT_BYTES
+} from '../../lib/imageCompression';
 
 const IMAGE_SOURCE_LIMIT_MB = Math.round(IMAGE_SOURCE_LIMIT_BYTES / (1024 * 1024));
 const VIDEO_SOURCE_LIMIT_MB = Math.round(VIDEO_SOURCE_LIMIT_BYTES / (1024 * 1024));
@@ -498,10 +503,17 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         setUploadProgress(null);
         uploadFile = await compressImageForUpload(file);
       } catch (error) {
-        setIsProcessing(false);
-        setUploadPhase(null);
-        setFileError(error instanceof Error ? error.message : 'Image compression failed. Please try another image.');
-        return;
+        // Canvas/WebP encoding is not equally reliable in every browser. A
+        // supported original is still safe to upload within the source limit;
+        // optimization is helpful, but it must never make a valid memory
+        // impossible to save.
+        if (!canUploadOriginalImage(file)) {
+          setIsProcessing(false);
+          setUploadPhase(null);
+          setFileError(error instanceof Error ? error.message : 'Image compression failed. Please try another image.');
+          return;
+        }
+        uploadFile = file;
       }
     }
 

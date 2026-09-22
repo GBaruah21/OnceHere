@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createDownloadUrl, createUploadUrl, R2_LIMITS, validateUpload } from '../server/r2';
+import {
+  createDownloadUrl,
+  createUploadUrl,
+  OBJECT_STORAGE_BROWSER_ORIGINS,
+  R2_LIMITS,
+  validateUpload
+} from '../server/r2';
 
 describe('S3-compatible object storage uploads', () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -58,5 +64,10 @@ describe('S3-compatible object storage uploads', () => {
     expect(validateUpload('video/mp4', R2_LIMITS.videoBytes)).toBe('video');
     expect(() => validateUpload('image/jpeg', R2_LIMITS.imageBytes + 1)).toThrow('10 MB');
     expect(() => validateUpload('video/mp4', R2_LIMITS.videoBytes + 1)).toThrow('20 MB');
+  });
+
+  it('allows signed direct uploads from production and Vercel preview hosts', () => {
+    expect(OBJECT_STORAGE_BROWSER_ORIGINS).toContain('https://oncehere.vercel.app');
+    expect(OBJECT_STORAGE_BROWSER_ORIGINS).toContain('https://*.vercel.app');
   });
 });

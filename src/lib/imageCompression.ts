@@ -5,6 +5,18 @@ export const VIDEO_SOURCE_LIMIT_BYTES = 20 * MB;
 export const IMAGE_COMPRESSION_TARGET_BYTES = 1.25 * MB;
 const MAX_IMAGE_DIMENSION = 2048;
 
+const ORIGINAL_UPLOAD_IMAGE_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/avif',
+  'image/gif'
+]);
+
+export function canUploadOriginalImage(file: Pick<File, 'type'>): boolean {
+  return ORIGINAL_UPLOAD_IMAGE_TYPES.has(file.type.toLowerCase());
+}
+
 function outputName(name: string): string {
   return `${name.replace(/\.[^.]+$/, '') || 'memory'}.webp`;
 }
