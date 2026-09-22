@@ -811,14 +811,18 @@ export class MemoryDatabase {
     return true;
   }
 
-  reorderWallPosts(archiveId: string, orderedIds: string[]): WallPost[] | undefined {
+  reorderWallPosts(
+    archiveId: string,
+    orderedIds: string[],
+    actor: 'owner' | 'contributor' = 'owner'
+  ): WallPost[] | undefined {
     const current = this.wallPosts.get(archiveId) || [];
     if (orderedIds.length !== current.length || new Set(orderedIds).size !== current.length) return undefined;
     const byId = new Map(current.map((post) => [post.id, post]));
     if (orderedIds.some((id) => !byId.has(id))) return undefined;
     const reordered = orderedIds.map((id, position) => ({ ...byId.get(id)!, position }));
     this.wallPosts.set(archiveId, reordered);
-    this.addRevision(archiveId, 'wall', 'Reordered Memory Wall notes', 'owner', reordered);
+    this.addRevision(archiveId, 'wall', 'Reordered Memory Wall notes', actor, reordered);
     return reordered;
   }
 

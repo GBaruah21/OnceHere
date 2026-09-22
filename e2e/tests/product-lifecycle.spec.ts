@@ -345,3 +345,112 @@ test('private archive lifecycle enforces viewer access', async ({ request, page 
     }
   }
 });
+
+test('editor curated ordering persists into the live audience archive', async ({ request }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const editorPin = '583921';
+  const finalSlug = `e2e-order-${suffix}`.toLowerCase();
+  let archiveId = '';
+  let ownerToken = '';
+
+  try {
+    const createdResponse = await request.post('/api/archives', {
+      data: {
+        archiveType: 'school',
+        title: `Curated order ${suffix}`,
+        organizationName: 'OnceHere Ordering E2E',
+        startYear: 2025,
+        endYear: 2026,
+        themeId: 'midnight-cinema',
+        visibility: 'public',
+        contributionMode: 'pin-protected',
+        editorPin,
+        recoveryKey: `mc_rec_order-${suffix}`
+      }
+    });
+    expect(createdResponse.status()).toBe(201);
+    const created = await createdResponse.json();
+    archiveId = created.archive.id;
+    ownerToken = created.ownerToken;
+
+    const contributorAuth = await request.post(`/api/archives/${archiveId}/auth/pin`, {
+      data: { pin: editorPin }
+    });
+    expect(contributorAuth.ok()).toBeTruthy();
+    const contributorToken = (await contributorAuth.json()).token as string;
+    const editorHeaders = { Authorization: `Bearer ${contributorToken}` };
+
+    const timelineIds: string[] = [];
+    const memberIds: string[] = [];
+    const mediaIds: string[] = [];
+    const wallIds: string[] = [];
+
+    for (let index = 0; index < 3; index += 1) {
+      const timelineResponse = await request.post(`/api/archives/${archiveId}/timeline`, {
+        headers: editorHeaders,
+        data: { title: `Milestone ${index}`, description: `Milestone ${index}`, yearLabel: '2026' }
+      });
+      expect(timelineResponse.status()).toBe(201);
+      timelineIds.push((await timelineResponse.json()).event.id);
+
+      const memberResponse = await request.post(`/api/archives/${archiveId}/members`, {
+        headers: editorHeaders,
+        data: { name: `Member ${index}`, imageUrl: `https://example.com/member-${index}.jpg` }
+      });
+      expect(memberResponse.status()).toBe(201);
+      memberIds.push((await memberResponse.json()).member.id);
+
+      const mediaResponse = await request.post(`/api/archives/${archiveId}/media`, {
+        headers: editorHeaders,
+        data: { type: 'image', url: `https://example.com/memory-${index}.jpg`, caption: `Memory ${index}` }
+      });
+      expect(mediaResponse.status()).toBe(201);
+      mediaIds.push((await mediaResponse.json()).item.id);
+
+      const wallResponse = await request.post(`/api/archives/${archiveId}/wall`, {
+        headers: editorHeaders,
+        data: { authorName: `Friend ${index}`, text: `Wall note ${index}` }
+      });
+      expect(wallResponse.status()).toBe(201);
+      wallIds.push((await wallResponse.json()).post.id);
+    }
+
+    const desiredTimeline = [timelineIds[2], timelineIds[0], timelineIds[1]];
+    const desiredMembers = [memberIds[1], memberIds[2], memberIds[0]];
+    const desiredMedia = [mediaIds[2], mediaIds[1], mediaIds[0]];
+    const desiredWall = [wallIds[1], wallIds[0], wallIds[2]];
+
+    for (const [route, orderedIds] of [
+      ['timeline', desiredTimeline],
+      ['members', desiredMembers],
+      ['media', desiredMedia],
+      ['wall', desiredWall]
+    ] as const) {
+      const response = await request.put(`/api/archives/${archiveId}/${route}/reorder`, {
+        headers: editorHeaders,
+        data: { orderedIds }
+      });
+      expect(response.ok()).toBeTruthy();
+    }
+
+    const deployed = await request.post(`/api/archives/${archiveId}/deploy`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+      data: { finalSlug }
+    });
+    expect(deployed.ok()).toBeTruthy();
+
+    const audience = await request.get(`/api/archives/by-slug/${finalSlug}`);
+    expect(audience.ok()).toBeTruthy();
+    const live = await audience.json();
+    expect(live.timeline.map((item: { id: string }) => item.id)).toEqual(desiredTimeline);
+    expect(live.members.map((item: { id: string }) => item.id)).toEqual(desiredMembers);
+    expect(live.media.map((item: { id: string }) => item.id)).toEqual(desiredMedia);
+    expect(live.wall.map((item: { id: string }) => item.id)).toEqual(desiredWall);
+  } finally {
+    if (archiveId && ownerToken) {
+      await request.delete(`/api/archives/${archiveId}`, {
+        headers: { Authorization: `Bearer ${ownerToken}` }
+      }).catch(() => undefined);
+    }
+  }
+});
