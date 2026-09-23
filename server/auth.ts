@@ -19,6 +19,31 @@ function sessionSecret(): string {
   return developmentSessionSecret;
 }
 
+export function createMediaPreviewToken(archiveId: string, durationMinutes = 15): string {
+  const expiresAtMs = Date.now() + Math.max(1, durationMinutes) * 60 * 1000;
+  const nonce = crypto.randomBytes(12).toString('hex');
+  const payload = `media-preview.${archiveId}.${expiresAtMs}.${nonce}`;
+  const hmac = crypto.createHmac('sha256', sessionSecret()).update(payload).digest('hex');
+  return `${payload}.${hmac}`;
+}
+
+export function verifyMediaPreviewToken(token: string | undefined, expectedArchiveId: string): boolean {
+  if (!token) return false;
+  const parts = token.split('.');
+  if (parts.length !== 5 || parts[0] !== 'media-preview') return false;
+  const [, archiveId, expiresAtMsRaw] = parts;
+  if (archiveId !== expectedArchiveId) return false;
+  const expiresAtMs = Number(expiresAtMsRaw);
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs < Date.now()) return false;
+
+  const providedHmac = parts[4];
+  const payload = parts.slice(0, 4).join('.');
+  const expectedHmac = crypto.createHmac('sha256', sessionSecret()).update(payload).digest('hex');
+  const provided = Buffer.from(providedHmac);
+  const expected = Buffer.from(expectedHmac);
+  return provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
+}
+
 /** Accept a copied key or the complete downloaded recovery-key receipt. */
 export function normalizeRecoveryKeyInput(value: string): string {
   const trimmed = (value || '').trim().replace(/^["'`]|["'`]$/g, '').trim();
