@@ -5,6 +5,8 @@ import { db } from './db.js';
 import {
   createSignedToken,
   verifySignedToken,
+  createMediaPreviewToken,
+  verifyMediaPreviewToken,
   verifyArchivePin,
   verifyViewerPin,
   verifyOwnerRecoveryKey,
@@ -176,6 +178,18 @@ apiRouter.use(async (req, res, next) => {
 /**
  * Helper to extract and verify session from request
  */
+function expectedArchiveIdForRequest(req: Request): string | undefined {
+  const directId = req.params?.id;
+  if (directId) {
+    const directArchive = db.findById(directId) || db.findBySlug(directId);
+    if (directArchive) return directArchive.id;
+  }
+
+  const routeSlug = req.params?.workspaceSlug || req.params?.slug;
+  if (routeSlug) return db.findBySlug(routeSlug)?.id;
+  return undefined;
+}
+
 function getAuthContext(req: Request): { archiveId?: string; role: 'owner' | 'contributor' | 'viewer' | 'none' } {
   const authHeader = req.headers.authorization;
   const candidates = [
@@ -185,17 +199,29 @@ function getAuthContext(req: Request): { archiveId?: string; role: 'owner' | 'co
     req.cookies?.mc_viewer_token
   ].filter((token): token is string => Boolean(token));
 
-  // A stale bearer token must not mask a freshly renewed HTTP-only cookie.
-  // This happens after owner recovery while an already-mounted editor still
-  // has the previous token in its props.
+  const expectedArchiveId = expectedArchiveIdForRequest(req);
+  let firstValid: { archiveId?: string; role: 'owner' | 'contributor' | 'viewer' | 'none' } | undefined;
+
   for (const token of candidates) {
     const verification = verifySignedToken(token);
-    if (verification.valid && verification.archiveId && verification.role) {
-      return { archiveId: verification.archiveId, role: verification.role };
-    }
+    if (!verification.valid || !verification.archiveId || !verification.role) continue;
+    const context = { archiveId: verification.archiveId, role: verification.role };
+    firstValid ||= context;
+    if (!expectedArchiveId || verification.archiveId === expectedArchiveId) return context;
   }
 
-  return { role: 'none' };
+  // When the route identifies a specific archive, a valid cookie for a
+  // different archive must never mask the matching editor/viewer cookie.
+  if (expectedArchiveId) return { role: 'none' };
+  return firstValid || { role: 'none' };
+}
+
+function adminPreviewMediaCookieName(archiveId: string): string {
+  return `mc_preview_media_${archiveId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+}
+
+function hasAdminPreviewMediaAccess(req: Request, archiveId: string): boolean {
+  return verifyMediaPreviewToken(req.cookies?.[adminPreviewMediaCookieName(archiveId)], archiveId);
 }
 
 function setSessionCookie(
@@ -225,7 +251,12 @@ apiRouter.use('/archives/:id', (req: Request, res: Response, next: NextFunction)
   if (!archive || archive.deletedAt) return res.status(404).json({ error: 'Archive not found.' });
   const auth = getAuthContext(req);
   const ownSession = auth.archiveId === archive.id && auth.role !== 'none';
-  if ((archive.visibility === 'private' || archive.deploymentStatus !== 'deployed') && !ownSession) {
+  const adminPreviewMediaAccess =
+    ['GET', 'HEAD'].includes(req.method)
+    && req.path.startsWith('/media-object/')
+    && hasAdminPreviewMediaAccess(req, archive.id);
+  if (adminPreviewMediaAccess) res.locals.adminPreviewMediaAccess = true;
+  if ((archive.visibility === 'private' || archive.deploymentStatus !== 'deployed') && !ownSession && !adminPreviewMediaAccess) {
     return res.status(403).json({ error: 'Archive access required.' });
   }
   if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
@@ -457,6 +488,15 @@ apiRouter.get('/admin/archives/:id/preview', (req: Request, res: Response) => {
   if (!archive || archive.deletedAt) {
     return res.status(404).json({ error: 'Archive not found.' });
   }
+
+  const previewToken = createMediaPreviewToken(archive.id, 15);
+  res.cookie(adminPreviewMediaCookieName(archive.id), previewToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: `/api/archives/${archive.id}/media-object`,
+    maxAge: 15 * 60 * 1000
+  });
 
   return res.json({
     archive: sanitizeArchive(archive),
@@ -1492,7 +1532,8 @@ apiRouter.get('/archives/:id/media-object/:fileName', async (req: Request, res: 
   const archive = db.findById(id);
   if (!archive || !/^[a-zA-Z0-9._-]+$/.test(fileName)) return res.status(404).json({ error: 'Media not found.' });
   const auth = getAuthContext(req);
-  if (archive.visibility === 'private' && auth.archiveId !== id) {
+  const adminPreviewMediaAccess = Boolean(res.locals.adminPreviewMediaAccess) || hasAdminPreviewMediaAccess(req, id);
+  if (archive.visibility === 'private' && auth.archiveId !== id && !adminPreviewMediaAccess) {
     return res.status(401).json({ error: 'Viewer access is required.' });
   }
   const requestedStorageKey = `archives/${id}/${fileName}`;

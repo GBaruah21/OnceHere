@@ -539,3 +539,80 @@ test('section curation settings persist and reorder controls stay editor-only', 
     }
   }
 });
+
+test('workspace direct entry picks the session for that archive and admin preview gets media-only access', async ({ request }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const firstRecoveryKey = `mc_rec_first-${suffix}`;
+  const secondRecoveryKey = `mc_rec_second-${suffix}`;
+  const editorPin = '583921';
+  const created: Array<{ id: string; token: string }> = [];
+
+  try {
+    const firstResponse = await request.post('/api/archives', {
+      data: {
+        archiveType: 'school',
+        title: `Cookie A ${suffix}`,
+        organizationName: 'OnceHere Auth E2E',
+        startYear: 2025,
+        endYear: 2026,
+        themeId: 'midnight-cinema',
+        visibility: 'public',
+        contributionMode: 'owner-only',
+        recoveryKey: firstRecoveryKey
+      }
+    });
+    expect(firstResponse.status()).toBe(201);
+    const first = await firstResponse.json();
+    created.push({ id: first.archive.id, token: first.ownerToken });
+
+    const secondResponse = await request.post('/api/archives', {
+      data: {
+        archiveType: 'school',
+        title: `Cookie B ${suffix}`,
+        organizationName: 'OnceHere Auth E2E',
+        startYear: 2025,
+        endYear: 2026,
+        themeId: 'midnight-cinema',
+        visibility: 'public',
+        contributionMode: 'pin-protected',
+        editorPin,
+        recoveryKey: secondRecoveryKey
+      }
+    });
+    expect(secondResponse.status()).toBe(201);
+    const second = await secondResponse.json();
+    created.push({ id: second.archive.id, token: second.ownerToken });
+
+    const editorLogin = await request.post(`/api/archives/${second.archive.id}/auth/pin`, {
+      data: { pin: editorPin }
+    });
+    expect(editorLogin.ok()).toBeTruthy();
+
+    // Put the owner cookie back onto archive A while keeping archive B's
+    // editor cookie. Old auth selection incorrectly chose A and locked B.
+    const recoverFirst = await request.post(`/api/archives/${first.archive.id}/auth/recovery`, {
+      data: { recoveryKey: firstRecoveryKey }
+    });
+    expect(recoverFirst.ok()).toBeTruthy();
+
+    const directWorkspace = await request.get(`/api/archives/by-workspace/${second.workspaceSlug}`);
+    expect(directWorkspace.ok()).toBeTruthy();
+    const workspaceBody = await directWorkspace.json();
+    expect(workspaceBody.archive.id).toBe(second.archive.id);
+
+    const adminPreview = await request.get(`/api/admin/archives/${second.archive.id}/preview`, {
+      headers: { 'x-platform-admin-key': process.env.PLATFORM_ADMIN_KEY || 'oncehere-e2e-admin-key' }
+    });
+    expect(adminPreview.ok()).toBeTruthy();
+    const previewCookie = adminPreview.headers()['set-cookie'] || '';
+    expect(previewCookie).toContain(`mc_preview_media_${second.archive.id}`);
+    expect(previewCookie).toContain(`Path=/api/archives/${second.archive.id}/media-object`);
+    expect(previewCookie.toLowerCase()).toContain('httponly');
+  } finally {
+    for (const archive of created.reverse()) {
+      await request.delete(`/api/archives/${archive.id}`, {
+        headers: { Authorization: `Bearer ${archive.token}` }
+      }).catch(() => undefined);
+    }
+  }
+});
