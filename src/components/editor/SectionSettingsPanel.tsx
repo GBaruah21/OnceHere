@@ -1474,7 +1474,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                   {item.type === 'video' || item.url.startsWith('data:video') || item.url.endsWith('.mp4') ? (
                     <video src={item.url} className="w-full h-full object-cover" muted playsInline />
                   ) : (
-                    <img src={item.url} alt={item.caption || 'Memory'} className="w-full h-full object-cover" />
+                    <img src={item.thumbnailUrl || item.url} alt={item.caption || 'Memory'} className="w-full h-full object-cover" />
                   )}
                   
                   {/* Overlay caption & note count */}

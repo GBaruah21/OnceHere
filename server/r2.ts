@@ -21,7 +21,7 @@ export const R2_LIMITS = {
   maxTimelineAttachments: 20,
   maxTimelineVideos: 3,
   // Journey + Media Vault share one archive-wide video allowance.
-  maxArchiveVideos: 5,
+  maxArchiveVideos: 8,
   // Memory Notes: optional image only, max 5 image-attached notes.
   maxWallImageAttachments: 5,
   maxTotalBytesPerArchive: 500 * 1024 * 1024
@@ -221,7 +221,20 @@ export async function deleteObject(key: string): Promise<void> {
   await client().send(new DeleteObjectCommand({ Bucket: bucketName(), Key: key }));
 }
 
-export async function createDownloadUrl(key: string): Promise<string> {
+export async function createDownloadUrl(key: string, options: { longLived?: boolean } = {}): Promise<string> {
+  if (options.longLived) {
+    // Public archives only. The signing time is rounded down to the hour, so the
+    // same file gets the identical URL for a whole hour. That lets browsers (and
+    // any CDN) reuse the cached bytes instead of downloading again from storage.
+    // B2 is also told to send a 1-day cache header with the file.
+    const HOUR = 60 * 60 * 1000;
+    const signingDate = new Date(Math.floor(Date.now() / HOUR) * HOUR);
+    return getSignedUrl(client(), new GetObjectCommand({
+      Bucket: bucketName(),
+      Key: key,
+      ResponseCacheControl: 'public, max-age=86400'
+    }), { expiresIn: 3 * 60 * 60, signingDate });
+  }
   return getSignedUrl(client(), new GetObjectCommand({
     Bucket: bucketName(),
     Key: key

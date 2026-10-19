@@ -1996,7 +1996,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                         />
                       ) : (
                         <LazyImage
-                          src={item.type === 'video' ? item.thumbnailUrl! : item.url}
+                          src={item.type === 'video' ? item.thumbnailUrl! : (item.thumbnailUrl || item.url)}
                           alt={publicMediaCaption(item.caption) || (item.type === 'video' ? 'Video preview' : 'Memory snapshot')}
                           containerClassName="w-full h-full"
                           className="w-full h-full object-cover group-hover:scale-115 group-active:scale-125 transition-transform duration-700 ease-out"
