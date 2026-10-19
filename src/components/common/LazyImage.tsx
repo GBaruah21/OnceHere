@@ -52,7 +52,7 @@ export const LazyImage: React.FC<LazyImageProps> = ({
   };
 
   const handleError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
-    if (!retriedMediaRoute && src.includes('/media-object/')) {
+    if (!retriedMediaRoute && /\/media(-object)?\//.test(src)) {
       setRetriedMediaRoute(true);
       setCurrentSrc(`${src}${src.includes('?') ? '&' : '?'}retry=${Date.now()}`);
     } else if (!triedFallback && fallbackSrc && currentSrc !== fallbackSrc) {

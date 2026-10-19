@@ -41,7 +41,7 @@ import {
   verifyObject,
   getArchiveStorageUsage
 } from './r2.js';
-import { mediaCdnStatus, publicMediaCdnUrl } from './mediaCdn.js';
+import { mediaCdnStatus, publicMediaCdnUrl, rewritePublicMediaUrls } from './mediaCdn.js';
 
 export const apiRouter = express.Router();
 // Media bytes never belong in JSON. Keeping this limit small prevents stale or
@@ -550,7 +550,7 @@ apiRouter.get('/archives/by-slug/:slug', (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'private, no-store');
   }
 
-  return res.json({
+  const body = {
     archive: sanitizeArchive(archive),
     sections,
     timeline,
@@ -558,7 +558,9 @@ apiRouter.get('/archives/by-slug/:slug', (req: Request, res: Response) => {
     media,
     wall,
     albums
-  });
+  };
+  // Anonymous visitors of a public, deployed archive only (never owners/editors).
+  return res.json(auth.role === 'none' ? rewritePublicMediaUrls(archive, body) : body);
 });
 
 // Lookup archive by workspace slug (direct alias for workspace editor)
@@ -621,7 +623,7 @@ apiRouter.get('/archives/:id', (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'private, no-store');
   }
 
-  return res.json({
+  const body = {
     archive: sanitizeArchive(archive),
     sections,
     timeline,
@@ -629,7 +631,8 @@ apiRouter.get('/archives/:id', (req: Request, res: Response) => {
     media,
     wall,
     albums
-  });
+  };
+  return res.json(auth.role === 'none' ? rewritePublicMediaUrls(archive, body) : body);
 });
 
 // Update archive details (owner only for settings/permissions, contributor for safe fields)
