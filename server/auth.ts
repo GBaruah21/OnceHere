@@ -243,10 +243,24 @@ export function verifyViewerPin(archiveId: string, inputPin: string, ipAddress: 
   return { success: false, error: 'The PIN is incorrect. Please check it and try again.', lockedUntil: current.lockedUntil };
 }
 
-export async function findArchiveAndVerifyKey(
+type KeyLookupResult = { success: boolean; archive?: any; token?: string; error?: string };
+
+/**
+ * Owner-key lookup. If nothing matches, this instance may simply not know an archive that
+ * another instance just created, so re-read the archive index once and retry only if it
+ * learned something new. A normal hit never touches the database.
+ */
+export async function findArchiveAndVerifyKey(rawKey: string, identifier?: string): Promise<KeyLookupResult> {
+  const first = await findArchiveAndVerifyKeyInKnownArchives(rawKey, identifier);
+  if (first.success) return first;
+  if ((await db.refreshIndexIfMissing(2000)) > 0) return findArchiveAndVerifyKeyInKnownArchives(rawKey, identifier);
+  return first;
+}
+
+async function findArchiveAndVerifyKeyInKnownArchives(
   rawKey: string,
   identifier?: string
-): Promise<{ success: boolean; archive?: any; token?: string; error?: string }> {
+): Promise<KeyLookupResult> {
   const cleanKey = normalizeRecoveryKeyInput(rawKey);
   if (!cleanKey) return { success: false, error: 'Please enter your complete owner key.' };
 

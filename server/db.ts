@@ -94,6 +94,7 @@ export class MemoryDatabase {
   private tenantLoading = new Map<string, Promise<void>>();
   private legacyArchiveIds = new Set<string>();
   private schemaReady?: Promise<void>;
+  private indexCheckedAt = 0;
 
   constructor() {
     this.seedSampleData();
@@ -370,6 +371,34 @@ export class MemoryDatabase {
       await loading;
     } finally {
       this.tenantLoading.delete(archiveId);
+    }
+  }
+
+  /**
+   * Another serverless instance may have created an archive after this one started.
+   * Re-read the small archive index and ADD archives we do not know yet (never overwrites
+   * anything we already hold). Throttled; never throws. Returns how many were added.
+   */
+  async refreshIndexIfMissing(minGapMs = 5000): Promise<number> {
+    try {
+      const config = this.storageConfig;
+      if (!config) return 0;
+      const now = Date.now();
+      if (now - this.indexCheckedAt < minGapMs) return 0;
+      this.indexCheckedAt = now;
+      const index = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0]?.data;
+      if (!index || index.format !== TENANT_INDEX_FORMAT || !Array.isArray(index.archives)) return 0;
+      let added = 0;
+      for (const [id, archive] of index.archives as [string, Archive][]) {
+        if (id && archive?.id === id && !this.archives.has(id)) {
+          this.archives.set(id, archive);
+          added += 1;
+        }
+      }
+      return added;
+    } catch (error) {
+      console.error('Archive index refresh failed; continuing with the known archives.', error);
+      return 0;
     }
   }
 
