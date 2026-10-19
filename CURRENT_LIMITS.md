@@ -12,19 +12,19 @@ This file describes the limits enforced by the current application. The server-s
 | Source video file | 20 MB maximum |
 | Media Vault | 100 total attachments, including at most 5 videos |
 | Journey | 20 media attachments, including at most 3 videos |
-| Archive-wide video total | 5 videos maximum across Media Vault + Journey combined |
+| Archive-wide video total | 8 videos maximum across Media Vault + Journey combined |
 | Yearbook | 250 uploaded portrait allowance |
 | Memory Notes / Memory Wall | 5 image-attached notes; videos are not allowed; text-only notes can continue after the image limit |
 | Shared uploaded-media storage | 500 MB maximum physical object-storage usage per archive |
 | Memory Note text | 500 characters |
 
-The section allowances are independent except for videos: Media Vault can contain up to 5 videos and Journey up to 3, but an archive may contain only 5 videos across those two sections combined. All uploaded objects also share the same 500 MB physical-media ceiling. Count limits therefore do not guarantee that every slot can be filled with a maximum-size file.
+The section allowances are independent except for videos: Media Vault can contain up to 5 videos and Journey up to 3, but an archive may contain only 8 videos across those two sections combined. All uploaded objects also share the same 500 MB physical-media ceiling. Count limits therefore do not guarantee that every slot can be filled with a maximum-size file.
 
 With no videos, the listed media/portrait/image-attachment allowances total 375 slots (250 Yearbook + 20 Journey + 100 Vault + 5 Wall). The 500 MB physical storage ceiling normally becomes the practical limit before all slots can contain very large files.
 
 ### Image optimization
 
-OnceHere accepts source images up to 10 MB. Non-GIF images that benefit from optimization are resized to a maximum dimension of 2048 px and browser-compressed toward approximately 1.25 MB as high-quality WebP. If re-encoding would make the file larger, the original is kept. Animated GIFs are kept as supplied. Videos are not transcoded by OnceHere.
+OnceHere accepts source images up to 10 MB. Non-GIF images that benefit from optimization are resized to a maximum dimension of 1600 px and browser-compressed toward approximately 0.75 MB; Media Vault photos also get a ~480 px thumbnail used in grids as high-quality WebP. If re-encoding would make the file larger, the original is kept. Animated GIFs are kept as supplied. Videos are not transcoded by OnceHere.
 
 ### Video uploads
 

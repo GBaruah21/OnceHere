@@ -1,0 +1,242 @@
+import crypto from 'node:crypto';
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  HeadObjectCommand,
+  PutBucketCorsCommand,
+  PutObjectCommand,
+  S3Client
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+
+export const R2_LIMITS = {
+  imageBytes: 10 * 1024 * 1024,
+  videoBytes: 20 * 1024 * 1024,
+  // Media Vault: 100 total attachments, of which at most 5 may be videos.
+  maxVaultAttachments: 100,
+  maxVaultVideos: 5,
+  maxMemberPortraits: 250,
+  // Journey: 20 total attachments, of which at most 3 may be videos.
+  maxTimelineAttachments: 20,
+  maxTimelineVideos: 3,
+  // Journey + Media Vault share one archive-wide video allowance.
+  maxArchiveVideos: 8,
+  // Memory Notes: optional image only, max 5 image-attached notes.
+  maxWallImageAttachments: 5,
+  maxTotalBytesPerArchive: 500 * 1024 * 1024
+} as const;
+
+const ALLOWED_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/avif',
+  'image/gif',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime'
+]);
+
+// B2's dashboard presets have proved unreliable for S3 virtual-hosted upload
+// URLs. Configure the S3 CORS policy from the same credentials used to sign
+// uploads, once per server instance. The signed URL still controls write
+// access; this only lets browsers perform the required OPTIONS preflight.
+let corsConfiguredBucket: string | undefined;
+
+export const OBJECT_STORAGE_BROWSER_ORIGINS = [
+  'https://oncehere.vercel.app',
+  // Vercel branch/commit preview hosts. Uploads still require a short-lived,
+  // server-signed PUT URL, so CORS alone grants no bucket write access.
+  'https://*.vercel.app',
+  'https://oncehere-the-forever-home-of-memories.onrender.com'
+] as const;
+
+function required(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`Object storage is not configured: missing ${name}`);
+  return value;
+}
+
+export function isR2Configured(): boolean {
+  const generic = ['OBJECT_STORAGE_ENDPOINT', 'OBJECT_STORAGE_ACCESS_KEY_ID', 'OBJECT_STORAGE_SECRET_ACCESS_KEY', 'OBJECT_STORAGE_BUCKET']
+    .every((name) => Boolean(process.env[name]?.trim()));
+  const cloudflare = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME']
+    .every((name) => Boolean(process.env[name]?.trim()));
+  return generic || cloudflare;
+}
+
+function client(): S3Client {
+  const configuredEndpoint = process.env.OBJECT_STORAGE_ENDPOINT?.trim().replace(/\/$/, '');
+  const genericEndpoint = configuredEndpoint && !/^https?:\/\//i.test(configuredEndpoint)
+    ? `https://${configuredEndpoint}`
+    : configuredEndpoint;
+  return new S3Client({
+    region: process.env.OBJECT_STORAGE_REGION?.trim() || (genericEndpoint ? 'us-east-1' : 'auto'),
+    endpoint: genericEndpoint || `https://${required('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId: process.env.OBJECT_STORAGE_ACCESS_KEY_ID?.trim() || required('R2_ACCESS_KEY_ID'),
+      secretAccessKey: process.env.OBJECT_STORAGE_SECRET_ACCESS_KEY?.trim() || required('R2_SECRET_ACCESS_KEY')
+    },
+    forcePathStyle: process.env.OBJECT_STORAGE_FORCE_PATH_STYLE === 'true',
+    // Presigned browser PUTs have no body while being signed. The SDK's default
+    // checksum middleware otherwise signs the CRC32 of an empty body, which B2
+    // correctly rejects when the browser later sends the real file.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED'
+  });
+}
+
+function bucketName(): string {
+  return process.env.OBJECT_STORAGE_BUCKET?.trim() || required('R2_BUCKET_NAME');
+}
+
+export function validateUpload(type: string, size: number): 'image' | 'video' {
+  if (!ALLOWED_TYPES.has(type)) throw new Error('Unsupported file type. Use JPG, PNG, WebP, AVIF, GIF, MP4, WebM, or MOV.');
+  if (!Number.isSafeInteger(size) || size <= 0) throw new Error('Invalid file size.');
+  const kind = type.startsWith('video/') ? 'video' : 'image';
+  const limit = kind === 'video' ? R2_LIMITS.videoBytes : R2_LIMITS.imageBytes;
+  if (size > limit) throw new Error(`${kind === 'video' ? 'Video' : 'Image'} exceeds the ${Math.floor(limit / 1024 / 1024)} MB limit.`);
+  return kind;
+}
+
+export function createObjectKey(archiveId: string, contentType: string): string {
+  const extension: Record<string, string> = {
+    'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/avif': 'avif', 'image/gif': 'gif',
+    'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov'
+  };
+  return `archives/${archiveId}/${Date.now()}-${crypto.randomUUID()}.${extension[contentType]}`;
+}
+
+export function publicObjectUrl(key: string): string {
+  const [, archiveId, fileName] = key.split('/');
+  return `/api/archives/${encodeURIComponent(archiveId)}/media-object/${encodeURIComponent(fileName)}`;
+}
+
+async function ensureBrowserCors(): Promise<void> {
+  const bucket = bucketName();
+  if (corsConfiguredBucket === bucket) return;
+  try {
+    await client().send(new PutBucketCorsCommand({
+      Bucket: bucket,
+      CORSConfiguration: {
+        CORSRules: [{
+          AllowedHeaders: ['*'],
+          AllowedMethods: ['GET', 'HEAD', 'PUT'],
+          AllowedOrigins: [...OBJECT_STORAGE_BROWSER_ORIGINS],
+          ExposeHeaders: ['ETag'],
+          MaxAgeSeconds: 3600
+        }]
+      }
+    }), { abortSignal: AbortSignal.timeout(4_000) });
+    corsConfiguredBucket = bucket;
+  } catch (error) {
+    // Do not turn a provider-side CORS-management limitation into an outage.
+    // The existing bucket rule may already be valid; the presigned upload can
+    // still proceed in that case.
+    console.error('Unable to apply object-storage CORS policy:', error);
+  }
+}
+
+export async function createUploadUrl(key: string, contentType: string, _size: number): Promise<string> {
+  await ensureBrowserCors();
+  return getSignedUrl(client(), new PutObjectCommand({
+    Bucket: bucketName(),
+    Key: key,
+    ContentType: contentType
+  }), { expiresIn: 10 * 60 });
+}
+
+export async function verifyObject(key: string, expectedType: string, expectedSize: number) {
+  const result = await inspectObject(key);
+  if (result.ContentLength !== expectedSize || result.ContentType !== expectedType) {
+    throw new Error('Uploaded file verification failed. Please remove it and retry.');
+  }
+  return result;
+}
+
+export async function inspectObject(key: string) {
+  return client().send(new HeadObjectCommand({ Bucket: bucketName(), Key: key }));
+}
+
+/**
+ * Checks that the deployed credentials can reach the configured bucket without
+ * exposing its credentials or issuing any write/delete operation.
+ */
+export async function checkStorageConnection(): Promise<{ connected: boolean; code?: string }> {
+  if (!isR2Configured()) return { connected: false, code: 'not-configured' };
+  try {
+    await client().send(new ListObjectsV2Command({ Bucket: bucketName(), MaxKeys: 1 }));
+    return { connected: true };
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'name' in error
+      ? String((error as { name?: unknown }).name || 'connection-failed')
+      : 'connection-failed';
+    return { connected: false, code };
+  }
+}
+
+/**
+ * Physical media currently stored by OnceHere in its configured bucket.
+ * This intentionally scans only the archives/ prefix so unrelated bucket
+ * objects cannot distort the product-usage number shown to the platform owner.
+ */
+export async function getPlatformStorageUsage(): Promise<{ bytes: number; objects: number }> {
+  if (!isR2Configured()) return { bytes: 0, objects: 0 };
+  let continuationToken: string | undefined;
+  let bytes = 0;
+  let objects = 0;
+  do {
+    const page = await client().send(new ListObjectsV2Command({
+      Bucket: bucketName(),
+      Prefix: 'archives/',
+      ContinuationToken: continuationToken
+    }));
+    for (const object of page.Contents || []) {
+      bytes += Number(object.Size || 0);
+      objects += 1;
+    }
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return { bytes, objects };
+}
+
+/** Total physical media bytes for one archive, including section attachments. */
+export async function getArchiveStorageUsage(archiveId: string): Promise<number> {
+  let continuationToken: string | undefined;
+  let total = 0;
+  do {
+    const page = await client().send(new ListObjectsV2Command({
+      Bucket: bucketName(),
+      Prefix: `archives/${archiveId}/`,
+      ContinuationToken: continuationToken
+    }));
+    total += (page.Contents || []).reduce((sum, object) => sum + Number(object.Size || 0), 0);
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return total;
+}
+
+export async function deleteObject(key: string): Promise<void> {
+  await client().send(new DeleteObjectCommand({ Bucket: bucketName(), Key: key }));
+}
+
+export async function createDownloadUrl(key: string, options: { longLived?: boolean } = {}): Promise<string> {
+  if (options.longLived) {
+    // Public archives only. The signing time is rounded down to the hour, so the
+    // same file gets the identical URL for a whole hour. That lets browsers (and
+    // any CDN) reuse the cached bytes instead of downloading again from storage.
+    // B2 is also told to send a 1-day cache header with the file.
+    const HOUR = 60 * 60 * 1000;
+    const signingDate = new Date(Math.floor(Date.now() / HOUR) * HOUR);
+    return getSignedUrl(client(), new GetObjectCommand({
+      Bucket: bucketName(),
+      Key: key,
+      ResponseCacheControl: 'public, max-age=86400'
+    }), { expiresIn: 3 * 60 * 60, signingDate });
+  }
+  return getSignedUrl(client(), new GetObjectCommand({
+    Bucket: bucketName(),
+    Key: key
+  }), { expiresIn: 5 * 60 });
+}
