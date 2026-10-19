@@ -119,7 +119,9 @@ apiRouter.use(async (req, res, next) => {
     // Reads: pick up a newer saved copy unless this instance is mid-edit or it is a hot media redirect.
     if (archiveToLoad && db.findById(archiveToLoad) && ['GET', 'HEAD'].includes(req.method)
       && !req.path.includes('/media-object/') && !archiveMutationTails.has(archiveToLoad)) {
-      await db.refreshArchiveIfStale(archiveToLoad);
+      // Signed-in owners/editors check on every read (they just saved and expect to see it);
+      // anonymous visitors are throttled to one check per 2s per archive.
+      await db.refreshArchiveIfStale(archiveToLoad, (req.headers.authorization || req.cookies?.mc_owner_token || req.cookies?.mc_editor_token) ? 0 : 2000);
     }
 
     const methodCanMutate = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
