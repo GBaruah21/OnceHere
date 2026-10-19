@@ -34,6 +34,7 @@ const TENANT_INDEX_ID = 'tenant-index';
 interface StoredStateRow {
   id: string;
   data?: Record<string, unknown>;
+  updatedAt?: string;
 }
 
 
@@ -94,6 +95,10 @@ export class MemoryDatabase {
   private tenantLoading = new Map<string, Promise<void>>();
   private legacyArchiveIds = new Set<string>();
   private schemaReady?: Promise<void>;
+  // Freshness tracking so a warm serverless instance notices changes saved by another instance.
+  private tenantStoredAt = new Map<string, string>(); // archiveId -> updated_at we last loaded or wrote
+  private tenantCheckedAt = new Map<string, number>();
+  private indexCheckedAt = 0;
 
   constructor() {
     this.seedSampleData();
@@ -235,13 +240,17 @@ export class MemoryDatabase {
     await this.ensureStorageSchema(config);
     const placeholders = ids.map(() => '?').join(', ');
     const result = await this.storageClient(config).execute({
-      sql: `SELECT id, data FROM oncehere_state WHERE id IN (${placeholders}) ORDER BY id ASC`,
+      sql: `SELECT id, data, updated_at FROM oncehere_state WHERE id IN (${placeholders}) ORDER BY id ASC`,
       args: ids
     });
     return result.rows.flatMap((row) => {
       if (typeof row.id !== 'string' || typeof row.data !== 'string') return [];
       try {
-        return [{ id: row.id, data: JSON.parse(row.data) as Record<string, unknown> }];
+        return [{
+          id: row.id,
+          data: JSON.parse(row.data) as Record<string, unknown>,
+          updatedAt: typeof row.updated_at === 'string' ? row.updated_at : undefined
+        }];
       } catch {
         console.error(`Skipping invalid Turso state row ${row.id}.`);
         return [];
@@ -364,12 +373,71 @@ export class MemoryDatabase {
         stored.sha256,
         stored.compression === 'gzip' ? 'gzip' : undefined
       ));
+      if (row.updatedAt) this.tenantStoredAt.set(archiveId, row.updatedAt);
     })();
     this.tenantLoading.set(archiveId, loading);
     try {
       await loading;
     } finally {
       this.tenantLoading.delete(archiveId);
+    }
+  }
+
+  /**
+   * Serverless instances keep archives in memory. If another instance saved a newer
+   * copy, reload it before this instance serves or edits the archive. A cheap
+   * one-row timestamp check, at most once per maxAgeMs per archive. Never throws and
+   * never discards local data that is still being saved.
+   */
+  async refreshArchiveIfStale(archiveId: string, maxAgeMs = 2000): Promise<void> {
+    try {
+      const config = this.storageConfig;
+      if (!config || !this.loadedTenantIds.has(archiveId)) return;
+      if (this.tenantWriting.has(archiveId) || (this.tenantPending.get(archiveId)?.length || 0) > 0) return;
+      const now = Date.now();
+      if (maxAgeMs > 0 && now - (this.tenantCheckedAt.get(archiveId) || 0) < maxAgeMs) return;
+      this.tenantCheckedAt.set(archiveId, now);
+      await this.ensureStorageSchema(config);
+      const result = await this.storageClient(config).execute({
+        sql: 'SELECT updated_at FROM oncehere_state WHERE id = ?',
+        args: [`tenant-${archiveId}`]
+      });
+      const remote = result.rows[0]?.updated_at;
+      if (typeof remote !== 'string') return;
+      const known = this.tenantStoredAt.get(archiveId);
+      if (known && remote <= known) return;
+      const row = (await this.fetchRows(config, [`tenant-${archiveId}`]))[0];
+      const stored = row?.data;
+      if (!stored || stored.format !== TENANT_SNAPSHOT_FORMAT || !Array.isArray(stored.chunks)
+        || typeof stored.sha256 !== 'string') return;
+      // A local save may have started while we were reading: keep local state then.
+      if (this.tenantWriting.has(archiveId) || (this.tenantPending.get(archiveId)?.length || 0) > 0) return;
+      this.restoreTenant(decodeSnapshot(
+        stored.chunks as string[],
+        stored.sha256,
+        stored.compression === 'gzip' ? 'gzip' : undefined
+      ));
+      if (row.updatedAt) this.tenantStoredAt.set(archiveId, row.updatedAt);
+    } catch (error) {
+      console.error('Archive freshness check failed; serving the in-memory copy.', error);
+    }
+  }
+
+  /** Learn about archives created by other instances. Adds only archives we do not know yet. */
+  async refreshIndexIfMissing(minGapMs = 5000): Promise<void> {
+    try {
+      const config = this.storageConfig;
+      if (!config) return;
+      const now = Date.now();
+      if (now - this.indexCheckedAt < minGapMs) return;
+      this.indexCheckedAt = now;
+      const index = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0]?.data;
+      if (!index || index.format !== TENANT_INDEX_FORMAT || !Array.isArray(index.archives)) return;
+      for (const [id, archive] of index.archives as [string, Archive][]) {
+        if (id && archive?.id === id && !this.archives.has(id)) this.archives.set(id, archive);
+      }
+    } catch (error) {
+      console.error('Archive index refresh failed.', error);
     }
   }
 
@@ -409,7 +477,9 @@ export class MemoryDatabase {
   }
 
   private async writeTenantRow(config: { url: string; authToken: string }, archiveId: string): Promise<void> {
-    await this.upsertRows(config, [this.tenantStorageRow(archiveId)]);
+    const row = this.tenantStorageRow(archiveId);
+    await this.upsertRows(config, [row]);
+    this.tenantStoredAt.set(archiveId, row.updated_at);
     this.loadedTenantIds.add(archiveId);
   }
 
@@ -456,7 +526,9 @@ export class MemoryDatabase {
           const config = this.storageConfig;
           if (!config) throw new Error('Durable storage configuration disappeared.');
           // One libSQL batch keeps tenant content and lookup metadata together.
-          await this.upsertRows(config, [this.tenantStorageRow(archiveId), this.tenantIndexRow()]);
+          const tenantRow = this.tenantStorageRow(archiveId);
+          await this.upsertRows(config, [tenantRow, this.tenantIndexRow()]);
+          this.tenantStoredAt.set(archiveId, tenantRow.updated_at);
           this.loadedTenantIds.add(archiveId);
           waiters.forEach(({ resolve }) => resolve());
         } catch (error) {
