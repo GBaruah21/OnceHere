@@ -143,6 +143,7 @@ function generateBackupOwnerKey(): string {
 
 async function loadArchive(id: string): Promise<ArchiveWithBackupKey | undefined> {
   await db.ensureLoaded();
+  if (!db.findById(id)) await db.refreshIndexIfMissing();
   const archive = db.findById(id) as ArchiveWithBackupKey | undefined;
   if (!archive) return undefined;
   await db.ensureArchiveLoaded(id);

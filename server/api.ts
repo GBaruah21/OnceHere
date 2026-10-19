@@ -104,8 +104,14 @@ apiRouter.use(async (req, res, next) => {
     let archiveToLoad = directArchiveMatch?.[1] && !['auth', 'by-slug', 'by-workspace'].includes(directArchiveMatch[1])
       ? directArchiveMatch[1]
       : undefined;
+    // Another serverless instance may have created this archive since we started.
+    if (archiveToLoad && !db.findById(archiveToLoad)) await db.refreshIndexIfMissing();
     const slugMatch = req.path.match(/^\/archives\/(?:by-slug|by-workspace)\/([^/]+)/);
-    if (!archiveToLoad && slugMatch?.[1]) archiveToLoad = db.findBySlug(decodeURIComponent(slugMatch[1]))?.id;
+    if (!archiveToLoad && slugMatch?.[1]) {
+      const slugValue = decodeURIComponent(slugMatch[1]);
+      if (!db.findBySlug(slugValue)) await db.refreshIndexIfMissing();
+      archiveToLoad = db.findBySlug(slugValue)?.id;
+    }
     if (!archiveToLoad && req.path === '/analytics' && typeof req.body?.archiveId === 'string') {
       archiveToLoad = req.body.archiveId;
     }
