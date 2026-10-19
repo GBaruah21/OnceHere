@@ -46,7 +46,7 @@ export const PLATFORM_CONFIG = {
     maxMemberPortraits: 250,
     maxTimelineAttachments: 20,
     maxTimelineVideos: 3,
-    maxArchiveVideos: 5,
+    maxArchiveVideos: 8,
     maxWallImageAttachments: 5,
     maxMediaStorageMBPerArchive: 500,
 

@@ -13,11 +13,14 @@ function mockResponse() {
 }
 
 describe('archive-wide video policy', () => {
-  it('rejects a sixth combined Journey/Vault video while allowing non-video uploads', () => {
+  it('rejects a ninth combined Journey/Vault video while allowing non-video uploads', () => {
     const archiveId = `video-policy-${Date.now()}`;
     db.mediaItems.set(archiveId, [
       { id: 'v1', archiveId, type: 'video', url: 'one.mp4', caption: '', altText: '', tags: [], notes: [], position: 0, createdAt: new Date().toISOString() } as any,
-      { id: 'v2', archiveId, type: 'video', url: 'two.mp4', caption: '', altText: '', tags: [], notes: [], position: 1, createdAt: new Date().toISOString() } as any
+      { id: 'v2', archiveId, type: 'video', url: 'two.mp4', caption: '', altText: '', tags: [], notes: [], position: 1, createdAt: new Date().toISOString() } as any,
+      { id: 'v3', archiveId, type: 'video', url: 'three.mp4', caption: '', altText: '', tags: [], notes: [], position: 2, createdAt: new Date().toISOString() } as any,
+      { id: 'v4', archiveId, type: 'video', url: 'four.mp4', caption: '', altText: '', tags: [], notes: [], position: 3, createdAt: new Date().toISOString() } as any,
+      { id: 'v5', archiveId, type: 'video', url: 'five.mp4', caption: '', altText: '', tags: [], notes: [], position: 4, createdAt: new Date().toISOString() } as any
     ]);
     db.timelineEvents.set(archiveId, [
       { id: 't1', archiveId, title: 'A', description: 'A', yearLabel: '2025', mediaUrl: 'a.mp4', tags: [], position: 0, isDraft: false, createdAt: new Date().toISOString() } as any,
@@ -25,7 +28,7 @@ describe('archive-wide video policy', () => {
       { id: 't3', archiveId, title: 'C', description: 'C', yearLabel: '2025', mediaUrl: 'c.mov', tags: [], position: 2, isDraft: false, createdAt: new Date().toISOString() } as any
     ]);
 
-    expect(archiveVideoCount(archiveId)).toBe(5);
+    expect(archiveVideoCount(archiveId)).toBe(8);
 
     const { res, state } = mockResponse();
     let nextCalled = false;
@@ -39,7 +42,7 @@ describe('archive-wide video policy', () => {
 
     expect(nextCalled).toBe(false);
     expect(state.status).toBe(413);
-    expect(String((state.body as any).error)).toContain('maximum of 5 videos');
+    expect(String((state.body as any).error)).toContain('maximum of 8 videos');
 
     const imageResponse = mockResponse();
     nextCalled = false;

@@ -17,6 +17,8 @@ import {
 import {
   canUploadOriginalImage,
   compressImageForUpload,
+  PORTRAIT_COMPRESSION_PROFILE,
+  createImageThumbnail,
   IMAGE_SOURCE_LIMIT_BYTES,
   VIDEO_SOURCE_LIMIT_BYTES
 } from '../../lib/imageCompression';
@@ -448,6 +450,29 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
       completedUploadRef.current = { file, authorized };
     }
 
+    // Best-effort small grid thumbnail for photos in the Media Vault. If any step
+    // fails the photo is still saved and the grid just uses the full image.
+    if (uploadPurpose === 'vault' && file.type.startsWith('image/') && !(authorized as any).thumbnailUrl) {
+      try {
+        const thumb = await createImageThumbnail(file);
+        if (thumb) {
+          const thumbAuth = await fetch(`/api/archives/${directUpload.archiveId}/media/upload-url`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${directUpload.token || ''}` },
+            body: JSON.stringify({ fileName: thumb.name, contentType: thumb.type, size: thumb.size, purpose: uploadPurpose })
+          });
+          const thumbBody = await thumbAuth.json().catch(() => ({}));
+          if (thumbAuth.ok && thumbBody.uploadUrl && thumbBody.url) {
+            const up = await uploadBytes(thumbBody.uploadUrl, thumb, { 'Content-Type': thumb.type }, directUploadTimeoutMs(thumb), () => {});
+            if (up.status >= 200 && up.status < 300) {
+              (authorized as any).thumbnailUrl = thumbBody.url;
+              (authorized as any).thumbnailStorageKey = thumbBody.storageKey || thumbBody.key;
+            }
+          }
+        }
+      } catch { /* keep full image as the grid image */ }
+    }
+
     if (directUpload.autoRegister) {
       setUploadPhase('authorizing');
       const registration = await fetch(`/api/archives/${directUpload.archiveId}/media`, {
@@ -463,7 +488,9 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
           contentType: authorized.contentType,
           type: authorized.type,
           caption: file.name,
-          altText: file.name
+          altText: file.name,
+          thumbnailUrl: (authorized as any).thumbnailUrl,
+          thumbnailStorageKey: (authorized as any).thumbnailStorageKey
         })
       });
       const registered = await registration.json().catch(() => ({}));
@@ -501,7 +528,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         setIsProcessing(true);
         setUploadPhase('optimizing');
         setUploadProgress(null);
-        uploadFile = await compressImageForUpload(file);
+        uploadFile = await compressImageForUpload(file, uploadPurpose === 'portrait' ? PORTRAIT_COMPRESSION_PROFILE : undefined);
       } catch (error) {
         // Canvas/WebP encoding is not equally reliable in every browser. A
         // supported original is still safe to upload within the source limit;
@@ -539,7 +566,9 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
           name: uploadFile.name,
           size: completed.fileSize,
           storageKey: completed.storageKey || completed.key,
-          contentType: completed.contentType
+          contentType: completed.contentType,
+          thumbnailUrl: (completed as any).thumbnailUrl,
+          thumbnailStorageKey: (completed as any).thumbnailStorageKey
         });
         pendingFileRef.current = null;
       } catch (error) {

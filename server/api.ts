@@ -1567,9 +1567,14 @@ apiRouter.get('/archives/:id/media-object/:fileName', async (req: Request, res: 
     // CDN disabled, non-public archive, or trusted CDN-origin fetch: send the
     // client/Worker to a short-lived signed object-storage URL. The application
     // server transfers only this small redirect, never the image/video bytes.
-    const downloadUrl = await createDownloadUrl(requestedStorageKey);
-    res.setHeader('Cache-Control', archive.visibility === 'public'
-      ? 'public, max-age=240'
+    const isPublic = archive.visibility === 'public';
+    // Optional, OFF unless MEDIA_LONG_CACHE=1 is set in the host environment.
+    // When on, public archives get an hour-stable signed URL (valid for 2+ more
+    // hours) so browsers can reuse downloaded media. Default behavior is unchanged.
+    const longCache = isPublic && process.env.MEDIA_LONG_CACHE === '1';
+    const downloadUrl = await createDownloadUrl(requestedStorageKey, { longLived: longCache });
+    res.setHeader('Cache-Control', isPublic
+      ? (longCache ? 'public, max-age=3600' : 'public, max-age=240')
       : 'private, no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
     return res.redirect(302, downloadUrl);
@@ -1647,9 +1652,11 @@ apiRouter.post('/archives/:id/media', async (req: Request, res: Response) => {
     return res.status(413).json({ error: `The Media Vault already has its maximum of ${R2_LIMITS.maxVaultVideos} videos.` });
   }
 
-  let thumbnailUrl = type === 'video' ? req.body.thumbnailUrl : url;
-  let thumbnailStorageKey = type === 'video' ? req.body.thumbnailStorageKey : storageKey;
-  if (type === 'video' && (thumbnailUrl || thumbnailStorageKey)) {
+  // Videos use a poster image; images may carry a small grid thumbnail. Without
+  // one, images fall back to the full file as before.
+  let thumbnailUrl = type === 'video' ? req.body.thumbnailUrl : (req.body.thumbnailUrl || url);
+  let thumbnailStorageKey = type === 'video' ? req.body.thumbnailStorageKey : (req.body.thumbnailStorageKey || storageKey);
+  if ((type === 'video' || thumbnailStorageKey !== storageKey) && (thumbnailUrl || thumbnailStorageKey)) {
     if (typeof thumbnailUrl !== 'string' || typeof thumbnailStorageKey !== 'string' ||
         !thumbnailStorageKey.startsWith(`archives/${id}/`) || thumbnailUrl !== publicObjectUrl(thumbnailStorageKey)) {
       return res.status(400).json({ error: 'Invalid video thumbnail reference.' });

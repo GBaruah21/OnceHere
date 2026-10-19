@@ -83,7 +83,7 @@ test('public share bridge emits archive metadata while private share bridge does
   }
 });
 
-test('archive-wide video limit spans Journey and Media Vault', async ({ request }) => {
+test('video limits: Journey 3 + Media Vault 5 = 8 across the archive', async ({ request }) => {
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   let archiveId = '';
   let ownerToken = '';
@@ -121,7 +121,7 @@ test('archive-wide video limit spans Journey and Media Vault', async ({ request 
       expect(response.status()).toBe(201);
     }
 
-    for (let index = 1; index <= 2; index += 1) {
+    for (let index = 1; index <= 5; index += 1) {
       const response = await request.post(`/api/archives/${archiveId}/media`, {
         headers,
         data: {
@@ -142,7 +142,7 @@ test('archive-wide video limit spans Journey and Media Vault', async ({ request 
       }
     });
     expect(sixthVideo.status()).toBe(413);
-    expect((await sixthVideo.json()).error).toContain('maximum of 5 videos');
+    expect((await sixthVideo.json()).error).toContain('maximum of 8 videos');
   } finally {
     if (archiveId && ownerToken) {
       await request.delete(`/api/archives/${archiveId}`, {
