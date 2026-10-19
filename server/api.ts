@@ -116,6 +116,11 @@ apiRouter.use(async (req, res, next) => {
       archiveToLoad = req.body.archiveId;
     }
     if (archiveToLoad && db.findById(archiveToLoad)) await db.ensureArchiveLoaded(archiveToLoad);
+    // Reads: pick up a newer saved copy unless this instance is mid-edit or it is a hot media redirect.
+    if (archiveToLoad && db.findById(archiveToLoad) && ['GET', 'HEAD'].includes(req.method)
+      && !req.path.includes('/media-object/') && !archiveMutationTails.has(archiveToLoad)) {
+      await db.refreshArchiveIfStale(archiveToLoad);
+    }
 
     const methodCanMutate = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
     const isTransientOperation = req.path.includes('/media/upload')
@@ -128,6 +133,8 @@ apiRouter.use(async (req, res, next) => {
       : undefined;
     if (requestArchiveId && db.findById(requestArchiveId)) {
       await acquireArchiveMutationLock(requestArchiveId, res);
+      // Edit the newest saved copy, not a stale in-memory one (forced check, under our lock).
+      if (!isTransientOperation) await db.refreshArchiveIfStale(requestArchiveId, 0);
     }
     const beforeState = requestArchiveId ? db.captureArchiveState(requestArchiveId) : undefined;
 
