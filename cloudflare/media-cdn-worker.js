@@ -79,8 +79,8 @@ export default {
     const headers = new Headers(upstream.headers);
     headers.delete('set-cookie');
     headers.delete('www-authenticate');
-    headers.set('Cache-Control', 'public, max-age=300, s-maxage=300');
-    headers.set('Cloudflare-CDN-Cache-Control', 'public, max-age=300');
+    headers.set('Cache-Control', 'public, max-age=86400, s-maxage=86400');
+    headers.set('Cloudflare-CDN-Cache-Control', 'public, max-age=86400');
     headers.set('X-Content-Type-Options', 'nosniff');
     headers.set('Referrer-Policy', 'no-referrer');
     headers.set('Access-Control-Allow-Origin', '*');
