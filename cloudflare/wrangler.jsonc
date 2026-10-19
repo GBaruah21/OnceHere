@@ -8,6 +8,9 @@
     "enabled": true,
     "cross_version_cache": true
   },
+  "r2_buckets": [
+    { "binding": "MEDIA_MIRROR", "bucket_name": "oncehere-media-mirror" }
+  ],
   "vars": {
     "ORIGIN_BASE_URL": "https://oncehere.vercel.app"
   }

@@ -13,6 +13,40 @@ function noStore(status, body) {
   });
 }
 
+// Serve from the R2 mirror. Only ever called AFTER the origin (Vercel) has
+// authorized the request (it redirected to storage) and storage then failed
+// with 403 (Backblaze daily cap) or 5xx. Never called for origin 401/404, so
+// private-archive and not-found decisions stay with the origin.
+async function fromMirror(request, env, archiveId, fileName) {
+  const bucket = env.MEDIA_MIRROR;
+  if (!bucket) return null;
+  const key = `archives/${archiveId}/${fileName}`;
+  let object;
+  try {
+    object = request.method === 'HEAD'
+      ? await bucket.head(key)
+      : await bucket.get(key);
+  } catch {
+    return null; // mirror error: fall through to the original upstream error
+  }
+  if (!object) return null;
+  const contentType = (object.httpMetadata && object.httpMetadata.contentType) || '';
+  if (!MEDIA_TYPE_PATTERN.test(contentType)) return null;
+  const headers = new Headers();
+  headers.set('Content-Type', contentType);
+  if (object.size != null) headers.set('Content-Length', String(object.size));
+  headers.set('Cache-Control', 'public, max-age=300, s-maxage=300');
+  headers.set('Cloudflare-CDN-Cache-Control', 'public, max-age=300');
+  headers.set('X-Content-Type-Options', 'nosniff');
+  headers.set('Referrer-Policy', 'no-referrer');
+  headers.set('Access-Control-Allow-Origin', '*');
+  headers.set('X-Media-Source', 'r2-mirror');
+  return new Response(request.method === 'HEAD' ? null : object.body, {
+    status: 200,
+    headers
+  });
+}
+
 export default {
   async fetch(request, env) {
     if (!['GET', 'HEAD'].includes(request.method)) {
@@ -62,6 +96,12 @@ export default {
     }
 
     if (!upstream.ok) {
+      // Storage-cap (403) or upstream 5xx: try the R2 mirror. Origin 401/404
+      // (private or missing media) never reach the mirror.
+      if (upstream.status === 403 || upstream.status >= 500) {
+        const mirrored = await fromMirror(request, env, archiveId, fileName);
+        if (mirrored) return mirrored;
+      }
       const headers = new Headers(upstream.headers);
       headers.set('Cache-Control', 'no-store');
       headers.set('X-Content-Type-Options', 'nosniff');
