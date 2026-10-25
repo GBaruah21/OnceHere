@@ -41,28 +41,69 @@ export function buildRestoreRow(row, mint = mintRowVersion) {
   };
 }
 
-export async function restoreRows(client, rows, { dryRun = false } = {}) {
+// Restore is ATOMIC and FAIL-CLOSED:
+//   - every row is written inside ONE transaction; any failure rolls back ALL
+//     rows, so a restore can never leave a half-restored (incoherent) set.
+//   - pass `expected` ({ id: updated_at }) from a fresh inventory of the
+//     CURRENT database: each existing row is then restored only if it still
+//     matches that base, so a concurrent save between inventory and restore
+//     aborts everything instead of being silently overwritten.
+//   - without an expected base, only rows that do NOT exist yet are written
+//     (INSERT OR IGNORE); an existing row aborts the restore. `force: true`
+//     is the explicit, logged override (unconditional upsert, still atomic
+//     and verified) for a deliberate restore over unknown current state.
+export async function restoreRows(client, rows, { dryRun = false, expected = {}, force = false } = {}) {
   const plan = rows.map((row) => buildRestoreRow(row));
   if (dryRun) {
     return { dryRun: true, planned: plan.map((r) => ({ id: r.id, rowVersion: r.data.rowVersion })) };
   }
+  const tx = await client.transaction('write');
+  try {
+    for (const row of plan) {
+      const data = JSON.stringify(row.data);
+      const base = expected[row.id];
+      if (base !== undefined && !force) {
+        const res = await tx.execute({
+          sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ?',
+          args: [data, row.updated_at, row.id, base]
+        });
+        if ((res.rowsAffected ?? 0) === 0) {
+          throw new Error(`Restore aborted: ${row.id} changed since the expected base was read. NOTHING was written - re-inventory and retry.`);
+        }
+      } else if (!force) {
+        const res = await tx.execute({
+          sql: 'INSERT OR IGNORE INTO oncehere_state (id, data, updated_at) VALUES (?, ?, ?)',
+          args: [row.id, data, row.updated_at]
+        });
+        if ((res.rowsAffected ?? 0) === 0) {
+          throw new Error(`Refusing to restore ${row.id}: the row exists and no expected base was supplied. NOTHING was written - re-inventory and pass --expect, or use --force deliberately.`);
+        }
+      } else {
+        await tx.execute({
+          sql: `INSERT INTO oncehere_state (id, data, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
+          args: [row.id, data, row.updated_at]
+        });
+      }
+    }
+    await tx.commit();
+  } catch (error) {
+    await tx.rollback().catch(() => undefined);
+    throw error;
+  }
+  // Verify every written row by re-reading it after the commit.
   const done = [];
   for (const row of plan) {
-    await client.execute({
-      sql: `INSERT INTO oncehere_state (id, data, updated_at) VALUES (?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
-      args: [row.id, JSON.stringify(row.data), row.updated_at]
-    });
     const stored = (await client.execute({
       sql: 'SELECT data, updated_at FROM oncehere_state WHERE id = ?', args: [row.id]
     })).rows[0];
     const storedData = stored && typeof stored.data === 'string' ? JSON.parse(stored.data) : undefined;
     if (!storedData || storedData.rowVersion !== row.data.rowVersion || stored.updated_at !== row.updated_at) {
-      throw new Error(`Verify failed after restoring ${row.id}; completed ids: ${done.join(', ') || '(none)'}`);
+      throw new Error(`Verify failed after restoring ${row.id}; restored ids: ${done.join(', ') || '(none)'}`);
     }
     done.push(row.id);
   }
-  return { dryRun: false, restored: done };
+  return { dryRun: false, restored: done, forced: force };
 }
 
 // CLI entry
@@ -72,10 +113,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const i = args.indexOf(`--${name}`);
     return i >= 0 ? args[i + 1] : undefined;
   };
-  const [url, token, rowsFile] = [opt('url'), opt('token'), opt('rows')];
+  const [url, token, rowsFile, expectFile] = [opt('url'), opt('token'), opt('rows'), opt('expect')];
   const dryRun = args.includes('--dry-run');
+  const force = args.includes('--force');
   if (!url || !rowsFile || (!dryRun && !token)) {
-    console.error('Usage: node db/protected-restore.mjs --url <turso-url> --token <token> --rows <file.json> [--dry-run]');
+    console.error('Usage: node db/protected-restore.mjs --url <turso-url> --token <token> --rows <file.json> [--expect <file.json>] [--force] [--dry-run]');
+    console.error('  --expect: JSON map { id: updated_at } from a FRESH inventory of the current database.');
+    console.error('  --force : unconditional restore over unknown current state (deliberate override; still atomic + verified).');
     process.exit(2);
   }
   const rows = JSON.parse(fs.readFileSync(rowsFile, 'utf8'));
@@ -83,9 +127,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error('Rows file must be a non-empty JSON array of { id, data, updated_at }.');
     process.exit(2);
   }
+  const expected = expectFile ? JSON.parse(fs.readFileSync(expectFile, 'utf8')) : {};
+  if (force) console.error('FORCE restore: unconditional upserts over current state (atomic, verified).');
   const client = createClient({ url, authToken: token || 'dry-run' });
   try {
-    const result = await restoreRows(client, rows, { dryRun });
+    const result = await restoreRows(client, rows, { dryRun, expected, force });
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error(`Restore stopped: ${error.message}`);

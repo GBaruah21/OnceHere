@@ -109,8 +109,12 @@ describe('protected rollback + restore under the rowVersion barrier', () => {
     await newer.persistArchive(id);
     const current = JSON.parse(String((await readRow(tenantRowId)).data));
     expect(current.rowVersion).not.toBe(backupData.rowVersion);
-    // Protected restore of the backup (fresh mint inside buildRestoreRow).
-    const result = await restore.restoreRows(raw, [{ id: tenantRowId, data: backupData, updated_at: String(backup.updated_at) }]);
+    // Protected restore of the backup (fresh mint inside buildRestoreRow),
+    // conditioned on a FRESH inventory of the current durable row.
+    const currentStamp = String((await readRow(tenantRowId)).updated_at);
+    const result = await restore.restoreRows(raw,
+      [{ id: tenantRowId, data: backupData, updated_at: String(backup.updated_at) }],
+      { expected: { [tenantRowId]: currentStamp } });
     expect(result.restored).toEqual([tenantRowId]);
     const restored = JSON.parse(String((await readRow(tenantRowId)).data));
     expect(restored.rowVersion).not.toBe(backupData.rowVersion); // fresh, not replayed
@@ -147,6 +151,58 @@ describe('protected rollback + restore under the rowVersion barrier', () => {
     const result = await restore.restoreRows(raw, [{ id: 'tenant-restored-copy', data: backup }]);
     expect(result.restored).toEqual(['tenant-restored-copy']);
     expect(JSON.parse(String((await readRow('tenant-restored-copy')).data)).rowVersion).toBeTruthy();
+  });
+
+  it('aborts the WHOLE restore when one row moved since inventory (no partial restore)', async () => {
+    const tenantBefore = String((await readRow(tenantRowId)).data);
+    const tenantStamp = String((await readRow(tenantRowId)).updated_at);
+    const indexBefore = String((await readRow('tenant-index')).data);
+    const tenantBackup = JSON.parse(tenantBefore);
+    const indexBackup = JSON.parse(indexBefore);
+    // Tenant base is current; index base is stale (simulates a save landing
+    // between the operator's inventory and the restore).
+    await expect(restore.restoreRows(raw, [
+      { id: tenantRowId, data: tenantBackup },
+      { id: 'tenant-index', data: indexBackup }
+    ], { expected: { [tenantRowId]: tenantStamp, 'tenant-index': 'stale-base' } }))
+      .rejects.toThrow(/Restore aborted|Refusing to restore/);
+    // Atomicity: NEITHER row was restored.
+    expect(String((await readRow(tenantRowId)).data)).toBe(tenantBefore);
+    expect(String((await readRow('tenant-index')).data)).toBe(indexBefore);
+  });
+
+  it('aborts instead of overwriting a save that landed between inventory and restore', async () => {
+    const backup = JSON.parse(String((await readRow(tenantRowId)).data));
+    const inventoryStamp = String((await readRow(tenantRowId)).updated_at);
+    // A concurrent save lands after the inventory but before the restore.
+    const concurrent = new MemoryDatabase();
+    await concurrent.ensureLoaded();
+    await concurrent.ensureArchiveLoaded(id);
+    concurrent.updateArchive(id, { subtitle: 'concurrent winner' });
+    await concurrent.persistArchive(id);
+    await expect(restore.restoreRows(raw,
+      [{ id: tenantRowId, data: backup }],
+      { expected: { [tenantRowId]: inventoryStamp } }))
+      .rejects.toThrow(/Restore aborted/);
+    // The concurrent save is untouched; nothing was restored over it.
+    const durable = JSON.parse(String((await readRow(tenantRowId)).data));
+    const winnerSnapshot = decodeSnapshot(durable.chunks, durable.sha256, durable.compression);
+    expect((winnerSnapshot.archive as { subtitle: string }).subtitle).toBe('concurrent winner');
+  });
+
+  it('refuses to restore over an existing row with no expected base and no force', async () => {
+    const before = String((await readRow(tenantRowId)).data);
+    const backup = JSON.parse(before);
+    await expect(restore.restoreRows(raw, [{ id: tenantRowId, data: backup }]))
+      .rejects.toThrow(/Refusing to restore/);
+    expect(String((await readRow(tenantRowId)).data)).toBe(before);
+  });
+
+  it('force restores over current state deliberately (still atomic + verified)', async () => {
+    const backup = JSON.parse(String((await readRow(tenantRowId)).data));
+    const result = await restore.restoreRows(raw, [{ id: tenantRowId, data: backup }], { force: true });
+    expect(result.restored).toEqual([tenantRowId]);
+    expect(result.forced).toBe(true);
   });
 
   it('keeps all three guards installed after every operation above', async () => {
