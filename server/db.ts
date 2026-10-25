@@ -103,6 +103,7 @@ export class MemoryDatabase {
   private schemaReady?: Promise<void>;
   // Freshness tracking so a warm serverless instance notices changes saved by another instance.
   private tenantStoredAt = new Map<string, string>(); // archiveId -> updated_at we last loaded or wrote
+  private indexStoredAt?: string; // updated_at of the index row we last loaded or wrote (fail-closed CAS base)
   private tenantCheckedAt = new Map<string, number>();
   private indexCheckedAt = 0;
 
@@ -265,17 +266,45 @@ export class MemoryDatabase {
     });
   }
 
+  /**
+   * ROLLBACK-HOTFIX: fail-closed conditional writes. The unconditional upsert
+   * let this build clobber a newer save made by any overlapping writer (the
+   * barrier accepts both fresh rowVersions - it discriminates writer class,
+   * not staleness). Now every row in the batch must still match the copy this
+   * instance based its edit on, inside ONE transaction: a mismatch (or a row
+   * appearing concurrently) aborts the whole write and the caller gets an
+   * honest error instead of a silent lost update. No clobber, no partial
+   * tenant+index commit. Ordering among this build's own instances is
+   * unchanged from pre-barrier steady state.
+   */
   private async upsertRows(
     config: { url: string; authToken: string },
-    rows: Array<{ id: string; data: Record<string, unknown>; updated_at: string }>
+    rows: Array<{ id: string; data: Record<string, unknown>; updated_at: string; expectedUpdatedAt?: string }>
   ): Promise<void> {
     await this.ensureStorageSchema(config);
     const client = this.storageClient(config);
-    await client.batch(rows.map((row) => ({
-      sql: `INSERT INTO oncehere_state (id, data, updated_at) VALUES (?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
-      args: [row.id, JSON.stringify(row.data), row.updated_at]
-    })), 'write');
+    const tx = await client.transaction('write');
+    try {
+      for (const row of rows) {
+        const data = JSON.stringify(row.data);
+        const res = row.expectedUpdatedAt === undefined
+          ? await tx.execute({
+              sql: 'INSERT OR IGNORE INTO oncehere_state (id, data, updated_at) VALUES (?, ?, ?)',
+              args: [row.id, data, row.updated_at]
+            })
+          : await tx.execute({
+              sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ?',
+              args: [data, row.updated_at, row.id, row.expectedUpdatedAt]
+            });
+        if ((res.rowsAffected ?? 0) === 0) {
+          throw new Error(`Save rejected: ${row.id} was written by another instance at the same time. No changes were applied.`);
+        }
+      }
+      await tx.commit();
+    } catch (error) {
+      await tx.rollback().catch(() => undefined);
+      throw error;
+    }
   }
 
   /** A request-scoped copy used only to roll back a mutation when durable save fails. */
@@ -331,8 +360,9 @@ export class MemoryDatabase {
 
       // Turso starts clean. The bundled sample data is the only data seeded
       // automatically; this intentionally never imports Supabase snapshots.
-      const index = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0]?.data;
-      if (index && this.restoreTenantIndex(index)) {
+      const indexRow = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
+      if (indexRow?.data && this.restoreTenantIndex(indexRow.data)) {
+        if (indexRow.updatedAt) this.indexStoredAt = indexRow.updatedAt;
         this.loadedFromStorage = true;
         return;
       }
@@ -442,7 +472,9 @@ export class MemoryDatabase {
       const now = Date.now();
       if (now - this.indexCheckedAt < minGapMs) return 0;
       this.indexCheckedAt = now;
-      const index = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0]?.data;
+      const indexRow = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
+      if (indexRow?.updatedAt) this.indexStoredAt = indexRow.updatedAt;
+      const index = indexRow?.data;
       if (!index || index.format !== TENANT_INDEX_FORMAT || !Array.isArray(index.archives)) return 0;
       let added = 0;
       for (const [id, archive] of index.archives as [string, Archive][]) {
@@ -502,7 +534,12 @@ export class MemoryDatabase {
   }
 
   private async writeTenantIndex(config: { url: string; authToken: string }): Promise<void> {
-    await this.upsertRows(config, [this.tenantIndexRow()]);
+    const row = this.tenantIndexRow();
+    // Seed: indexStoredAt is undefined and the row does not exist yet, so the
+    // write is a plain INSERT. Every later write is conditional on the copy
+    // this instance last read or wrote.
+    await this.upsertRows(config, [{ ...row, expectedUpdatedAt: this.indexStoredAt }]);
+    this.indexStoredAt = row.updated_at;
   }
 
   private async seedTurso(): Promise<void> {
@@ -545,8 +582,13 @@ export class MemoryDatabase {
           if (!config) throw new Error('Durable storage configuration disappeared.');
           // One libSQL batch keeps tenant content and lookup metadata together.
           const tenantRow = this.tenantStorageRow(archiveId);
-          await this.upsertRows(config, [tenantRow, this.tenantIndexRow()]);
+          const indexRow = this.tenantIndexRow();
+          await this.upsertRows(config, [
+            { ...tenantRow, expectedUpdatedAt: this.tenantStoredAt.get(archiveId) },
+            { ...indexRow, expectedUpdatedAt: this.indexStoredAt }
+          ]);
           this.tenantStoredAt.set(archiveId, tenantRow.updated_at);
+          this.indexStoredAt = indexRow.updated_at;
           this.loadedTenantIds.add(archiveId);
           waiters.forEach(({ resolve }) => resolve());
         } catch (error) {
