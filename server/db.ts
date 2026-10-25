@@ -794,8 +794,14 @@ export class MemoryDatabase {
         for (const [id, archive] of data.archives as [string, Archive][]) {
           if (!id || archive?.id !== id) continue;
           const local = this.archives.get(id);
-          // Keep the fresher listing entry; ties keep ours (just persisted).
-          if (!local || String(archive.updatedAt || '') > String(local.updatedAt || '')) {
+          // Keep the fresher listing entry; ties keep ours (just persisted) -
+          // except a tombstone: soft-delete stamps deletedAt without bumping
+          // updatedAt, so a pre-delete local copy ties the deleted winner and
+          // would otherwise resurrect it in the durable index.
+          const winnerIsNewer = String(archive.updatedAt || '') > String(local?.updatedAt || '');
+          const tieBreakTombstone = Boolean(archive?.deletedAt) && !local?.deletedAt
+            && String(archive.updatedAt || '') === String(local?.updatedAt || '');
+          if (!local || winnerIsNewer || tieBreakTombstone) {
             this.archives.set(id, archive);
           }
         }
