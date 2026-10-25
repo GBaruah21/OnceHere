@@ -35,18 +35,27 @@ afterEach(() => {
 });
 
 describe('two serverless instances sharing one database', () => {
-  it('REPRODUCES the problem: without a freshness check B serves stale data and overwrites A\'s edit', async () => {
+  it('CLOSED by CAS: a stale save is REJECTED instead of overwriting A\'s edit', async () => {
     const { a, b } = await twoInstances();
     setTitle(a, 'Edited on A');
     await a.persistArchive(DEMO);
     expect(b.archives.get(DEMO)!.title).not.toBe('Edited on A'); // stale read
 
     addWall(b, 'wall-from-B');
-    await b.persistArchive(DEMO); // B saves its whole stale copy
+    // Pre-CAS this silently clobbered A's edit. Now it fails closed...
+    await expect(b.persistArchive(DEMO)).rejects.toThrow(/Save rejected/);
     const c = new MemoryDatabase();
     await c.ensureLoaded();
     await c.ensureArchiveLoaded(DEMO);
-    expect(c.archives.get(DEMO)!.title).not.toBe('Edited on A'); // A's edit was lost
+    expect(c.archives.get(DEMO)!.title).toBe('Edited on A'); // A's edit preserved
+    // ...and the rejection re-based B on the winner, so a re-applied change saves.
+    addWall(b, 'wall-from-B');
+    await b.persistArchive(DEMO);
+    const d = new MemoryDatabase();
+    await d.ensureLoaded();
+    await d.ensureArchiveLoaded(DEMO);
+    expect(d.archives.get(DEMO)!.title).toBe('Edited on A');
+    expect(d.wallPosts.get(DEMO)!.some((p) => p.id === 'wall-from-B')).toBe(true);
   });
 
   it('FIX: B reloads the newer copy before serving it', async () => {
@@ -61,7 +70,8 @@ describe('two serverless instances sharing one database', () => {
     const { a, b } = await twoInstances();
     setTitle(a, 'Edited on A');
     await a.persistArchive(DEMO);
-    await b.refreshArchiveIfStale(DEMO, 0);
+    await b.refreshArchiveIfStale(DEMO, 0); // re-base the tenant
+    await b.refreshIndexIfMissing(0);       // re-base the index too (CAS covers both)
     addWall(b, 'wall-from-B');
     await b.persistArchive(DEMO);
 
@@ -80,15 +90,19 @@ describe('two serverless instances sharing one database', () => {
     await b.refreshArchiveIfStale('does-not-exist', 0);
   });
 
-  it('keeps local state while a local save is in flight', async () => {
+  it('keeps local state while a local save is in flight, then that stale save fails closed and re-bases', async () => {
     const { a, b } = await twoInstances();
     setTitle(a, 'Edited on A');
     await a.persistArchive(DEMO);
     setTitle(b, 'Local unsaved edit on B');
     const saving = b.persistArchive(DEMO); // queued, in flight
     await b.refreshArchiveIfStale(DEMO, 0);
-    expect(b.archives.get(DEMO)!.title).toBe('Local unsaved edit on B');
-    await saving;
+    expect(b.archives.get(DEMO)!.title).toBe('Local unsaved edit on B'); // refresh never clobbers an in-flight save
+    // B's in-flight save was computed on the stale copy: rejected, not landed over A.
+    await expect(saving).rejects.toThrow(/Save rejected/);
+    // The rejection re-based B on the winner: the unsaved edit is gone WITH an
+    // honest error, and B now holds A's content.
+    expect(b.archives.get(DEMO)!.title).toBe('Edited on A');
   });
 
   it('B finds an archive that A created after B started', async () => {

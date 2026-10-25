@@ -301,17 +301,37 @@ export class MemoryDatabase {
           // (every recorded read/write sets both): refuse rather than weaken.
           throw new Error(`Save rejected: no complete base copy is held for ${row.id}. No changes were applied.`);
         }
-        const res = row.expectedUpdatedAt === undefined
-          ? await tx.execute({
-              sql: 'INSERT OR IGNORE INTO oncehere_state (id, data, updated_at) VALUES (?, ?, ?)',
-              args: [row.id, data, row.updated_at]
-            })
-          : await tx.execute({
-              sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ? AND data = ?',
-              args: [data, row.updated_at, row.id, row.expectedUpdatedAt, row.expectedRaw]
-            });
-        if ((res.rowsAffected ?? 0) === 0) {
-          throw new Error(`Save rejected: ${row.id} was written by another instance at the same time. No changes were applied.`);
+        if (row.expectedUpdatedAt === undefined) {
+          const res = await tx.execute({
+            sql: 'INSERT OR IGNORE INTO oncehere_state (id, data, updated_at) VALUES (?, ?, ?)',
+            args: [row.id, data, row.updated_at]
+          });
+          if ((res.rowsAffected ?? 0) === 0) {
+            // Fresh-id insert lost the race. Two instances seeding an empty
+            // database at once write byte-identical rows: that is benign, not
+            // a conflict - adopt what is stored. DIFFERENT content is a real
+            // conflict and stays fail-closed.
+            const existing = await tx.execute({ sql: 'SELECT data, updated_at FROM oncehere_state WHERE id = ?', args: [row.id] });
+            const stored = existing.rows[0];
+            if (!stored || String(stored.data) !== data) {
+              throw new Error(`Save rejected: ${row.id} was written by another instance at the same time. No changes were applied.`);
+            }
+          }
+        } else {
+          const res = await tx.execute({
+            sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ? AND data = ?',
+            args: [data, row.updated_at, row.id, row.expectedUpdatedAt, row.expectedRaw]
+          });
+          if ((res.rowsAffected ?? 0) === 0) {
+            // Distinguish a genuine conflict from a base that refers to a row
+            // that no longer exists (fresh/restored database under a warm
+            // instance): the caller recovers differently for each.
+            const exists = await tx.execute({ sql: 'SELECT 1 AS one FROM oncehere_state WHERE id = ?', args: [row.id] });
+            if (exists.rows.length === 0) {
+              throw new Error(`Save rejected: base row ${row.id} no longer exists. No changes were applied.`);
+            }
+            throw new Error(`Save rejected: ${row.id} was written by another instance at the same time. No changes were applied.`);
+          }
         }
       }
       await tx.commit();
@@ -442,6 +462,55 @@ export class MemoryDatabase {
    * one-row timestamp check, at most once per maxAgeMs per archive. Never throws and
    * never discards local data that is still being saved.
    */
+
+  /**
+   * After a rejected (conflicted) save, re-read the tenant row and the index
+   * from durable storage and adopt them as the base: local conflicting state
+   * is replaced by the winner's content, and the raw/stamp bases match what is
+   * actually stored. A retry then either saves cleanly or conflicts again on a
+   * genuinely newer writer. Never throws - a failed re-base just means the
+   * next save fails closed too.
+   */
+  private async rebaseAfterConflict(archiveId: string): Promise<void> {
+    try {
+      const config = this.storageConfig;
+      if (!config) return;
+      await this.ensureStorageSchema(config);
+      const row = (await this.fetchRows(config, [`tenant-${archiveId}`]))[0];
+      const stored = row?.data;
+      if (!stored) {
+        // Base row vanished (fresh/restored database): drop the stale base so
+        // the next save re-creates the row from memory as a fresh insert.
+        this.tenantStoredAt.delete(archiveId);
+        this.tenantStoredRaw.delete(archiveId);
+      } else if (stored.format === TENANT_SNAPSHOT_FORMAT && Array.isArray(stored.chunks)
+        && typeof stored.sha256 === 'string') {
+        this.restoreTenant(decodeSnapshot(
+          stored.chunks as string[],
+          stored.sha256,
+          stored.compression === 'gzip' ? 'gzip' : undefined
+        ));
+        if (row.updatedAt) this.tenantStoredAt.set(archiveId, row.updatedAt);
+        if (row.raw) this.tenantStoredRaw.set(archiveId, row.raw);
+        this.tenantCheckedAt.set(archiveId, Date.now());
+      }
+      const indexRow = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
+      if (!indexRow?.data) {
+        this.indexStoredAt = undefined;
+        this.indexStoredRaw = undefined;
+      } else if (indexRow.data.format === TENANT_INDEX_FORMAT && Array.isArray(indexRow.data.archives)) {
+        for (const [id, archive] of indexRow.data.archives as [string, Archive][]) {
+          if (!this.archives.has(id)) this.archives.set(id, archive); // discover what others added
+        }
+        if (indexRow.updatedAt) this.indexStoredAt = indexRow.updatedAt;
+        if (indexRow.raw) this.indexStoredRaw = indexRow.raw;
+        this.indexCheckedAt = Date.now();
+      }
+    } catch (error) {
+      console.error('Post-conflict re-base failed; next save will fail closed too.', error);
+    }
+  }
+
   async refreshArchiveIfStale(archiveId: string, maxAgeMs = 2000): Promise<void> {
     try {
       const config = this.storageConfig;
@@ -559,7 +628,17 @@ export class MemoryDatabase {
     // Seed: indexStoredAt is undefined and the row does not exist yet, so the
     // write is a plain INSERT. Every later write is conditional on the copy
     // this instance last read or wrote.
-    await this.upsertRows(config, [{ ...row, expectedUpdatedAt: this.indexStoredAt, expectedRaw: this.indexStoredRaw }]);
+    try {
+      await this.upsertRows(config, [{ ...row, expectedUpdatedAt: this.indexStoredAt, expectedRaw: this.indexStoredRaw }]);
+    } catch (error) {
+      // A base pointing at a vanished index row (fresh/restored database under
+      // a warm instance) is not a conflict: drop the stale base and write as a
+      // fresh insert once. A real conflict still fails closed.
+      if (!(error instanceof Error) || !/base row .* no longer exists/.test(error.message)) throw error;
+      this.indexStoredAt = undefined;
+      this.indexStoredRaw = undefined;
+      await this.upsertRows(config, [{ ...row, expectedUpdatedAt: undefined, expectedRaw: undefined }]);
+    }
     this.indexStoredAt = row.updated_at;
     this.indexStoredRaw = JSON.stringify(row.data);
   }
@@ -616,6 +695,13 @@ export class MemoryDatabase {
           this.loadedTenantIds.add(archiveId);
           waiters.forEach(({ resolve }) => resolve());
         } catch (error) {
+          // Fail-closed is only half the job: after a conflict the base is
+          // stale, so every later save would keep failing. Re-base this tenant
+          // AND the index from durable storage so the NEXT save is computed on
+          // the winner's state and can succeed honestly.
+          if (error instanceof Error && /Save rejected/.test(error.message)) {
+            await this.rebaseAfterConflict(archiveId);
+          }
           waiters.forEach(({ reject }) => reject(error));
         }
       }

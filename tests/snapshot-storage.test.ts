@@ -1,13 +1,19 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const turso = vi.hoisted(() => ({
-  execute: vi.fn(),
-  batch: vi.fn()
-}));
+const turso = vi.hoisted(() => {
+  const tx = { execute: vi.fn(), commit: vi.fn(async () => undefined), rollback: vi.fn(async () => undefined) };
+  return {
+    execute: vi.fn(),
+    batch: vi.fn(),
+    tx,
+    // The write path is ONE interactive transaction of conditional statements.
+    transaction: vi.fn(async () => tx)
+  };
+});
 
 vi.mock('@libsql/client', () => ({
-  createClient: vi.fn(() => ({ execute: turso.execute, batch: turso.batch }))
+  createClient: vi.fn(() => ({ execute: turso.execute, batch: turso.batch, transaction: turso.transaction }))
 }));
 import { db, decodeSnapshot, encodeSnapshot, MemoryDatabase } from '../server/db';
 
@@ -15,6 +21,10 @@ describe('chunked durable snapshots', () => {
   afterEach(() => {
     turso.execute.mockReset();
     turso.batch.mockReset();
+    turso.tx.execute.mockReset();
+    turso.tx.commit.mockClear();
+    turso.tx.rollback.mockClear();
+    turso.transaction.mockClear();
     delete process.env.TURSO_DATABASE_URL;
     delete process.env.TURSO_AUTH_TOKEN;
   });
@@ -51,15 +61,18 @@ describe('chunked durable snapshots', () => {
     process.env.TURSO_DATABASE_URL = 'libsql://oncehere.turso.io';
     process.env.TURSO_AUTH_TOKEN = 'test-token';
     turso.execute.mockResolvedValue({ rows: [] });
-    turso.batch.mockResolvedValue([]);
+    turso.tx.execute.mockResolvedValue({ rows: [], rowsAffected: 1 });
 
     await db.persistArchive('demo-marys-2025');
 
-    const statements = turso.batch.mock.calls[0][0];
+    // tenant row + index row written as conditional statements in ONE transaction
+    const statements = turso.tx.execute.mock.calls.map(([statement]: [{ sql: string; args: unknown[] }]) => statement);
     expect(statements).toHaveLength(2);
-    expect(statements.map((statement: { args: unknown[] }) => statement.args[0]))
-      .toEqual(['tenant-demo-marys-2025', 'tenant-index']);
-    const tenant = JSON.parse(statements[0].args[1] as string);
+    const rowIds = statements.map((statement: { sql: string; args: unknown[] }) =>
+      statement.sql.startsWith('INSERT') ? statement.args[0] : statement.args[2]);
+    expect(rowIds).toEqual(['tenant-demo-marys-2025', 'tenant-index']);
+    expect(turso.tx.commit).toHaveBeenCalledTimes(1);
+    const tenant = JSON.parse(statements[0].sql.startsWith('INSERT') ? statements[0].args[1] as string : statements[0].args[0] as string);
     const restored = decodeSnapshot(tenant.chunks, tenant.sha256, tenant.compression);
     expect((restored.archive as { id: string }).id).toBe('demo-marys-2025');
   });
@@ -68,15 +81,14 @@ describe('chunked durable snapshots', () => {
     process.env.TURSO_DATABASE_URL = 'libsql://oncehere.turso.io';
     process.env.TURSO_AUTH_TOKEN = 'test-token';
     turso.execute.mockResolvedValue({ rows: [] });
-    turso.batch.mockResolvedValue([]);
+    turso.tx.execute.mockResolvedValue({ rows: [], rowsAffected: 1 });
     const database = new MemoryDatabase();
 
     await database.ensureLoaded();
 
-    expect(turso.batch).toHaveBeenCalledTimes(database.archives.size + 1);
-    const ids = turso.batch.mock.calls.flatMap(([statements]: any[]) =>
-      statements.map((statement: { args: unknown[] }) => statement.args[0])
-    );
+    expect(turso.tx.execute).toHaveBeenCalledTimes(database.archives.size + 1);
+    const ids = turso.tx.execute.mock.calls.map(([statement]: [{ sql: string; args: unknown[] }]) =>
+      statement.sql.startsWith('INSERT') ? statement.args[0] : statement.args[2]);
     expect(ids).toContain('tenant-index');
     expect(ids.every((id: string) => id === 'tenant-index' || id.startsWith('tenant-demo-'))).toBe(true);
   });
