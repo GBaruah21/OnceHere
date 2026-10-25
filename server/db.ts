@@ -257,7 +257,10 @@ export class MemoryDatabase {
       format: TENANT_INDEX_FORMAT,
       archives: Array.from(this.archives.entries()),
       legacyArchiveIds: Array.from(this.legacyArchiveIds),
-      platformSettings: this.platformSettings
+      platformSettings: this.platformSettings,
+      // Same barrier contract as the tenant rows: the index is shared by all
+      // archives, so a stale writer must not revert it either.
+      rowVersion: newVersionToken()
     };
   }
 
@@ -674,7 +677,12 @@ export class MemoryDatabase {
         format: TENANT_SNAPSHOT_FORMAT,
         chunks: encoded.chunks,
         compression: encoded.compression,
-        sha256: encoded.sha256
+        sha256: encoded.sha256,
+        // Fresh on every row build: lets the durable rowVersion barrier
+        // (db/rowversion-barrier.sql) tell a current writer from a stale or
+        // pre-barrier one. Legacy code builds this envelope without the field,
+        // so its writes to a barrier-stamped row are rejected at the database.
+        rowVersion: newVersionToken()
       },
       updated_at: newVersionToken()
     };
