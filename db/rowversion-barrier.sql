@@ -24,15 +24,18 @@
 --     writers comes from the application CAS (conditionalTenantWrite), and
 --     the first-write-after-cutover ordering also relies on that CAS. Both
 --     layers are required.
---   - This does NOT make rollback to pre-barrier code safe. With the barrier
---     installed, pre-barrier code cannot write stamped rows at all (writes
---     fail closed). ROLLBACK TO PRE-BARRIER CODE IS BLOCKED while these
---     triggers exist; a protected rollback route has not been engineered.
---     Do not drop these triggers as a "rollback step": that removes the
---     protection while unprotected writers are live.
---   - Bulk data restore over stamped rows is likewise blocked (a verbatim
---     restore re-presents an identical rowVersion). A restore procedure must
---     be engineered and tested separately before any restore is attempted.
+--   - Pristine pre-barrier code cannot write under this barrier (its writes
+--     fail closed). The PROTECTED ROLLBACK route is branch
+--     exp/rollback-hotfix-2026-10-25: pre-barrier behavior plus a fresh
+--     rowVersion per row build, so rollback keeps every write
+--     barrier-passing and the guards are NEVER dropped. Do not drop these
+--     triggers as a "rollback step": that removes the protection while
+--     unprotected writers are live.
+--   - Restore is engineered in db/protected-restore.mjs: upsert-only, fresh
+--     rowVersion minted per attempt, per-row verify, stop-on-first-failure.
+--     A verbatim replay of a row's CURRENT rowVersion is rejected by design;
+--     delete+reinsert restore shapes are rejected by guard 2. Both are
+--     covered by tests/protected-rollback-restore.test.ts.
 --
 -- INSTALL / REMOVE
 --   Install: run this file against the production database ONCE, any time
