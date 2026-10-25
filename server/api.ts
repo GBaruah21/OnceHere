@@ -625,7 +625,7 @@ apiRouter.get('/archives/by-slug/:slug', (req: Request, res: Response) => {
   const albums = db.getAlbums(archive.id);
 
   if (archive.visibility === 'public' && auth.role === 'none') {
-    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=120');
+    res.setHeader('Cache-Control', 'public, max-age=5, stale-while-revalidate=25');
   } else {
     res.setHeader('Cache-Control', 'private, no-store');
   }
