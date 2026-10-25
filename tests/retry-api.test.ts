@@ -224,6 +224,25 @@ describe('Durable save acknowledgement', () => {
     });
   });
 
+  it('surfaces a CAS conflict as a fail-visible 409 (not a silent success, not a 503)', async () => {
+    const id = 'demo-marys-2025';
+    const owner = createSignedToken(id, 'owner', 1);
+    const originalTitle = db.findById(id)!.title;
+    vi.mocked(db.persistArchive).mockRejectedValueOnce(
+      new Error('Save rejected: tenant-demo-marys-2025 was written by another instance at the same time. No changes were applied.'));
+    try {
+      const response = await patchRequest(`/archives/${id}`, { title: 'Conflicting edit' }, { Authorization: `Bearer ${owner}` });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: 'Someone else saved changes to this archive at the same time. Your change was not applied; the latest copy is loaded - make your change again.',
+        storageCode: 'save-conflict'
+      });
+      expect(db.findById(id)!.title).toBe(originalTitle); // mutation rolled back
+    } finally {
+      db.sessions.delete(owner);
+    }
+  });
+
   it('rolls an archive mutation back when durable storage rejects it', async () => {
     const id = 'demo-marys-2025';
     const owner = createSignedToken(id, 'owner', 1);

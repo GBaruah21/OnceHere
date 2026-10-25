@@ -172,6 +172,18 @@ apiRouter.use(async (req, res, next) => {
           console.error('Failed to save archive data:', error);
           if (archiveId) db.restoreArchiveState(archiveId, beforeState);
           if (!res.headersSent) {
+            // A CAS conflict is NOT a storage outage: the contributor must see
+            // that their change was NOT applied because a newer save won, and
+            // that the latest copy is now loaded for an honest retry.
+            const isConflict = error instanceof Error && /Save rejected/.test(error.message);
+            if (isConflict) {
+              res.status(409);
+              sendJson({
+                error: 'Someone else saved changes to this archive at the same time. Your change was not applied; the latest copy is loaded - make your change again.',
+                storageCode: 'save-conflict'
+              });
+              return;
+            }
             const status = error instanceof Error
               ? error.message.match(/Supabase save failed \((\d+)\)/)?.[1]
               : undefined;
