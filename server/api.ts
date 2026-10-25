@@ -1575,7 +1575,18 @@ apiRouter.post('/archives/:id/media/upload-url', async (req: Request, res: Respo
   } catch (error) {
     return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid upload request.' });
   }
-  const quotaError = await checkUploadQuota(id, parsed.data.purpose, kind, parsed.data.size);
+  let quotaError: string | null;
+  try {
+    quotaError = await checkUploadQuota(id, parsed.data.purpose, kind, parsed.data.size);
+  } catch (error) {
+    // A storage-side listing failure (provider outage, credentials, network)
+    // must fail this request honestly, never crash the server process.
+    console.error('Upload quota check failed:', error);
+    return res.status(503).json({
+      error: 'Storage upload could not be prepared. Retry the upload. If it still fails, refresh the page.',
+      retryable: true
+    });
+  }
   if (quotaError) return res.status(413).json({ error: quotaError });
   try {
     const key = createObjectKey(id, parsed.data.contentType);
