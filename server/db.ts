@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { createClient } from '@libsql/client';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import {
   Archive,
@@ -24,6 +24,12 @@ const SNAPSHOT_CHUNK_SIZE = 64 * 1024;
 const SNAPSHOT_READ_CONCURRENCY = 6;
 const TENANT_SNAPSHOT_FORMAT = 1;
 const TENANT_INDEX_FORMAT = 1;
+// ROLLBACK-HOTFIX: mint a fresh `<iso>#<uuid>` rowVersion per row build so this
+// pre-barrier build stays write-capable under the rowVersion barrier
+// (db/rowversion-barrier.sql) - the protected rollback route that never
+// requires dropping the guards. Ordering protection is unchanged from
+// pre-barrier steady state; the barrier keeps rejecting UNPATCHED writers.
+const newRowVersion = () => `${new Date().toISOString()}#${randomUUID()}`;
 // Revisions are full copies of a section at the moment of an edit. Keeping
 // dozens of them makes a media-heavy archive grow on every save, even though
 // the media itself lives in object storage. Eight is enough for practical
@@ -173,7 +179,8 @@ export class MemoryDatabase {
       format: TENANT_INDEX_FORMAT,
       archives: Array.from(this.archives.entries()),
       legacyArchiveIds: Array.from(this.legacyArchiveIds),
-      platformSettings: this.platformSettings
+      platformSettings: this.platformSettings,
+      rowVersion: newRowVersion()
     };
   }
 
@@ -472,7 +479,8 @@ export class MemoryDatabase {
         format: TENANT_SNAPSHOT_FORMAT,
         chunks: encoded.chunks,
         compression: encoded.compression,
-        sha256: encoded.sha256
+        sha256: encoded.sha256,
+        rowVersion: newRowVersion()
       },
       updated_at: new Date().toISOString()
     };
