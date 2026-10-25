@@ -111,12 +111,13 @@ export function verifySignedToken(token: string): { valid: boolean; archiveId?: 
   return { valid: false };
 }
 
-export function verifyArchivePin(archiveId: string, inputPin: string, ipAddress: string = 'client'): {
+export async function verifyArchivePin(archiveId: string, inputPin: string, ipAddress: string = 'client'): Promise<{
   success: boolean;
   token?: string;
   error?: string;
   lockedUntil?: number;
-} {
+  storageError?: boolean;
+}> {
   const archive = db.findById(archiveId);
   if (!archive || archive.deletedAt || archive.contributionMode === 'owner-only') {
     return { success: false, error: 'Archive not found.' };
@@ -124,20 +125,25 @@ export function verifyArchivePin(archiveId: string, inputPin: string, ipAddress:
 
   const rateKey = `pin:${archiveId}:${ipAddress}`;
   const now = Date.now();
-  const limit = db.rateLimits.get(rateKey);
+  const windowMs = PLATFORM_CONFIG.limits.pinLockoutMinutes * 60 * 1000;
 
-  if (limit) {
-    if (limit.lockedUntil && now < limit.lockedUntil) {
-      const waitMinutes = Math.ceil((limit.lockedUntil - now) / 60000);
-      return {
-        success: false,
-        error: `Too many failed attempts. Access locked for ${waitMinutes} minute${waitMinutes > 1 ? 's' : ''}.`,
-        lockedUntil: limit.lockedUntil
-      };
-    }
-    if (now - limit.firstAttemptAt > PLATFORM_CONFIG.limits.pinLockoutMinutes * 60 * 1000) {
-      db.rateLimits.delete(rateKey);
-    }
+  // Authoritative read first. If it cannot be read, abuse state is unknown:
+  // fail closed rather than grant uncounted attempts.
+  let limit: { attempts: number; firstAttemptAt: number; lockedUntil?: number } | undefined;
+  try {
+    limit = await db.readRateLimit(rateKey);
+  } catch (error) {
+    console.error('PIN attempt state could not be read; refusing unverified sign-in.', error);
+    return { success: false, error: 'The sign-in state could not be verified. Please try again.', storageError: true };
+  }
+
+  if (limit?.lockedUntil && now < limit.lockedUntil) {
+    const waitMinutes = Math.ceil((limit.lockedUntil - now) / 60000);
+    return {
+      success: false,
+      error: `Too many failed attempts. Access locked for ${waitMinutes} minute${waitMinutes > 1 ? 's' : ''}.`,
+      lockedUntil: limit.lockedUntil
+    };
   }
 
   if (archive.contributionMode === 'open') {
@@ -151,23 +157,41 @@ export function verifyArchivePin(archiveId: string, inputPin: string, ipAddress:
 
   const isMatch = bcrypt.compareSync(inputPin.trim(), archive.editorPinHash);
   if (isMatch) {
-    db.rateLimits.delete(rateKey);
+    // Conditional clear: never erase an active lockout - concurrent failures
+    // may have locked the key between our read and this clear. And a failed
+    // clear must not block a cryptographically verified sign-in: the stale
+    // counter expires with its window. Logged.
+    await db.mutateRateLimit(rateKey, (entry) => (entry?.lockedUntil && now < entry.lockedUntil) ? entry : null).catch((error) => {
+      console.error('PIN attempt counter could not be cleared after a verified sign-in; it expires with its window.', error);
+    });
     const token = createSignedToken(archiveId, 'contributor', PLATFORM_CONFIG.limits.editorSessionHours);
     return { success: true, token };
   }
 
-  const currentLimit = db.rateLimits.get(rateKey) || { attempts: 0, firstAttemptAt: now };
-  currentLimit.attempts += 1;
-  if (currentLimit.attempts >= PLATFORM_CONFIG.limits.maxFailedPinAttempts) {
-    currentLimit.lockedUntil = now + PLATFORM_CONFIG.limits.pinLockoutMinutes * 60 * 1000;
-    db.rateLimits.set(rateKey, currentLimit);
+  let outcome: { attempts: number; firstAttemptAt: number; lockedUntil?: number } | null;
+  try {
+    outcome = await db.mutateRateLimit(rateKey, (entry) => {
+      const base = !entry || now - entry.firstAttemptAt > windowMs
+        ? { attempts: 0, firstAttemptAt: now }
+        : { ...entry };
+      base.attempts += 1;
+      if (base.attempts >= PLATFORM_CONFIG.limits.maxFailedPinAttempts) {
+        base.lockedUntil = now + windowMs;
+      }
+      return base;
+    });
+  } catch (error) {
+    console.error('PIN attempt state could not be updated; refusing uncounted attempt.', error);
+    return { success: false, error: 'The sign-in state could not be verified. Please try again.', storageError: true };
+  }
+
+  if (outcome?.lockedUntil) {
     return {
       success: false,
       error: 'The PIN could not be verified. Please wait and try again later.',
-      lockedUntil: currentLimit.lockedUntil
+      lockedUntil: outcome.lockedUntil
     };
   }
-  db.rateLimits.set(rateKey, currentLimit);
   return { success: false, error: 'The PIN could not be verified. Please check it and try again.' };
 }
 
@@ -207,12 +231,13 @@ export function verifyOwnerRecoveryKey(archiveId: string, rawKey: string): {
 }
 
 /** Verify the separate private-viewer PIN without granting editing rights. */
-export function verifyViewerPin(archiveId: string, inputPin: string, ipAddress: string = 'client'): {
+export async function verifyViewerPin(archiveId: string, inputPin: string, ipAddress: string = 'client'): Promise<{
   success: boolean;
   token?: string;
   error?: string;
   lockedUntil?: number;
-} {
+  storageError?: boolean;
+}> {
   const archive = db.findById(archiveId);
   if (!archive || archive.deletedAt) return { success: false, error: 'Archive not found.' };
   if (archive.visibility !== 'private' || !archive.viewerPinHash) {
@@ -221,26 +246,45 @@ export function verifyViewerPin(archiveId: string, inputPin: string, ipAddress: 
 
   const rateKey = `viewer-pin:${archiveId}:${ipAddress}`;
   const now = Date.now();
-  const limit = db.rateLimits.get(rateKey);
+  const windowMs = PLATFORM_CONFIG.limits.pinLockoutMinutes * 60 * 1000;
+
+  let limit: { attempts: number; firstAttemptAt: number; lockedUntil?: number } | undefined;
+  try {
+    limit = await db.readRateLimit(rateKey);
+  } catch (error) {
+    console.error('Viewer PIN attempt state could not be read; refusing unverified sign-in.', error);
+    return { success: false, error: 'The sign-in state could not be verified. Please try again.', storageError: true };
+  }
+
   if (limit?.lockedUntil && now < limit.lockedUntil) {
     return { success: false, error: 'Too many failed attempts. Try again later.', lockedUntil: limit.lockedUntil };
   }
-  if (limit && now - limit.firstAttemptAt > PLATFORM_CONFIG.limits.pinLockoutMinutes * 60 * 1000) {
-    db.rateLimits.delete(rateKey);
-  }
 
   if (bcrypt.compareSync(inputPin.trim(), archive.viewerPinHash)) {
-    db.rateLimits.delete(rateKey);
+    await db.mutateRateLimit(rateKey, (entry) => (entry?.lockedUntil && now < entry.lockedUntil) ? entry : null).catch((error) => {
+      console.error('Viewer PIN attempt counter could not be cleared after a verified sign-in; it expires with its window.', error);
+    });
     return { success: true, token: createSignedToken(archiveId, 'viewer', 24) };
   }
 
-  const current = db.rateLimits.get(rateKey) || { attempts: 0, firstAttemptAt: now };
-  current.attempts += 1;
-  if (current.attempts >= PLATFORM_CONFIG.limits.maxFailedPinAttempts) {
-    current.lockedUntil = now + PLATFORM_CONFIG.limits.pinLockoutMinutes * 60 * 1000;
+  let outcome: { attempts: number; firstAttemptAt: number; lockedUntil?: number } | null;
+  try {
+    outcome = await db.mutateRateLimit(rateKey, (entry) => {
+      const base = !entry || now - entry.firstAttemptAt > windowMs
+        ? { attempts: 0, firstAttemptAt: now }
+        : { ...entry };
+      base.attempts += 1;
+      if (base.attempts >= PLATFORM_CONFIG.limits.maxFailedPinAttempts) {
+        base.lockedUntil = now + windowMs;
+      }
+      return base;
+    });
+  } catch (error) {
+    console.error('Viewer PIN attempt state could not be updated; refusing uncounted attempt.', error);
+    return { success: false, error: 'The sign-in state could not be verified. Please try again.', storageError: true };
   }
-  db.rateLimits.set(rateKey, current);
-  return { success: false, error: 'The PIN is incorrect. Please check it and try again.', lockedUntil: current.lockedUntil };
+
+  return { success: false, error: 'The PIN is incorrect. Please check it and try again.', lockedUntil: outcome?.lockedUntil };
 }
 
 type KeyLookupResult = { success: boolean; archive?: any; token?: string; error?: string };

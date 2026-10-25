@@ -73,6 +73,7 @@ export interface ArchiveSettings {
 }
 
 export interface Archive {
+  saveVersion?: string;
   id: string;
   workspaceSlug: string; // Internal temporary workspace identifier (e.g. ws-abc123xyz)
   slug: string;          // Public URL slug (e.g. marys-convent-2026)

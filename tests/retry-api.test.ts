@@ -3,7 +3,7 @@ import cookieParser from 'cookie-parser';
 import type { Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { apiRouter } from '../server/api';
-import { db } from '../server/db';
+import { db, archiveSaveVersion } from '../server/db';
 import { createSignedToken, verifySignedToken, verifyArchivePin, verifyOwnerRecoveryKey } from '../server/auth';
 
 let server: Server;
@@ -105,7 +105,7 @@ describe.each([1, 2, 3, 4, 5])('Retry regression iteration %i', iteration => {
         else db.memberMessages.delete(id);
       }
       db.archives.set(id, { ...original, contributionMode: 'owner-only' });
-      expect(verifyArchivePin(id, '202525', `qa-${iteration}`).success).toBe(false);
+      expect((await verifyArchivePin(id, '202525', `qa-${iteration}`)).success).toBe(false);
       db.archives.set(id, { ...original, deletedAt: new Date().toISOString() });
       expect(verifyOwnerRecoveryKey(id, 'mc_rec_sample_key_123').success).toBe(false);
       expect(verifySignedToken(viewer).valid).toBe(false);
@@ -184,10 +184,16 @@ describe.each([1, 2, 3, 4, 5])('Retry regression iteration %i', iteration => {
       const recovery = await request('/archives/auth/key-access', { key });
       const recovered = await recovery.json();
       expect(recovered.archive.approxPeopleCount).toBe(count);
-      const updated = await patchRequest(`/archives/${result.archive.id}`, { approxPeopleCount: count + 1 }, { Authorization: `Bearer ${recovered.token}` });
+      const updated = await patchRequest(`/archives/${result.archive.id}`, { approxPeopleCount: count + 1, baseVersion: recovered.archive.saveVersion }, { Authorization: `Bearer ${recovered.token}` });
       expect(updated.status).toBe(200);
-      expect((await updated.json()).archive.membersCount).toBe(count + 1);
-      expect((await patchRequest(`/archives/${result.archive.id}`, { approxPeopleCount: 0 }, { Authorization: `Bearer ${recovered.token}` })).status).toBe(400);
+      const updatedBody = await updated.json();
+      expect(updatedBody.archive.membersCount).toBe(count + 1);
+      // V6: an empty yearbook legitimately reports 0 members; the editor must be able to save that state.
+      expect((await patchRequest(`/archives/${result.archive.id}`, { approxPeopleCount: 0, baseVersion: updatedBody.archive.saveVersion }, { Authorization: `Bearer ${recovered.token}` })).status).toBe(200);
+      // But non-integer / negative / non-numeric counts are still rejected.
+      for (const bad of [-3, 1.5, 'abc']) {
+        expect((await patchRequest(`/archives/${result.archive.id}`, { approxPeopleCount: bad }, { Authorization: `Bearer ${recovered.token}` })).status).toBe(400);
+      }
     }
   });
 
@@ -219,7 +225,7 @@ describe('Durable save acknowledgement', () => {
     const response = await request('/analytics', { eventName: 'test_storage_failure' });
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({
-      error: 'The change could not be saved to durable storage. Retry without closing this page.',
+      error: 'The change could not be saved to durable storage.',
       storageCode: 'storage-unavailable'
     });
   });
@@ -230,7 +236,7 @@ describe('Durable save acknowledgement', () => {
     const originalTitle = db.findById(id)!.title;
     vi.mocked(db.persistArchive).mockRejectedValueOnce(new Error('simulated tenant save failure'));
     try {
-      const response = await patchRequest(`/archives/${id}`, { title: 'Must not remain in memory' }, { Authorization: `Bearer ${owner}` });
+      const response = await patchRequest(`/archives/${id}`, { title: 'Must not remain in memory', baseVersion: archiveSaveVersion(db.findById(id)!) }, { Authorization: `Bearer ${owner}` });
       expect(response.status).toBe(503);
       expect(db.findById(id)!.title).toBe(originalTitle);
     } finally {

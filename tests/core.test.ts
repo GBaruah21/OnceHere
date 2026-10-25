@@ -73,8 +73,8 @@ describe('Security & Authentication', () => {
     expect(verifySignedToken(recoveryResult.token!).role).toBe('owner');
   });
 
-  it('keeps contributor and private-viewer sessions least-privileged', () => {
-    const contributor = verifyArchivePin('demo-marys-2025', '202525', 'test-contributor');
+  it('keeps contributor and private-viewer sessions least-privileged', async () => {
+    const contributor = await verifyArchivePin('demo-marys-2025', '202525', 'test-contributor');
     expect(contributor.success).toBe(true);
     expect(verifySignedToken(contributor.token!).role).toBe('contributor');
 
@@ -84,7 +84,7 @@ describe('Security & Authentication', () => {
     archive.viewerPinHash = archive.editorPinHash;
     archive.visibility = 'private';
     try {
-      const viewer = verifyViewerPin('demo-marys-2025', '202525', 'test-viewer');
+      const viewer = await verifyViewerPin('demo-marys-2025', '202525', 'test-viewer');
       expect(viewer.success).toBe(true);
       expect(verifySignedToken(viewer.token!).role).toBe('viewer');
     } finally {
@@ -93,10 +93,10 @@ describe('Security & Authentication', () => {
     }
   });
 
-  it('does not reveal contributor PIN attempt counts or thresholds', () => {
+  it('does not reveal contributor PIN attempt counts or thresholds', async () => {
     const ip = `generic-pin-error-${Date.now()}`;
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const result = verifyArchivePin('demo-marys-2025', '908172', ip);
+      const result = await verifyArchivePin('demo-marys-2025', '908172', ip);
       expect(result.success).toBe(false);
       expect(result.error).not.toMatch(/\b[1-5]\b|attempt|maximum/i);
     }

@@ -47,21 +47,29 @@ describe('chunked durable snapshots', () => {
     expect(decodeSnapshot([legacyChunk], hash)).toEqual(snapshot);
   });
 
-  it('writes one archive tenant and the compact index in one Turso batch', async () => {
+  it('writes one archive tenant with a compare-and-swap guard, then the compact index', async () => {
     process.env.TURSO_DATABASE_URL = 'libsql://oncehere.turso.io';
     process.env.TURSO_AUTH_TOKEN = 'test-token';
-    turso.execute.mockResolvedValue({ rows: [] });
+    turso.execute.mockResolvedValue({ rows: [], rowsAffected: 1 });
     turso.batch.mockResolvedValue([]);
 
     await db.persistArchive('demo-marys-2025');
 
-    const statements = turso.batch.mock.calls[0][0];
-    expect(statements).toHaveLength(2);
-    expect(statements.map((statement: { args: unknown[] }) => statement.args[0]))
-      .toEqual(['tenant-demo-marys-2025', 'tenant-index']);
-    const tenant = JSON.parse(statements[0].args[1] as string);
+    // Tenant row: a guarded write (INSERT OR IGNORE on first save, conditional
+    // UPDATE ... WHERE updated_at = last-known afterwards) so a concurrent
+    // instance's newer copy is never silently overwritten.
+    const tenantCall = turso.execute.mock.calls.find(([statement]: [{ sql: string }]) =>
+      /INSERT OR IGNORE INTO oncehere_state|UPDATE oncehere_state SET data/.test(statement.sql));
+    expect(tenantCall).toBeDefined();
+    expect(tenantCall![0].args[0]).toBe('tenant-demo-marys-2025');
+    const tenant = JSON.parse(tenantCall![0].args[1] as string);
     const restored = decodeSnapshot(tenant.chunks, tenant.sha256, tenant.compression);
     expect((restored.archive as { id: string }).id).toBe('demo-marys-2025');
+    // Index row still written alongside (guarded write path uses execute).
+    const executeIds = turso.execute.mock.calls
+      .map(([statement]: [{ sql: string; args: unknown[] }]) => statement?.args?.[0])
+      .filter(Boolean);
+    expect(executeIds).toContain('tenant-index');
   });
 
   it('seeds only built-in demos into an empty Turso database', async () => {

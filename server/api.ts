@@ -1,7 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
-import { db } from './db.js';
+import { db, archiveSaveVersion } from './db.js';
 import {
   createSignedToken,
   verifySignedToken,
@@ -80,18 +80,39 @@ function hasPlatformAdminAccess(req: Request) {
   return Boolean(adminKey && req.header('x-platform-admin-key') === adminKey);
 }
 
-function limitRecoveryAttempts(req: Request, res: Response, next: NextFunction) {
+async function limitRecoveryAttempts(req: Request, res: Response, next: NextFunction) {
+  // Atomic durable counting: simultaneous attempts across instances serialize
+  // through the row CAS, and an unreadable/unwritable counter fails closed
+  // instead of silently allowing uncounted recovery tries.
   const key = `recovery:${req.ip || req.socket.remoteAddress || 'unknown'}`;
   const now = Date.now();
-  let entry = db.rateLimits.get(key);
-  if (!entry || now - entry.firstAttemptAt >= 15 * 60 * 1000) entry = { attempts: 0, firstAttemptAt: now };
-  if (entry.attempts >= 5) {
-    res.setHeader('Retry-After', Math.ceil((entry.firstAttemptAt + 15 * 60 * 1000 - now) / 1000));
+  const windowMs = 15 * 60 * 1000;
+  let entry: { attempts: number; firstAttemptAt: number; lockedUntil?: number } | null;
+  try {
+    entry = await db.mutateRateLimit(key, (current) => {
+      const base = !current || now - current.firstAttemptAt >= windowMs
+        ? { attempts: 0, firstAttemptAt: now }
+        : { ...current };
+      base.attempts += 1;
+      return base;
+    });
+  } catch (error) {
+    console.error('Recovery attempt state could not be verified; refusing uncounted attempt.', error);
+    return res.status(503).json({ error: 'Recovery attempts could not be verified. Please try again.' });
+  }
+  if (entry && entry.attempts > 5) {
+    res.setHeader('Retry-After', Math.ceil((entry.firstAttemptAt + windowMs - now) / 1000));
     return res.status(429).json({ error: 'Too many recovery attempts. Wait 15 minutes before trying again.' });
   }
-  entry.attempts += 1;
-  db.rateLimits.set(key, entry);
-  res.once('finish', () => { if (res.statusCode < 400) db.rateLimits.delete(key); });
+  res.once('finish', () => {
+    // A verified recovery clears the counter; a failed clear leaves a stale
+    // counter that expires with its window, so it is logged, not blocking.
+    if (res.statusCode < 400) {
+      const clearAt = Date.now();
+      void db.mutateRateLimit(key, (entry) => (entry?.lockedUntil && clearAt < entry.lockedUntil) ? entry : null)
+        .catch((error) => console.error('Recovery attempt counter clear failed.', error));
+    }
+  });
   next();
 }
 
@@ -99,17 +120,33 @@ function limitRecoveryAttempts(req: Request, res: Response, next: NextFunction) 
 // previous full-platform rewrite made every edit progressively slower.
 apiRouter.use(async (req, res, next) => {
   try {
-    await db.ensureLoaded();
+    try {
+      await db.ensureLoaded();
+    } catch (loadError) {
+      // Durable state could not be loaded at all: fail closed with an honest
+      // 503 instead of a bare 500 or silently serving non-durable writes.
+      console.error('Durable state load failed for this request:', loadError);
+      return res.status(503).json({ error: 'Archive storage is temporarily unavailable. Please retry.' });
+    }
     const directArchiveMatch = req.path.match(/^\/(?:admin\/)?archives\/([^/]+)/);
     let archiveToLoad = directArchiveMatch?.[1] && !['auth', 'by-slug', 'by-workspace'].includes(directArchiveMatch[1])
       ? directArchiveMatch[1]
       : undefined;
     // Another serverless instance may have created this archive since we started.
-    if (archiveToLoad && !db.findById(archiveToLoad)) await db.refreshIndexIfMissing();
+    // The throttled index refresh can skip a just-created archive inside its
+    // window; a targeted single-row fetch closes that gap so a real archive
+    // never 404s for being unknown to this instance.
+    if (archiveToLoad && !db.findById(archiveToLoad)) {
+      await db.refreshIndexIfMissing();
+      if (!db.findById(archiveToLoad)) await db.loadTenantIfExistsRemotely(archiveToLoad);
+    }
     const slugMatch = req.path.match(/^\/archives\/(?:by-slug|by-workspace)\/([^/]+)/);
     if (!archiveToLoad && slugMatch?.[1]) {
       const slugValue = decodeURIComponent(slugMatch[1]);
       if (!db.findBySlug(slugValue)) await db.refreshIndexIfMissing();
+      // Slug lookups need the compact index row itself; force it past the
+      // throttle on a miss so a just-created slug resolves immediately.
+      if (!db.findBySlug(slugValue)) await db.refreshIndexIfMissing(5000, true);
       archiveToLoad = db.findBySlug(slugValue)?.id;
     }
     if (!archiveToLoad && req.path === '/analytics' && typeof req.body?.archiveId === 'string') {
@@ -136,7 +173,13 @@ apiRouter.use(async (req, res, next) => {
     if (requestArchiveId && db.findById(requestArchiveId)) {
       await acquireArchiveMutationLock(requestArchiveId, res);
       // Edit the newest saved copy, not a stale in-memory one (forced check, under our lock).
-      if (!isTransientOperation) await db.refreshArchiveIfStale(requestArchiveId, 0);
+      // An archive known only from the cross-instance index has no durable version
+      // token yet: load the tenant row first or the first save mis-fires as a
+      // create-collision (spurious conflict) instead of a compare-and-swap.
+      if (!isTransientOperation) {
+        await db.ensureArchiveLoaded(requestArchiveId);
+        await db.refreshArchiveIfStale(requestArchiveId, 0);
+      }
     }
     const beforeState = requestArchiveId ? db.captureArchiveState(requestArchiveId) : undefined;
 
@@ -169,6 +212,20 @@ apiRouter.use(async (req, res, next) => {
           if (!res.headersSent) sendJson(body);
         })
         .catch((error) => {
+          // Write conflict: another instance saved this archive between our read
+          // and our write. db already reloaded the winning copy - do NOT roll it
+          // back over the winner; tell the editor to refresh and retry instead of
+          // silently losing either side's work.
+          if ((error as { code?: string })?.code === 'TENANT_CONFLICT') {
+            if (!res.headersSent) {
+              res.status(409);
+              sendJson({
+                error: 'This archive was edited elsewhere at the same moment, so this change was not saved.',
+                code: 'edit-conflict'
+              });
+            }
+            return;
+          }
           console.error('Failed to save archive data:', error);
           if (archiveId) db.restoreArchiveState(archiveId, beforeState);
           if (!res.headersSent) {
@@ -177,7 +234,7 @@ apiRouter.use(async (req, res, next) => {
               : undefined;
             res.status(503);
             sendJson({
-              error: 'The change could not be saved to durable storage. Retry without closing this page.',
+              error: 'The change could not be saved to durable storage.',
               storageCode: status ? `storage-${status}` : 'storage-unavailable'
             });
           }
@@ -316,6 +373,7 @@ function sanitizeArchive(archive: Archive): Partial<Archive> {
   const actualMediaCount = media.length > 0 ? media.length : 0;
   return {
     ...safe,
+    saveVersion: archiveSaveVersion(archive),
     approxPeopleCount: actualMembersCount,
     membersCount: actualMembersCount,
     mediaCount: actualMediaCount
@@ -358,6 +416,12 @@ apiRouter.post('/archives', (req: Request, res: Response) => {
 
     const data = parsed.data;
 
+    if (data.endYear < data.startYear) {
+      return res.status(400).json({ error: 'The ending year must be the same as or after the starting year.' });
+    }
+    if (data.contributionMode === 'pin-protected' && (!data.editorPin || !data.editorPin.trim())) {
+      return res.status(400).json({ error: 'PIN-protected contribution needs a contributor PIN. Set one now or choose a different contribution mode.' });
+    }
     if (data.visibility === 'private' && (!data.viewerPin || !/^\d{4}$|^\d{6}$/.test(data.viewerPin.trim()))) {
       return res.status(400).json({ error: 'Private archives require a separate 4 or 6 digit viewer PIN.' });
     }
@@ -662,6 +726,9 @@ apiRouter.patch('/archives/:id', (req: Request, res: Response) => {
   const updates: Partial<Archive> = {};
   const body = req.body;
 
+  const currentArchive = db.findById(id);
+  if (!currentArchive) return res.status(404).json({ error: 'Archive not found.' });
+
   // Fields both owner & contributor can modify
   if (body.title) updates.title = body.title;
   if (body.organizationName) updates.organizationName = body.organizationName;
@@ -670,8 +737,11 @@ apiRouter.patch('/archives/:id', (req: Request, res: Response) => {
   if (body.batchLabel !== undefined) updates.batchLabel = body.batchLabel;
   if (body.approxPeopleCount !== undefined) {
     const count = Number(body.approxPeopleCount);
-    if (!Number.isInteger(count) || count < 1 || count > 100000) {
-      return res.status(400).json({ error: 'Yearbook member count must be a whole number between 1 and 100000.' });
+    // 0 means "not specified" - archive reads recompute this field as 0 when
+    // the yearbook is empty, so rejecting 0 here traps those archives in a
+    // save loop when the editor sends back what it loaded.
+    if (!Number.isInteger(count) || count < 0 || count > 100000) {
+      return res.status(400).json({ error: 'Yearbook member count must be a whole number between 0 and 100000.' });
     }
     updates.approxPeopleCount = count;
   }
@@ -689,6 +759,26 @@ apiRouter.patch('/archives/:id', (req: Request, res: Response) => {
       if (!evaluatePin(body.viewerPin).isAllowed) return res.status(400).json({ error: evaluatePin(body.viewerPin).message });
       updates.viewerPinHash = bcrypt.hashSync(body.viewerPin.trim(), 10);
     }
+  }
+
+  // Stale full-object guard, fail closed. The editor PATCHes the whole archive
+  // object, so a client working from an old copy (second tab, recovered
+  // on-device draft, retry of a pre-conflict snapshot) would silently overwrite
+  // fields it never saw. Every archive-level PATCH must name the save version
+  // it is based on, and it must match the current authoritative token. Checked
+  // after request validation (a malformed body still earns a 400) and before
+  // the mutation; the durable CAS remains the atomic backstop for the persist.
+  if (typeof body.baseVersion !== 'string') {
+    return res.status(409).json({
+      error: 'This change could not be checked against the current saved state, so it was not saved.',
+      code: 'missing-save-base'
+    });
+  }
+  if (body.baseVersion !== archiveSaveVersion(currentArchive)) {
+    return res.status(409).json({
+      error: 'This archive was edited elsewhere at the same moment, so this change was not saved.',
+      code: 'edit-conflict'
+    });
   }
 
   const updated = db.updateArchive(id, updates, auth.role);
@@ -836,6 +926,7 @@ apiRouter.delete('/archives/:id', (req: Request, res: Response) => {
   }
 
   const success = db.deleteArchive(id);
+  if (!success) return res.status(404).json({ error: 'Archive not found.' });
   return res.json({ success });
 });
 
@@ -910,7 +1001,7 @@ apiRouter.get('/archives/:id/access-history', (req: Request, res: Response) => {
 });
 
 // Verify contributor PIN with Rate Limiting (max 5 failed attempts per 15 min)
-apiRouter.post('/archives/:id/auth/pin', (req: Request, res: Response) => {
+apiRouter.post('/archives/:id/auth/pin', async (req: Request, res: Response) => {
   const { id } = req.params;
   const { pin } = req.body;
   const ip = req.ip || req.socket.remoteAddress || 'client';
@@ -919,9 +1010,9 @@ apiRouter.post('/archives/:id/auth/pin', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Numeric PIN is required.' });
   }
 
-  const result = verifyArchivePin(id, pin, ip);
+  const result = await verifyArchivePin(id, pin, ip);
   if (!result.success) {
-    return res.status(401).json({ error: result.error, lockedUntil: result.lockedUntil });
+    return res.status(result.storageError ? 503 : 401).json({ error: result.error, lockedUntil: result.lockedUntil });
   }
 
   // Log successful PIN entry
@@ -939,14 +1030,14 @@ apiRouter.post('/archives/:id/auth/pin', (req: Request, res: Response) => {
 });
 
 // Verify the separate private-viewer PIN. This never grants editing rights.
-apiRouter.post('/archives/:id/auth/viewer-pin', (req: Request, res: Response) => {
+apiRouter.post('/archives/:id/auth/viewer-pin', async (req: Request, res: Response) => {
   const { id } = req.params;
   const { pin } = req.body;
   if (!pin || typeof pin !== 'string' || !/^\d{4}$|^\d{6}$/.test(pin.trim())) {
     return res.status(400).json({ error: 'Enter the 4 or 6 digit viewer PIN.' });
   }
-  const result = verifyViewerPin(id, pin, req.ip || req.socket.remoteAddress || 'client');
-  if (!result.success) return res.status(401).json({ error: result.error, lockedUntil: result.lockedUntil });
+  const result = await verifyViewerPin(id, pin, req.ip || req.socket.remoteAddress || 'client');
+  if (!result.success) return res.status(result.storageError ? 503 : 401).json({ error: result.error, lockedUntil: result.lockedUntil });
   setSessionCookie(res, result.token!, 'viewer');
   return res.json({ success: true, token: result.token });
 });
@@ -1256,6 +1347,7 @@ apiRouter.delete('/archives/:id/timeline/:eventId', (req: Request, res: Response
   }
 
   const success = db.deleteTimelineEvent(id, eventId);
+  if (!success) return res.status(404).json({ error: 'Timeline event not found.' });
   return res.json({ success });
 });
 
@@ -1352,6 +1444,7 @@ apiRouter.delete('/archives/:id/members/:memberId', (req: Request, res: Response
   }
 
   const success = db.deleteMember(id, memberId);
+  if (!success) return res.status(404).json({ error: 'Member not found.' });
   return res.json({ success });
 });
 
@@ -1788,12 +1881,35 @@ apiRouter.delete('/archives/:id/media/:mediaId', async (req: Request, res: Respo
   }
 
   const item = db.getMediaItems(targetId).find((entry) => entry.id === mediaId);
+  if (!item) return res.status(404).json({ error: 'Media item not found.' });
+  const beforeDelete = db.captureArchiveState(targetId);
   const success = db.deleteMediaItem(targetId, mediaId);
-  if (success && item?.storageKey && isR2Configured()) {
-    try { await deleteObject(item.storageKey); } catch (error) { console.error('Failed to remove R2 object:', error); }
-    if (item.thumbnailStorageKey && item.thumbnailStorageKey !== item.storageKey) {
-      try { await deleteObject(item.thumbnailStorageKey); } catch (error) { console.error('Failed to remove video thumbnail:', error); }
+  if (!success) return res.status(404).json({ error: 'Media item not found.' });
+  // Persist the metadata removal BEFORE destroying the stored object. If the
+  // durable write fails, restore the metadata and keep the object - deleting
+  // first would leave a permanent broken reference. Orphaned bytes from a
+  // late object-delete failure are the acceptable direction (recoverable).
+  // NOTE: returning >=400 bypasses the persistence wrapper, so the rollback
+  // must happen here explicitly.
+  if (item.storageKey && isR2Configured()) {
+    try {
+      await db.persistArchive(targetId);
+    } catch (error) {
+      console.error('Media delete aborted before object removal:', error);
+      db.restoreArchiveState(targetId, beforeDelete);
+      return res.status(503).json({ error: 'The change could not be saved to durable storage.' });
     }
+    let objectCleanup: 'done' | 'partial' = 'done';
+    try { await deleteObject(item.storageKey); } catch (error) { objectCleanup = 'partial'; console.error('Failed to remove R2 object:', error); }
+    if (item.thumbnailStorageKey && item.thumbnailStorageKey !== item.storageKey) {
+      try { await deleteObject(item.thumbnailStorageKey); } catch (error) { objectCleanup = 'partial'; console.error('Failed to remove video thumbnail:', error); }
+    }
+    // The archive change is already durably committed here. A cleanup failure
+    // leaves recoverable orphan bytes - report it accurately; never imply the
+    // delete itself failed or invite a blind retry of it.
+    return res.json(objectCleanup === 'done'
+      ? { success }
+      : { success, warning: 'The media was removed from the archive, but its stored file could not be cleaned up. No action needed - this does not affect the archive.' });
   }
   return res.json({ success });
 });
@@ -1908,6 +2024,7 @@ apiRouter.delete('/archives/:id/wall/:postId', (req: Request, res: Response) => 
   }
 
   const success = db.deleteWallPost(targetId, postId);
+  if (!success) return res.status(404).json({ error: 'Wall post not found.' });
   return res.json({ success });
 });
 
@@ -1947,6 +2064,7 @@ apiRouter.post('/archives/:id/revisions/:revId/restore', (req: Request, res: Res
   }
 
   const success = db.restoreRevision(id, revId);
+  if (!success) return res.status(404).json({ error: 'Revision not found.' });
   return res.json({ success });
 });
 

@@ -446,8 +446,13 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   // Handler for creator/editor/demo font selection
   const handleSelectFontPreset = (presetId: string) => {
     if (readOnly) return;
+    const previousPresetId = selectedFontPresetId;
     setSelectedFontPresetId(presetId);
     setIsFontSelectorOpen(false);
+    const revertPreset = () => {
+      setSelectedFontPresetId(previousPresetId);
+      showNoteToast('Could not save this style choice. Please try again.', 3500);
+    };
 
     // If editor or creator, persist font choice to archive settings
     if (isEditorOrCreator) {
@@ -469,9 +474,18 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
             settings: {
               ...archive.settings,
               fontPresetId: presetId
-            }
+            },
+            baseVersion: archive.saveVersion
           })
-        }).catch((err) => console.warn('Could not save typography preset:', err));
+        }).then(async (res) => {
+          if (!res.ok) revertPreset();
+          else {
+            const body = await res.json().catch(() => null);
+            // Keep the save base current for consecutive preset changes in this view.
+            if (body?.archive?.saveVersion) (archive as { saveVersion?: string }).saveVersion = body.archive.saveVersion;
+            if (archive.slug) localStorage.setItem(`archive_mutated_${archive.slug}`, String(Date.now()));
+          }
+        }).catch(() => revertPreset());
       }
     }
   };
@@ -552,11 +566,9 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
       if (!response.ok || !data.message) throw new Error('Could not add this note.');
       setMemberMessages((current) => [...current, data.message]);
       setMemberNoteText('');
-      setNoteToastMessage(`A note was added for ${selectedMember.name}.`);
-      setTimeout(() => setNoteToastMessage(null), 3500);
+      showNoteToast(`A note was added for ${selectedMember.name}.`, 3500);
     } catch (error) {
-      setNoteToastMessage(error instanceof Error ? error.message : 'Could not add this note.');
-      setTimeout(() => setNoteToastMessage(null), 3500);
+      showNoteToast(error instanceof Error ? error.message : 'Could not add this note.', 3500);
     } finally {
       setIsPostingMemberNote(false);
     }
@@ -593,12 +605,6 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
     );
 
     setMediaNoteText('');
-    confetti({
-      particleCount: 40,
-      spread: 60,
-      origin: { y: 0.7 }
-    });
-
     setIsPostingMediaNote(true);
 
     try {
@@ -608,26 +614,47 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
         body: JSON.stringify({ authorName: author, text: noteText })
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        const serverNote = data.note || data.item?.notes?.slice(-1)[0] || optimisticNote;
-        
-        setCurrentMediaList((prev) =>
-          prev.map((m) => {
-            if (m.id === mediaId) {
-              const currentNotes = m.notes || [];
-              const updatedNotes = currentNotes.map((n) => (n.id === tempNoteId ? serverNote : n));
-              return {
-                ...m,
-                notes: updatedNotes
-              };
-            }
-            return m;
-          })
-        );
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error((data && data.error) || 'Could not save this note. Please try again.');
       }
+      const data = await response.json();
+      if (archive.slug) localStorage.setItem(`archive_mutated_${archive.slug}`, String(Date.now()));
+      const serverNote = data.note || data.item?.notes?.slice(-1)[0] || optimisticNote;
+      // Celebrate only a note the server actually saved - never a rollback.
+      confetti({
+        particleCount: 40,
+        spread: 60,
+        origin: { y: 0.7 }
+      });
+
+      setCurrentMediaList((prev) =>
+        prev.map((m) => {
+          if (m.id === mediaId) {
+            const currentNotes = m.notes || [];
+            const updatedNotes = currentNotes.map((n) => (n.id === tempNoteId ? serverNote : n));
+            return {
+              ...m,
+              notes: updatedNotes
+            };
+          }
+          return m;
+        })
+      );
     } catch (err) {
-      console.error('Photo note saved locally (offline/preview fallback):', err);
+      // Never leave a ghost note that looks saved but vanishes on refresh:
+      // roll back the optimistic note, restore the draft text, and say so.
+      console.error('Photo note could not be saved:', err);
+      const friendly = err instanceof TypeError ? new Error('Could not save this note. Please try again.') : err;
+      setCurrentMediaList((prev) =>
+        prev.map((m) =>
+          m.id === mediaId
+            ? { ...m, notes: (m.notes || []).filter((n) => n.id !== tempNoteId) }
+            : m
+        )
+      );
+      setMediaNoteText(noteText);
+      showNoteToast(friendly instanceof Error ? friendly.message : 'Could not save this note. Please try again.', 3500);
     } finally {
       setIsPostingMediaNote(false);
     }
@@ -648,12 +675,24 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
       })
     );
 
+    const removedNote = currentMediaList.find((m) => m.id === mediaId)?.notes?.find((n) => n.id === noteId);
     try {
-      await fetch(`/api/archives/${archive.id}/media/${mediaId}/notes/${noteId}`, {
-        method: 'DELETE'
+      const response = await fetch(`/api/archives/${archive.id}/media/${mediaId}/notes/${noteId}`, {
+        method: 'DELETE',
+        headers: ownerToken ? { Authorization: `Bearer ${ownerToken}` } : undefined
       });
+      if (!response.ok) throw new Error('Could not delete this note. Please try again.');
+      if (archive.slug) localStorage.setItem(`archive_mutated_${archive.slug}`, String(Date.now()));
     } catch (err) {
       console.error('Failed to delete note from server:', err);
+      if (removedNote) {
+        setCurrentMediaList((prev) =>
+          prev.map((m) =>
+            m.id === mediaId ? { ...m, notes: [...(m.notes || []), removedNote] } : m
+          )
+        );
+      }
+      showNoteToast(err instanceof TypeError ? 'Could not delete this note. Please try again.' : (err instanceof Error ? err.message : 'Could not delete this note. Please try again.'), 3500);
     }
   };
 
@@ -694,11 +733,17 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
       const localPosts1: WallPost[] = JSON.parse(localStorage.getItem(localKey1) || '[]');
       const localPosts2: WallPost[] = localKey2 ? JSON.parse(localStorage.getItem(localKey2) || '[]') : [];
       const combinedLocal = [...localPosts1, ...localPosts2];
-      
+
+      let deletedIds: string[] = [];
+      try {
+        deletedIds = JSON.parse(localStorage.getItem(`archive_wall_deleted_${archive.id}`) || '[]');
+      } catch {
+        deletedIds = [];
+      }
       const idMap = new Map<string, WallPost>();
       (wall || []).forEach((p) => idMap.set(p.id, p));
       combinedLocal.forEach((p) => {
-        if (!idMap.has(p.id)) idMap.set(p.id, p);
+        if (!idMap.has(p.id) && !deletedIds.includes(p.id)) idMap.set(p.id, p);
       });
       return Array.from(idMap.values()).sort(
         (a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER)
@@ -724,6 +769,12 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   const [newNoteError, setNewNoteError] = useState<string | null>(null);
   const [justAddedNoteId, setJustAddedNoteId] = useState<string | null>(null);
   const [noteToastMessage, setNoteToastMessage] = useState<string | null>(null);
+  const noteToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showNoteToast = (msg: string, clearAfterMs = 3500) => {
+    if (noteToastTimer.current) clearTimeout(noteToastTimer.current);
+    setNoteToastMessage(msg);
+    noteToastTimer.current = setTimeout(() => setNoteToastMessage(null), clearAfterMs);
+  };
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
   const wallImageCount = useMemo(() => wallPosts.filter((post) => Boolean(post.imageUrl)).length, [wallPosts]);
 
@@ -741,13 +792,27 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
         const idMap = new Map<string, WallPost>();
         // Add server wall items
         (wall || []).forEach((p) => idMap.set(p.id, p));
-        // Preserve any optimistic notes already in state
+        // Preserve any optimistic notes already in state, except ones this
+        // device tombstoned (deleted) - they must not flow back from state.
+        let tombstoned: string[] = [];
+        try {
+          tombstoned = JSON.parse(localStorage.getItem(`archive_wall_deleted_${archive.id}`) || '[]');
+        } catch {
+          tombstoned = [];
+        }
         prev.forEach((p) => {
-          if (!idMap.has(p.id)) idMap.set(p.id, p);
+          if (!idMap.has(p.id) && !tombstoned.includes(p.id)) idMap.set(p.id, p);
         });
-        // Include any localStorage notes
+        // Include any localStorage notes, except ones this device deleted
+        // (tombstoned). Server-provided posts above always pass through.
+        let deletedIds: string[] = [];
+        try {
+          deletedIds = JSON.parse(localStorage.getItem(`archive_wall_deleted_${archive.id}`) || '[]');
+        } catch {
+          deletedIds = [];
+        }
         combinedLocal.forEach((p) => {
-          if (!idMap.has(p.id)) idMap.set(p.id, p);
+          if (!idMap.has(p.id) && !deletedIds.includes(p.id)) idMap.set(p.id, p);
         });
         return Array.from(idMap.values()).sort(
           (a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER)
@@ -999,11 +1064,25 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
       prev.map((p) => (p.id === postId ? { ...p, likesCount: (p.likesCount || 0) + 1 } : p))
     );
 
-    // Call API
+    // Call API. Revert the optimistic like when the server does not confirm it,
+    // so a failed like is never shown as saved.
+    const revertLike = () => {
+      setLikedPosts((prev) => {
+        const next = new Set(prev);
+        next.delete(postId);
+        return next;
+      });
+      setWallPosts((prev) =>
+        prev.map((p) => (p.id === postId ? { ...p, likesCount: Math.max(0, (p.likesCount || 0) - 1) } : p))
+      );
+      showNoteToast('Could not save this like. Please try again.', 3500);
+    };
     try {
-      await fetch(`/api/archives/${archive.id}/wall/${postId}/like`, { method: 'POST' });
+      const res = await fetch(`/api/archives/${archive.id}/wall/${postId}/like`, { method: 'POST' });
+      if (!res.ok) revertLike();
+      else if (archive.slug) localStorage.setItem(`archive_mutated_${archive.slug}`, String(Date.now()));
     } catch (err) {
-      console.error(err);
+      revertLike();
     }
   };
 
@@ -1038,6 +1117,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
       }
 
       const savedPost: WallPost = data.post;
+      if (archive.slug) localStorage.setItem(`archive_mutated_${archive.slug}`, String(Date.now()));
       setWallPosts((prev) => [savedPost, ...prev.filter((post) => post.id !== savedPost.id)]);
       onAddWallPost?.(savedPost);
 
@@ -1084,8 +1164,21 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
   // Creator & Editor Moderation: Delete Note Permanently
   const handleDeletePost = async (postId: string) => {
     if (!canModerateNotes) return;
+    const removedPost = wallPosts.find((p) => p.id === postId);
     setWallPosts((prev) => prev.filter((p) => p.id !== postId));
     setDeletingPostId(null);
+
+    // Tombstone so the sync merge cannot resurrect this post from local cache on this device.
+    try {
+      const tombKey = `archive_wall_deleted_${archive.id}`;
+      const tombstoned: string[] = JSON.parse(localStorage.getItem(tombKey) || '[]');
+      if (!tombstoned.includes(postId)) {
+        tombstoned.push(postId);
+        localStorage.setItem(tombKey, JSON.stringify(tombstoned.slice(-200)));
+      }
+    } catch {
+      // Cache bookkeeping is best-effort only.
+    }
 
     if (onDeleteWallPost) {
       onDeleteWallPost(postId);
@@ -1107,16 +1200,34 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
 
     try {
       const targetIdentifier = archive.id || archive.slug;
-      await fetch(`/api/archives/${targetIdentifier}/wall/${postId}`, {
+      const response = await fetch(`/api/archives/${targetIdentifier}/wall/${postId}`, {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${ownerToken || ''}`
         }
       });
-      setNoteToastMessage('Memory note permanently deleted.');
-      setTimeout(() => setNoteToastMessage(null), 3500);
+      if (!response.ok) throw new Error('Could not delete this note. Please try again.');
+      if (archive.slug) localStorage.setItem(`archive_mutated_${archive.slug}`, String(Date.now()));
+      showNoteToast('Memory note permanently deleted.', 3500);
     } catch (err) {
       console.error('Failed to delete note from server:', err);
+      // Roll back: restore the post in state and local cache, and lift the tombstone.
+      if (removedPost) {
+        setWallPosts((prev) => [removedPost, ...prev.filter((p) => p.id !== postId)]);
+        try {
+          const tombKey = `archive_wall_deleted_${archive.id}`;
+          const tombstoned: string[] = JSON.parse(localStorage.getItem(tombKey) || '[]');
+          localStorage.setItem(tombKey, JSON.stringify(tombstoned.filter((t) => t !== postId)));
+          const localKey1 = `archive_wall_${archive.id}`;
+          const existing1: WallPost[] = JSON.parse(localStorage.getItem(localKey1) || '[]');
+          if (!existing1.some((p) => p.id === postId)) {
+            localStorage.setItem(localKey1, JSON.stringify([removedPost, ...existing1]));
+          }
+        } catch {
+          // Cache bookkeeping is best-effort only.
+        }
+      }
+      showNoteToast(err instanceof TypeError ? 'Could not delete this note. Please try again.' : (err instanceof Error ? err.message : 'Could not delete this note. Please try again.'), 3500);
     }
   };
 
@@ -1163,8 +1274,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
         },
         body: JSON.stringify({ isHidden: nextHidden })
       });
-      setNoteToastMessage(nextHidden ? 'Note hidden from visitors.' : 'Note is now visible to all visitors.');
-      setTimeout(() => setNoteToastMessage(null), 3500);
+      showNoteToast(nextHidden ? 'Note hidden from visitors.' : 'Note is now visible to all visitors.', 3500);
     } catch (err) {
       console.error('Failed to update note visibility on server:', err);
     }
@@ -2748,7 +2858,7 @@ export const ArchivePublicView: React.FC<ArchivePublicViewProps> = ({
                                     type="button"
                                     onClick={() => handleDeleteMediaNote(activeItem.id, n.id)}
                                     title="Delete Note"
-                                    className="opacity-0 group-hover/note:opacity-100 hover:text-rose-400 text-neutral-500 transition-opacity p-0.5"
+                                    className="opacity-100 hover:text-rose-400 text-neutral-400 transition-colors p-0.5"
                                   >
                                     <Trash2 className="w-3 h-3" />
                                   </button>

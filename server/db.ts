@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { createClient } from '@libsql/client';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import {
   Archive,
@@ -37,6 +37,49 @@ interface StoredStateRow {
   updatedAt?: string;
 }
 
+
+/**
+ * Storage-row version token: ISO timestamp for human ordering plus a random
+ * suffix so two writes in the same millisecond (or under clock skew) can never
+ * share a token. Equality of the full token is the only 'same write' test;
+ * timestamp prefixes are used solely to skip strictly-older reads.
+ */
+export function newVersionToken(): string {
+  return `${new Date().toISOString()}#${randomUUID()}`;
+}
+
+/**
+ * Authoritative collision-resistant per-archive save token for stale
+ * full-object rejection. Legacy archives that predate the token derive a
+ * deterministic stand-in from stable fields so every instance computes the
+ * same value for the same untouched archive.
+ */
+export function archiveSaveVersion(archive: { saveVersion?: string; updatedAt?: string; createdAt?: string; id: string }): string {
+  const base = archive.updatedAt || archive.createdAt || archive.id;
+  // Mixed-version protection: an older writer (previous deployed code in a
+  // rollback window) advances updatedAt without stamping saveVersion. If the
+  // stored saveVersion predates the newest updatedAt, it no longer describes
+  // the current state - fall back to the updatedAt-derived token so stale
+  // bases conflict and fresh reads get a base that covers the newest write.
+  if (archive.saveVersion) {
+    const svTime = Date.parse(archive.saveVersion.split('#')[0]);
+    const upTime = Date.parse(base);
+    if (Number.isFinite(svTime) && Number.isFinite(upTime) && upTime > svTime) {
+      return `${base}#legacy`;
+    }
+    return archive.saveVersion;
+  }
+  return `${base}#legacy`;
+}
+
+/** Durable row changed under us: another instance saved this tenant concurrently. */
+export class TenantConflictError extends Error {
+  readonly code = 'TENANT_CONFLICT' as const;
+  constructor(archiveId: string) {
+    super(`Archive ${archiveId} was saved by another instance at the same time.`);
+    this.name = 'TenantConflictError';
+  }
+}
 
 export function encodeSnapshot(snapshot: Record<string, unknown>) {
   const json = JSON.stringify(snapshot);
@@ -97,6 +140,7 @@ export class MemoryDatabase {
   private schemaReady?: Promise<void>;
   // Freshness tracking so a warm serverless instance notices changes saved by another instance.
   private tenantStoredAt = new Map<string, string>(); // archiveId -> updated_at we last loaded or wrote
+  private indexVersionToken?: string;
   private tenantCheckedAt = new Map<string, number>();
   private indexCheckedAt = 0;
 
@@ -115,6 +159,12 @@ export class MemoryDatabase {
   }
 
   private async ensureStorageSchema(config: { url: string; authToken: string }): Promise<void> {
+    // Local file-backed testing runs multiple processes against one SQLite file;
+    // give those connections a lock wait so concurrent test writers serialize
+    // instead of erroring. Remote Turso connections never take this path.
+    if (config.url.startsWith('file:')) {
+      try { await this.storageClient(config).execute('PRAGMA busy_timeout = 10000'); } catch { /* best-effort for local files */ }
+    }
     if (!this.schemaReady) {
       this.schemaReady = this.storageClient(config).execute(`
         CREATE TABLE IF NOT EXISTS oncehere_state (
@@ -324,8 +374,9 @@ export class MemoryDatabase {
 
       // Turso starts clean. The bundled sample data is the only data seeded
       // automatically; this intentionally never imports Supabase snapshots.
-      const index = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0]?.data;
-      if (index && this.restoreTenantIndex(index)) {
+      const indexRow = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
+      if (indexRow?.data && this.restoreTenantIndex(indexRow.data)) {
+        if (indexRow.updatedAt) this.indexVersionToken = indexRow.updatedAt;
         this.loadedFromStorage = true;
         return;
       }
@@ -405,7 +456,12 @@ export class MemoryDatabase {
       const remote = result.rows[0]?.updated_at;
       if (typeof remote !== 'string') return;
       const known = this.tenantStoredAt.get(archiveId);
-      if (known && remote <= known) return;
+      // Only an exact token match means 'same write'. Any difference reloads:
+      // ordering timestamps across instances is unsafe under clock skew, and
+      // an authoritative winning row must never be ignored because of it.
+      // Writes remain protected by the atomic CAS regardless of read timing.
+      // (In-flight local saves are already excluded by the guard above.)
+      if (known && remote === known) return;
       const row = (await this.fetchRows(config, [`tenant-${archiveId}`]))[0];
       const stored = row?.data;
       if (!stored || stored.format !== TENANT_SNAPSHOT_FORMAT || !Array.isArray(stored.chunks)
@@ -428,14 +484,16 @@ export class MemoryDatabase {
    * Re-read the small archive index and ADD archives we do not know yet (never overwrites
    * anything we already hold). Throttled; never throws. Returns how many were added.
    */
-  async refreshIndexIfMissing(minGapMs = 5000): Promise<number> {
+  async refreshIndexIfMissing(minGapMs = 5000, force = false): Promise<number> {
     try {
       const config = this.storageConfig;
       if (!config) return 0;
       const now = Date.now();
-      if (now - this.indexCheckedAt < minGapMs) return 0;
+      if (!force && now - this.indexCheckedAt < minGapMs) return 0;
       this.indexCheckedAt = now;
-      const index = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0]?.data;
+      const indexRow = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
+      const index = indexRow?.data;
+      if (indexRow?.updatedAt) this.indexVersionToken = indexRow.updatedAt;
       if (!index || index.format !== TENANT_INDEX_FORMAT || !Array.isArray(index.archives)) return 0;
       let added = 0;
       for (const [id, archive] of index.archives as [string, Archive][]) {
@@ -449,6 +507,116 @@ export class MemoryDatabase {
       console.error('Archive index refresh failed; continuing with the known archives.', error);
       return 0;
     }
+  }
+
+  /**
+   * The throttled index refresh can skip an archive another instance created
+   * seconds ago, which would 404 a real archive inside the throttle window.
+   * Fetch that one tenant row directly instead. Additive only: refuses to
+   * touch a tenant with local writes in flight, and never runs when the
+   * archive is already known. Returns true when the archive is held afterwards.
+   */
+  async loadTenantIfExistsRemotely(archiveId: string): Promise<boolean> {
+    try {
+      if (this.archives.has(archiveId)) return true;
+      const config = this.storageConfig;
+      if (!config) return false;
+      if (this.tenantWriting.has(archiveId) || (this.tenantPending.get(archiveId)?.length || 0) > 0) return false;
+      const row = (await this.fetchRows(config, [`tenant-${archiveId}`]))[0];
+      const stored = row?.data;
+      if (!stored || stored.format !== TENANT_SNAPSHOT_FORMAT || !Array.isArray(stored.chunks)
+        || typeof stored.sha256 !== 'string') return false;
+      this.restoreTenant(decodeSnapshot(
+        stored.chunks as string[],
+        stored.sha256,
+        stored.compression === 'gzip' ? 'gzip' : undefined
+      ));
+      if (row.updatedAt) this.tenantStoredAt.set(archiveId, row.updatedAt);
+      if (this.archives.has(archiveId)) this.loadedTenantIds.add(archiveId);
+      return this.archives.has(archiveId);
+    } catch (error) {
+      console.error('Targeted tenant fetch failed; continuing with the known archives.', error);
+      return false;
+    }
+  }
+
+  private rateLimitRowId(key: string) {
+    return `security-ratelimit-${encodeURIComponent(key)}`;
+  }
+
+  /**
+   * Fresh authoritative read of one attempt counter. With durable storage the
+   * row is read on every call - enforcement never relies on a per-instance
+   * cache. Throws on storage failure: callers must fail closed, because an
+   * unreadable counter means abuse state is unknown. Without configured
+   * storage (local dev/tests) the in-memory map is the counter, as before.
+   */
+  async readRateLimit(key: string): Promise<{ attempts: number; firstAttemptAt: number; lockedUntil?: number } | undefined> {
+    const config = this.storageConfig;
+    if (!config) {
+      // The in-memory fallback is a dev/test mode; it must never apply in
+      // production, where a missing store means abuse state is unknown.
+      if (process.env.NODE_ENV === 'production') throw new Error('Durable storage is not configured; attempt state cannot be verified.');
+      return this.rateLimits.get(key);
+    }
+    const row = (await this.fetchRows(config, [this.rateLimitRowId(key)]))[0];
+    const data = row?.data;
+    if (!data || typeof data.attempts !== 'number' || typeof data.firstAttemptAt !== 'number') return undefined;
+    return {
+      attempts: data.attempts,
+      firstAttemptAt: data.firstAttemptAt,
+      lockedUntil: typeof data.lockedUntil === 'number' ? data.lockedUntil : undefined
+    };
+  }
+
+  /**
+   * Atomic read-modify-write of one attempt counter. Each write is a CAS on
+   * the row's version token, so simultaneous increments from two instances
+   * serialize: the loser re-reads and retries instead of losing the winner's
+   * increment. Bounded retries, then throws - callers fail closed. Returning
+   * null from mutate deletes the counter (CAS delete).
+   */
+  async mutateRateLimit(
+    key: string,
+    mutate: (entry: { attempts: number; firstAttemptAt: number; lockedUntil?: number } | undefined)
+      => { attempts: number; firstAttemptAt: number; lockedUntil?: number } | null
+  ): Promise<{ attempts: number; firstAttemptAt: number; lockedUntil?: number } | null> {
+    const config = this.storageConfig;
+    if (!config) {
+      if (process.env.NODE_ENV === 'production') throw new Error('Durable storage is not configured; attempt state cannot be updated.');
+      const nextLocal = mutate(this.rateLimits.get(key));
+      if (nextLocal === null) this.rateLimits.delete(key); else this.rateLimits.set(key, nextLocal);
+      return nextLocal;
+    }
+    const id = this.rateLimitRowId(key);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const row = (await this.fetchRows(config, [id]))[0];
+      const current = row?.data && typeof row.data.attempts === 'number' && typeof row.data.firstAttemptAt === 'number'
+        ? {
+            attempts: row.data.attempts as number,
+            firstAttemptAt: row.data.firstAttemptAt as number,
+            lockedUntil: typeof row.data.lockedUntil === 'number' ? row.data.lockedUntil as number : undefined
+          }
+        : undefined;
+      const next = mutate(current);
+      if (next === null) {
+        if (!row) return null;
+        const client = this.storageClient(config);
+        const del = await client.execute({
+          sql: 'DELETE FROM oncehere_state WHERE id = ? AND updated_at = ?',
+          args: [id, row.updatedAt || '']
+        });
+        if ((del.rowsAffected ?? 0) > 0) return null;
+        continue;
+      }
+      const ok = await this.conditionalTenantWrite(config, {
+        id,
+        data: next as unknown as Record<string, unknown>,
+        updated_at: newVersionToken()
+      }, row?.updatedAt);
+      if (ok) return next;
+    }
+    throw new Error('Attempt-state row stayed contended; the update was not applied.');
   }
 
   async ensureAllArchivesLoaded(): Promise<void> {
@@ -474,7 +642,7 @@ export class MemoryDatabase {
         compression: encoded.compression,
         sha256: encoded.sha256
       },
-      updated_at: new Date().toISOString()
+      updated_at: newVersionToken()
     };
   }
 
@@ -482,7 +650,7 @@ export class MemoryDatabase {
     return {
       id: TENANT_INDEX_ID,
       data: this.tenantIndexSnapshot(),
-      updated_at: new Date().toISOString()
+      updated_at: newVersionToken()
     };
   }
 
@@ -495,6 +663,42 @@ export class MemoryDatabase {
 
   private async writeTenantIndex(config: { url: string; authToken: string }): Promise<void> {
     await this.upsertRows(config, [this.tenantIndexRow()]);
+    // Seeding only runs against an empty database, so the unconditional write
+    // above is safe there; every later index write goes through the guard.
+  }
+
+  /**
+   * The index row is shared by ALL archives, so an unconditional write can
+   * erase another instance's archive metadata. Guard it the same way as a
+   * tenant row; on conflict, merge the winner's entries we do not know
+   * (index entries are listing metadata, safe to union) and retry bounded.
+   */
+  private async writeTenantIndexGuarded(config: { url: string; authToken: string }): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const row = this.tenantIndexRow();
+      const wrote = await this.conditionalTenantWrite(config, row, this.indexVersionToken);
+      if (wrote) {
+        this.indexVersionToken = row.updated_at;
+        return;
+      }
+      const winner = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
+      const data = winner?.data;
+      if (data && data.format === TENANT_INDEX_FORMAT && Array.isArray(data.archives)) {
+        for (const [id, archive] of data.archives as [string, Archive][]) {
+          if (!id || archive?.id !== id) continue;
+          const local = this.archives.get(id);
+          // Keep the fresher listing entry; ties keep ours (just persisted).
+          if (!local || String(archive.updatedAt || '') > String(local.updatedAt || '')) {
+            this.archives.set(id, archive);
+          }
+        }
+        this.indexVersionToken = winner.updatedAt;
+      } else {
+        // No readable winner: do not guess; fail honestly.
+        break;
+      }
+    }
+    throw new TenantConflictError(TENANT_INDEX_ID);
   }
 
   private async seedTurso(): Promise<void> {
@@ -508,14 +712,28 @@ export class MemoryDatabase {
   /** Persists the compact platform settings and archive lookup index. */
   persist(): Promise<void> {
     const config = this.storageConfig;
-    if (!config) return Promise.resolve();
-    return this.writeTenantIndex(config);
+    if (!config) {
+      // Same honest-failure rule as persistArchive: never fake durability in production.
+      if (process.env.NODE_ENV === 'production') {
+        return Promise.reject(new Error('Durable storage is not configured; the change was not saved.'));
+      }
+      return Promise.resolve();
+    }
+    return this.writeTenantIndexGuarded(config);
   }
 
   /** Persist only one tenant. Ordinary edits must never rewrite every archive. */
   persistArchive(archiveId: string): Promise<void> {
     const config = this.storageConfig;
-    if (!config) return Promise.resolve();
+    if (!config) {
+      // In production a missing durable store must be an honest failure, not
+      // a silent in-memory "save" that the next cold start loses. Local dev
+      // and tests intentionally run without storage and keep in-memory saves.
+      if (process.env.NODE_ENV === 'production') {
+        return Promise.reject(new Error('Durable storage is not configured; the change was not saved.'));
+      }
+      return Promise.resolve();
+    }
     const result = new Promise<void>((resolve, reject) => {
       const pending = this.tenantPending.get(archiveId) || [];
       pending.push({ resolve, reject });
@@ -528,6 +746,55 @@ export class MemoryDatabase {
     return result;
   }
 
+  /**
+   * Write one tenant row only if durable storage still holds the copy this
+   * instance based its edit on. Returns false when another instance won the
+   * write race (or the row unexpectedly exists/missing).
+   */
+  private async conditionalTenantWrite(
+    config: { url: string; authToken: string },
+    row: { id: string; data: Record<string, unknown>; updated_at: string },
+    expectedUpdatedAt: string | undefined
+  ): Promise<boolean> {
+    await this.ensureStorageSchema(config);
+    const client = this.storageClient(config);
+    if (expectedUpdatedAt === undefined) {
+      const result = await client.execute({
+        sql: 'INSERT OR IGNORE INTO oncehere_state (id, data, updated_at) VALUES (?, ?, ?)',
+        args: [row.id, JSON.stringify(row.data), row.updated_at]
+      });
+      return (result.rowsAffected ?? 0) > 0;
+    }
+    const result = await client.execute({
+      sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ?',
+      args: [JSON.stringify(row.data), row.updated_at, row.id, expectedUpdatedAt]
+    });
+    return (result.rowsAffected ?? 0) > 0;
+  }
+
+  /** Replace in-memory tenant state with the copy another instance just saved. */
+  private async reloadTenantFromStorage(
+    config: { url: string; authToken: string },
+    archiveId: string
+  ): Promise<void> {
+    try {
+      const row = (await this.fetchRows(config, [`tenant-${archiveId}`]))[0];
+      const stored = row?.data;
+      if (stored && stored.format === TENANT_SNAPSHOT_FORMAT && Array.isArray(stored.chunks)
+        && typeof stored.sha256 === 'string') {
+        this.restoreTenant(decodeSnapshot(
+          stored.chunks as string[],
+          stored.sha256,
+          stored.compression === 'gzip' ? 'gzip' : undefined
+        ));
+        if (row.updatedAt) this.tenantStoredAt.set(archiveId, row.updatedAt);
+      }
+      this.loadedTenantIds.add(archiveId);
+    } catch (error) {
+      console.error('Failed to reload the winning archive copy after a write conflict:', error);
+    }
+  }
+
   private async flushTenantWrites(archiveId: string): Promise<void> {
     try {
       while ((this.tenantPending.get(archiveId)?.length || 0) > 0) {
@@ -537,7 +804,36 @@ export class MemoryDatabase {
           if (!config) throw new Error('Durable storage configuration disappeared.');
           // One libSQL batch keeps tenant content and lookup metadata together.
           const tenantRow = this.tenantStorageRow(archiveId);
-          await this.upsertRows(config, [tenantRow, this.tenantIndexRow()]);
+          // Compare-and-swap on the durable row: only overwrite the exact copy we
+          // last read or wrote. If another instance saved in between, their change
+          // must NOT be silently overwritten - reload the winner and reject so the
+          // caller can surface an honest conflict instead of a lost update.
+          const expected = this.tenantStoredAt.get(archiveId);
+          // Test-only seam (ONCEHERE_TEST_PERSIST_BARRIER_DIR is never set in
+          // production): lets a two-process test hold this instance inside the
+          // refresh->write race window while another instance writes.
+          const barrierDir = process.env.ONCEHERE_TEST_PERSIST_BARRIER_DIR;
+          const barrierTag = process.env.ONCEHERE_TEST_PERSIST_BARRIER_TAG || '';
+          if (barrierDir) {
+            const barrierFs = await import('node:fs');
+            barrierFs.writeFileSync(`${barrierDir}/inside-${barrierTag}-${archiveId}`, String(Date.now()));
+            const hold = `${barrierDir}/hold-${barrierTag}-${archiveId}`;
+            const deadline = Date.now() + 10_000;
+            while (barrierFs.existsSync(hold) && Date.now() < deadline) {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+          }
+          const wrote = await this.conditionalTenantWrite(config, tenantRow, expected);
+          if (!wrote) {
+            await this.reloadTenantFromStorage(config, archiveId);
+            // Every still-queued write for this tenant was computed from the
+            // pre-conflict base. Reject them all: none may land on the winner.
+            const conflict = new TenantConflictError(archiveId);
+            const queued = this.tenantPending.get(archiveId)?.splice(0) || [];
+            queued.forEach(({ reject }) => reject(conflict));
+            throw conflict;
+          }
+          await this.writeTenantIndexGuarded(config);
           this.tenantStoredAt.set(archiveId, tenantRow.updated_at);
           this.loadedTenantIds.add(archiveId);
           waiters.forEach(({ resolve }) => resolve());
@@ -615,7 +911,8 @@ export class MemoryDatabase {
     const updated: Archive = {
       ...existing,
       ...updates,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      saveVersion: newVersionToken()
     };
     this.archives.set(id, updated);
     this.addRevision(id, 'archive', 'Updated archive settings & details', actor, updated);
@@ -626,6 +923,7 @@ export class MemoryDatabase {
     const existing = this.archives.get(id);
     if (!existing) return false;
     existing.deletedAt = new Date().toISOString();
+    existing.saveVersion = newVersionToken();
     this.archives.set(id, existing);
     return true;
   }
@@ -944,7 +1242,7 @@ export class MemoryDatabase {
     if (!rev) return false;
 
     if (rev.entityType === 'archive' && rev.snapshotData) {
-      this.archives.set(archiveId, { ...rev.snapshotData, updatedAt: new Date().toISOString() });
+      this.archives.set(archiveId, { ...rev.snapshotData, updatedAt: new Date().toISOString(), saveVersion: newVersionToken() });
     } else if (rev.entityType === 'sections' && Array.isArray(rev.snapshotData)) {
       this.sections.set(archiveId, rev.snapshotData);
     } else if (rev.entityType === 'timeline' && Array.isArray(rev.snapshotData)) {

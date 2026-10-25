@@ -35,18 +35,21 @@ afterEach(() => {
 });
 
 describe('two serverless instances sharing one database', () => {
-  it('REPRODUCES the problem: without a freshness check B serves stale data and overwrites A\'s edit', async () => {
+  it('rejects a stale whole-copy save instead of silently overwriting a concurrent edit', async () => {
     const { a, b } = await twoInstances();
     setTitle(a, 'Edited on A');
     await a.persistArchive(DEMO);
     expect(b.archives.get(DEMO)!.title).not.toBe('Edited on A'); // stale read
 
     addWall(b, 'wall-from-B');
-    await b.persistArchive(DEMO); // B saves its whole stale copy
+    // B saves its whole stale copy: the compare-and-swap guard refuses to
+    // overwrite A's newer durable copy and reloads the winner instead.
+    await expect(b.persistArchive(DEMO)).rejects.toThrow(/another instance/);
     const c = new MemoryDatabase();
     await c.ensureLoaded();
     await c.ensureArchiveLoaded(DEMO);
-    expect(c.archives.get(DEMO)!.title).not.toBe('Edited on A'); // A's edit was lost
+    expect(c.archives.get(DEMO)!.title).toBe('Edited on A'); // A's edit retained
+    expect(b.archives.get(DEMO)!.title).toBe('Edited on A'); // B converged to the winner
   });
 
   it('FIX: B reloads the newer copy before serving it', async () => {
@@ -80,15 +83,16 @@ describe('two serverless instances sharing one database', () => {
     await b.refreshArchiveIfStale('does-not-exist', 0);
   });
 
-  it('keeps local state while a local save is in flight', async () => {
+  it('keeps local state while a local save is in flight, then rejects the stale save', async () => {
     const { a, b } = await twoInstances();
     setTitle(a, 'Edited on A');
     await a.persistArchive(DEMO);
     setTitle(b, 'Local unsaved edit on B');
     const saving = b.persistArchive(DEMO); // queued, in flight
-    await b.refreshArchiveIfStale(DEMO, 0);
+    const rejected = expect(saving).rejects.toThrow(/another instance/);
+    await b.refreshArchiveIfStale(DEMO, 0); // mid-save refresh must not clobber local state
     expect(b.archives.get(DEMO)!.title).toBe('Local unsaved edit on B');
-    await saving;
+    await rejected;
   });
 
   it('B finds an archive that A created after B started', async () => {

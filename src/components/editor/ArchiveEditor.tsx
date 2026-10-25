@@ -90,9 +90,34 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
   // Save states
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
   const [saveError, setSaveError] = useState('');
+  const [saveNotice, setSaveNotice] = useState('');
   const [retryCount, setRetryCount] = useState(0);
   const didMountAutosave = useRef(false);
   const retrySaveRef = useRef<null | (() => Promise<void>)>(null);
+  // The durable-state version this editor's changes are based on. Sent with
+  // every settings save; the server rejects saves based on an older copy so a
+  // stale full-object write (second tab, restored on-device draft) cannot
+  // silently overwrite fields the user never saw.
+  const baseUpdatedAtRef = useRef<string | undefined>(archive.saveVersion);
+  // Latest-state ref + in-flight serialization for the settings autosave: a
+  // second autosave that becomes due while an earlier one is still saving
+  // must wait and then send the NEWEST state against the NEWEST base version.
+  // Firing it concurrently would send a stale baseVersion and surface a
+  // spurious "edited elsewhere" conflict to a user editing alone.
+  const latestArchiveRef = useRef(archive);
+  latestArchiveRef.current = archive;
+  const saveInFlightRef = useRef(false);
+  const queuedSaveRef = useRef(false);
+  // Cross-flow exclusion: ANY save that carries baseVersion (settings autosave,
+  // access-PIN change) runs inside this queue, so two base-carrying saves from
+  // this editor can never overlap and self-conflict. Per-action intent is kept:
+  // each enqueued unit sends its own payload against the freshest base version.
+  const baseSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const enqueueBaseSave = <T,>(unit: () => Promise<T>): Promise<T> => {
+    const run = baseSaveQueueRef.current.then(unit, unit);
+    baseSaveQueueRef.current = run.then(() => undefined, () => undefined);
+    return run;
+  };
   const archiveDraftKey = `oncehere-unsaved-${initialArchive.id}`;
 
   const responseError = async (response: Response, fallback: string) => {
@@ -146,6 +171,10 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
         albums?: Album[];
       };
       if (recovered.archive && window.confirm('OnceHere found archive settings that were not confirmed as saved. Restore them on this device?')) {
+        // The draft carries the version it was edited from. Adopt it as the
+        // save base so the server can reject the restore if the archive moved
+        // since, instead of silently overwriting the newer saved state.
+        baseUpdatedAtRef.current = recovered.archive.saveVersion;
         setArchive((current) => ({ ...current, ...recovered.archive, id: current.id }));
         if (Array.isArray(recovered.sections)) setSections(recovered.sections);
         if (Array.isArray(recovered.timeline)) setTimeline(recovered.timeline);
@@ -200,18 +229,31 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
     }
     setSaveStatus('saving');
     const saveArchive = async () => {
+      // Serialize: never overlap settings saves from this editor. If one is in
+      // flight, remember that newer edits exist and save them right after.
+      if (saveInFlightRef.current) { queuedSaveRef.current = true; return; }
+      saveInFlightRef.current = true;
       setSaveStatus('saving');
+      let succeeded = false;
       try {
-        const res = await fetch(`/api/archives/${archive.id}`, {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${ownerToken || ''}`
-          },
-          body: JSON.stringify(archive)
+        const latest = latestArchiveRef.current;
+        // The whole fetch + response-token handoff runs inside the exclusive
+        // queue: the base version must already be advanced before the NEXT
+        // queued save builds its body, or that save self-conflicts.
+        await enqueueBaseSave(async () => {
+          const res = await fetch(`/api/archives/${latest.id}`, {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${ownerToken || ''}`
+            },
+            body: JSON.stringify({ ...latest, baseVersion: baseUpdatedAtRef.current })
+          });
+          if (!res.ok) throw new Error(await responseError(res, 'Archive settings could not be saved.'));
+          const savedBody = await res.json().catch(() => null);
+          if (savedBody?.archive?.saveVersion) baseUpdatedAtRef.current = savedBody.archive.saveVersion;
         });
-
-        if (!res.ok) throw new Error(await responseError(res, 'Archive settings could not be saved.'));
+        succeeded = true;
         retrySaveRef.current = null;
         setSaveError('');
         setSaveStatus('saved');
@@ -220,6 +262,17 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
         retrySaveRef.current = saveArchive;
         setSaveError(error instanceof Error ? error.message : 'Archive settings could not be saved.');
         setSaveStatus('error');
+      } finally {
+        saveInFlightRef.current = false;
+        // Flush edits that arrived while this save was in flight, now against
+        // the fresh base version. Only after success: on failure the error
+        // state and retry path own the next attempt.
+        if (succeeded && queuedSaveRef.current) {
+          queuedSaveRef.current = false;
+          void saveArchive();
+        } else if (!succeeded) {
+          queuedSaveRef.current = false;
+        }
       }
     };
     retrySaveRef.current = saveArchive;
@@ -500,6 +553,14 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
         method: 'DELETE', headers: { Authorization: `Bearer ${ownerToken || ''}` }
       });
       if (!response.ok) throw new Error(await responseError(response, 'Could not delete this media item.'));
+      // The archive change is saved at this point. If the server could not
+      // clean up the stored file it says so in `warning` - surface that
+      // honestly as a non-blocking notice, never as a save failure.
+      const data = await response.json().catch(() => ({}));
+      if (data?.warning) {
+        setSaveNotice(String(data.warning));
+        window.setTimeout(() => setSaveNotice(''), 12000);
+      }
       setMedia((current) => current.filter((item) => item.id !== id));
     }).catch(() => undefined);
   };
@@ -583,16 +644,20 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
 
   const updateAccessPin = async (field: 'editorPin' | 'viewerPin', pin: string) => {
     await saveWithRetry(async () => {
-      const response = await fetch(`/api/archives/${archive.id}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${ownerToken || ''}`
-        },
-        body: JSON.stringify({ [field]: pin })
+      // Fetch + token handoff inside the exclusive queue (see saveArchive).
+      await enqueueBaseSave(async () => {
+        const response = await fetch(`/api/archives/${archive.id}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken || ''}`
+          },
+          body: JSON.stringify({ [field]: pin, baseVersion: baseUpdatedAtRef.current })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Could not update PIN.');
+        if (data?.archive?.saveVersion) baseUpdatedAtRef.current = data.archive.saveVersion;
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || 'Could not update PIN.');
     });
   };
 
@@ -710,11 +775,18 @@ export const ArchiveEditor: React.FC<ArchiveEditorProps> = ({
 
       </header>
 
+      {saveNotice && saveStatus !== 'error' && (
+        <div role="status" aria-live="polite" className="z-40 flex items-center justify-between gap-2 border-b border-amber-300/30 bg-amber-950/90 px-4 py-2 text-sm text-amber-100">
+          <div>{saveNotice}</div>
+          <button type="button" onClick={() => setSaveNotice('')} className="shrink-0 rounded-lg border border-white/20 px-3 py-1 font-semibold hover:bg-white/10">OK</button>
+        </div>
+      )}
+
       {saveStatus === 'error' && (
         <div role="alert" aria-live="assertive" className="z-40 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-rose-400/30 bg-rose-950/95 px-4 py-2.5 text-sm text-rose-100">
           <div>
             <span className="font-semibold">Not saved yet.</span>{' '}
-            {saveError || 'The server did not confirm durable storage.'} Retry once. If it still fails, refresh the page. A recovery copy of the editor state is saved on this device.
+            {saveError || 'The server did not confirm durable storage.'} Retry once. If it still fails, refresh the page. A copy of the unconfirmed editor state is stored on this device. If the archive was saved elsewhere in the meantime, that newer saved version stays unchanged and the on-device copy is kept separately instead of replacing it.
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button type="button" onClick={() => void runRetry()} className="min-h-11 rounded-xl bg-amber-400 px-4 font-bold text-neutral-950 hover:brightness-110 disabled:opacity-50">

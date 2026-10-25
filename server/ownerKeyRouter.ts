@@ -1,7 +1,7 @@
 import express, { NextFunction, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
-import { db } from './db.js';
+import { db, newVersionToken } from './db.js';
 import {
   createSignedToken,
   findArchiveAndVerifyKey,
@@ -84,25 +84,41 @@ function recoveryRateKey(req: Request) {
   return `recovery:${req.ip || req.socket.remoteAddress || 'unknown'}`;
 }
 
-function consumeRecoveryAttempt(req: Request, res: Response): boolean {
+async function consumeRecoveryAttempt(req: Request, res: Response): Promise<boolean> {
+  // Atomic durable counting shared with the api.ts limiter: simultaneous
+  // attempts across instances serialize through the row CAS; an unreadable or
+  // unwritable counter fails closed instead of allowing uncounted tries.
   const key = recoveryRateKey(req);
   const now = Date.now();
-  let entry = db.rateLimits.get(key);
-  if (!entry || now - entry.firstAttemptAt >= RECOVERY_WINDOW_MS) {
-    entry = { attempts: 0, firstAttemptAt: now };
+  let entry: { attempts: number; firstAttemptAt: number; lockedUntil?: number } | null;
+  try {
+    entry = await db.mutateRateLimit(key, (current) => {
+      const base = !current || now - current.firstAttemptAt >= RECOVERY_WINDOW_MS
+        ? { attempts: 0, firstAttemptAt: now }
+        : { ...current };
+      base.attempts += 1;
+      return base;
+    });
+  } catch (error) {
+    console.error('Recovery attempt state could not be verified; refusing uncounted attempt.', error);
+    res.status(503).json({ error: 'Recovery attempts could not be verified. Please try again.' });
+    return false;
   }
-  if (entry.attempts >= RECOVERY_MAX_ATTEMPTS) {
+  if (entry && entry.attempts > RECOVERY_MAX_ATTEMPTS) {
     res.setHeader('Retry-After', Math.max(1, Math.ceil((entry.firstAttemptAt + RECOVERY_WINDOW_MS - now) / 1000)));
     res.status(429).json({ error: 'Too many recovery attempts. Wait 15 minutes before trying again.' });
     return false;
   }
-  entry.attempts += 1;
-  db.rateLimits.set(key, entry);
   return true;
 }
 
-function clearRecoveryAttempts(req: Request) {
-  db.rateLimits.delete(recoveryRateKey(req));
+async function clearRecoveryAttempts(req: Request) {
+  // The key is cryptographically verified at this point; a failed clear leaves
+  // a stale counter that expires with its window, so it is logged, not blocking.
+  const now = Date.now();
+  await db.mutateRateLimit(recoveryRateKey(req), (entry) => (entry?.lockedUntil && now < entry.lockedUntil) ? entry : null).catch((error) => {
+    console.error('Recovery attempt counter clear failed after a verified key; it expires with its window.', error);
+  });
 }
 
 /**
@@ -164,7 +180,7 @@ function addOwnerKeyAudit(archiveId: string, req: Request, summary: string) {
 // Specific archive recovery: both permanent master and current backup key work.
 ownerKeyRouter.post('/archives/:id/auth/recovery', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    if (!consumeRecoveryAttempt(req, res)) return;
+    if (!await consumeRecoveryAttempt(req, res)) return;
     const recoveryKey = req.body?.recoveryKey;
     if (!recoveryKey || typeof recoveryKey !== 'string' || recoveryKey.length > 512) {
       return res.status(400).json({ error: 'Recovery key is required.' });
@@ -175,7 +191,7 @@ ownerKeyRouter.post('/archives/:id/auth/recovery', async (req: Request, res: Res
     const keyKind = await matchRecoveryKey(archive, recoveryKey);
     if (!keyKind) return res.status(401).json({ error: 'Invalid recovery key. Please check the code and try again.' });
 
-    clearRecoveryAttempts(req);
+    await clearRecoveryAttempts(req);
     const token = createSignedToken(archive.id, 'owner', 24 * 30);
     addOwnerKeyAudit(archive.id, req, keyKind === 'master'
       ? 'Master Owner Recovery Key Authenticated'
@@ -197,7 +213,7 @@ ownerKeyRouter.post('/archives/:id/auth/recovery', async (req: Request, res: Res
 // browser's cached permanent master key.
 ownerKeyRouter.post('/archives/auth/key-access', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    if (!consumeRecoveryAttempt(req, res)) return;
+    if (!await consumeRecoveryAttempt(req, res)) return;
     const { key, identifier } = req.body || {};
     if (!key || typeof key !== 'string' || key.length > 512 || (identifier !== undefined && typeof identifier !== 'string')) {
       return res.status(400).json({ error: 'Please enter your owner recovery key.' });
@@ -218,7 +234,7 @@ ownerKeyRouter.post('/archives/auth/key-access', async (req: Request, res: Respo
     }
 
     const token = match.token || createSignedToken(current.id, 'owner', 24 * 30);
-    clearRecoveryAttempts(req);
+    await clearRecoveryAttempts(req);
     addOwnerKeyAudit(current.id, req, keyKind === 'master'
       ? 'Master Owner Recovery Key Login'
       : 'Backup Owner Recovery Key Login');
@@ -271,9 +287,11 @@ ownerKeyRouter.post('/archives/:id/auth/recovery/regenerate', async (req: Reques
     const hadBackup = Boolean(archive.backupRecoveryKeyHash);
     const previousBackupHash = archive.backupRecoveryKeyHash;
     const previousUpdatedAt = archive.updatedAt;
+    const previousSaveVersion = archive.saveVersion;
     const backupKey = generateBackupOwnerKey();
     archive.backupRecoveryKeyHash = bcrypt.hashSync(backupKey, 10);
     archive.updatedAt = new Date().toISOString();
+    archive.saveVersion = newVersionToken();
 
     const info = clientInfo(req);
     db.addAccessLog(archive.id, {
@@ -289,6 +307,7 @@ ownerKeyRouter.post('/archives/:id/auth/recovery/regenerate', async (req: Reques
     } catch (error) {
       archive.backupRecoveryKeyHash = previousBackupHash;
       archive.updatedAt = previousUpdatedAt;
+      archive.saveVersion = previousSaveVersion;
       return res.status(503).json({ error: 'The backup owner key could not be saved durably. The previous owner keys are unchanged.' });
     }
 
@@ -318,14 +337,17 @@ ownerKeyRouter.delete('/archives/:id/auth/recovery/backup', async (req: Request,
 
     const previousBackupHash = archive.backupRecoveryKeyHash;
     const previousUpdatedAt = archive.updatedAt;
+    const previousSaveVersion = archive.saveVersion;
     archive.backupRecoveryKeyHash = undefined;
     archive.updatedAt = new Date().toISOString();
+    archive.saveVersion = newVersionToken();
 
     try {
       await db.persistArchive(archive.id);
     } catch (error) {
       archive.backupRecoveryKeyHash = previousBackupHash;
       archive.updatedAt = previousUpdatedAt;
+      archive.saveVersion = previousSaveVersion;
       return res.status(503).json({ error: 'The backup key could not be revoked durably. Existing owner keys are unchanged.' });
     }
 

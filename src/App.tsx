@@ -135,7 +135,15 @@ export default function App() {
           if (viewerToken) headers.Authorization = `Bearer ${viewerToken}`;
         }
 
-        const res = await fetch(endpoint, { headers });
+        // A mutation from this device moments ago means the shared anonymous
+        // cache (public, max-age=30) can still hold the pre-mutation payload.
+        // Bypass it once so the person who just saved/deleted sees server truth.
+        const slugForMarker = tenantContext.type === 'archive' ? tenantContext.slug : tenantContext.workspaceSlug;
+        const markerKey = `archive_mutated_${slugForMarker}`;
+        const mutatedAt = Number(localStorage.getItem(markerKey) || 0);
+        const bypassCache = Date.now() - mutatedAt < 2 * 60 * 1000;
+
+        const res = await fetch(endpoint, { headers, cache: bypassCache ? 'no-store' : 'default' });
         const data = await res.json();
 
         if (!res.ok) {
