@@ -35,6 +35,8 @@ interface StoredStateRow {
   id: string;
   data?: Record<string, unknown>;
   updatedAt?: string;
+  /** Exact stored JSON text, for byte-comparison CAS on legacy envelopes. */
+  raw?: string;
 }
 
 
@@ -181,6 +183,7 @@ export class MemoryDatabase {
   private tenantStoredHash = new Map<string, string>(); // archiveId -> envelope sha256
   private indexVersionToken?: string;
   private indexStoredHash?: string; // envelope sha256 of the index row we last loaded or wrote
+  private indexStoredRaw?: string; // exact stored JSON text of that index row (CAS for pre-sha256 envelopes)
   private tenantCheckedAt = new Map<string, number>();
   private indexCheckedAt = 0;
 
@@ -348,7 +351,8 @@ export class MemoryDatabase {
         return [{
           id: row.id,
           data: JSON.parse(row.data) as Record<string, unknown>,
-          updatedAt: typeof row.updated_at === 'string' ? row.updated_at : undefined
+          updatedAt: typeof row.updated_at === 'string' ? row.updated_at : undefined,
+          raw: row.data
         }];
       } catch {
         console.error(`Skipping invalid Turso state row ${row.id}.`);
@@ -423,15 +427,38 @@ export class MemoryDatabase {
 
       // Turso starts clean. The bundled sample data is the only data seeded
       // automatically; this intentionally never imports Supabase snapshots.
-      const indexRow = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
-      if (indexRow?.data && this.restoreTenantIndex(indexRow.data)) {
-        if (indexRow.updatedAt) this.indexVersionToken = indexRow.updatedAt;
-        this.indexStoredHash = typeof indexRow.data.sha256 === 'string' ? indexRow.data.sha256 : undefined;
+      // The bootstrap read must distinguish three states fetchRows cannot:
+      // no index row (truly new database: seed), a readable index row (load),
+      // and an EXISTING but unreadable index row. The third must fail closed:
+      // seeding over it would silently erase real archive discoverability,
+      // legacy mappings and platform settings. The API wrapper turns this
+      // throw into an honest 503 until the row is repaired or removed
+      // deliberately - never implicitly overwritten.
+      await this.ensureStorageSchema(config);
+      const indexSqlRow = (await this.storageClient(config).execute({
+        sql: 'SELECT data, updated_at FROM oncehere_state WHERE id = ?',
+        args: [TENANT_INDEX_ID]
+      })).rows[0];
+      if (!indexSqlRow) {
         this.loadedFromStorage = true;
+        await this.seedTurso();
         return;
       }
+      let indexData: Record<string, unknown> | undefined;
+      try {
+        indexData = typeof indexSqlRow.data === 'string'
+          ? JSON.parse(indexSqlRow.data) as Record<string, unknown>
+          : undefined;
+      } catch {
+        indexData = undefined;
+      }
+      if (!indexData || !this.restoreTenantIndex(indexData)) {
+        throw new Error('Durable archive index exists but is unreadable; refusing to overwrite it. Manual inspection required.');
+      }
+      if (typeof indexSqlRow.updated_at === 'string') this.indexVersionToken = indexSqlRow.updated_at;
+      this.indexStoredHash = typeof indexData.sha256 === 'string' ? indexData.sha256 : undefined;
+      this.indexStoredRaw = typeof indexSqlRow.data === 'string' ? indexSqlRow.data : undefined;
       this.loadedFromStorage = true;
-      await this.seedTurso();
     })();
 
     try {
@@ -549,8 +576,14 @@ export class MemoryDatabase {
       this.indexCheckedAt = now;
       const indexRow = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
       const index = indexRow?.data;
-      if (indexRow?.updatedAt) this.indexVersionToken = indexRow.updatedAt;
-      if (indexRow?.data && typeof indexRow.data.sha256 === 'string') this.indexStoredHash = indexRow.data.sha256;
+      if (indexRow?.updatedAt) {
+        this.indexVersionToken = indexRow.updatedAt;
+        // Keep the CAS basis coherent: token, content hash and raw text always
+        // describe the SAME durable row. A legacy envelope has no sha256, so
+        // clear the hash rather than pair the new token with a stale one.
+        this.indexStoredHash = indexRow.data && typeof indexRow.data.sha256 === 'string' ? indexRow.data.sha256 : undefined;
+        this.indexStoredRaw = indexRow.raw;
+      }
       if (!index || index.format !== TENANT_INDEX_FORMAT || !Array.isArray(index.archives)) return 0;
       let added = 0;
       for (const [id, archive] of index.archives as [string, Archive][]) {
@@ -673,7 +706,7 @@ export class MemoryDatabase {
         id,
         data: next as unknown as Record<string, unknown>,
         updated_at: newVersionToken()
-      }, row?.updatedAt);
+      }, row?.updatedAt, undefined, row?.raw);
       if (ok) return next;
     }
     throw new Error('Attempt-state row stayed contended; the update was not applied.');
@@ -742,10 +775,17 @@ export class MemoryDatabase {
   private async writeTenantIndexGuarded(config: { url: string; authToken: string }): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const row = this.tenantIndexRow();
-      const wrote = await this.conditionalTenantWrite(config, row, this.indexVersionToken, this.indexStoredHash);
+      // Token without any content basis (hash or raw) is an internal
+      // inconsistency - every recorded read/write sets at least one. Refuse
+      // rather than weaken the CAS to stamps a pre-barrier writer can reuse.
+      if (this.indexVersionToken !== undefined && this.indexStoredHash === undefined && this.indexStoredRaw === undefined) {
+        throw new TenantConflictError(TENANT_INDEX_ID);
+      }
+      const wrote = await this.conditionalTenantWrite(config, row, this.indexVersionToken, this.indexStoredHash, this.indexStoredRaw);
       if (wrote) {
         this.indexVersionToken = row.updated_at;
         this.indexStoredHash = row.data.sha256 as string;
+        this.indexStoredRaw = JSON.stringify(row.data);
         return;
       }
       const winner = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
@@ -761,6 +801,7 @@ export class MemoryDatabase {
         }
         this.indexVersionToken = winner.updatedAt;
         this.indexStoredHash = typeof data.sha256 === 'string' ? data.sha256 : undefined;
+        this.indexStoredRaw = winner.raw;
       } else {
         // No readable winner: do not guess; fail honestly.
         break;
@@ -823,7 +864,8 @@ export class MemoryDatabase {
     config: { url: string; authToken: string },
     row: { id: string; data: Record<string, unknown>; updated_at: string },
     expectedUpdatedAt: string | undefined,
-    expectedHash?: string
+    expectedHash?: string,
+    expectedRaw?: string
   ): Promise<boolean> {
     await this.ensureStorageSchema(config);
     const client = this.storageClient(config);
@@ -842,6 +884,18 @@ export class MemoryDatabase {
       const result = await client.execute({
         sql: `UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ? AND json_extract(data, '$.sha256') = ?`,
         args: [JSON.stringify(row.data), row.updated_at, row.id, expectedUpdatedAt, expectedHash]
+      });
+      return (result.rowsAffected ?? 0) > 0;
+    }
+    if (expectedRaw !== undefined) {
+      // Legacy-envelope CAS: pre-sha256 rows (old index envelopes) have no
+      // content hash, and their bare-ISO updated_at can collide within one
+      // millisecond. Require the durable copy to be byte-identical to the
+      // exact JSON text this write is based on - same strength as the hash
+      // guard, proven against the stored value itself.
+      const result = await client.execute({
+        sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ? AND data = ?',
+        args: [JSON.stringify(row.data), row.updated_at, row.id, expectedUpdatedAt, expectedRaw]
       });
       return (result.rowsAffected ?? 0) > 0;
     }
