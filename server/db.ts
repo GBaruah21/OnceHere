@@ -41,6 +41,8 @@ interface StoredStateRow {
   id: string;
   data?: Record<string, unknown>;
   updatedAt?: string;
+  /** Exact stored JSON text: content precondition for the fail-closed CAS. */
+  raw?: string;
 }
 
 
@@ -104,6 +106,8 @@ export class MemoryDatabase {
   // Freshness tracking so a warm serverless instance notices changes saved by another instance.
   private tenantStoredAt = new Map<string, string>(); // archiveId -> updated_at we last loaded or wrote
   private indexStoredAt?: string; // updated_at of the index row we last loaded or wrote (fail-closed CAS base)
+  private tenantStoredRaw = new Map<string, string>(); // archiveId -> exact stored JSON of the tenant row we last loaded or wrote
+  private indexStoredRaw?: string; // exact stored JSON of that index row
   private tenantCheckedAt = new Map<string, number>();
   private indexCheckedAt = 0;
 
@@ -257,7 +261,8 @@ export class MemoryDatabase {
         return [{
           id: row.id,
           data: JSON.parse(row.data) as Record<string, unknown>,
-          updatedAt: typeof row.updated_at === 'string' ? row.updated_at : undefined
+          updatedAt: typeof row.updated_at === 'string' ? row.updated_at : undefined,
+          raw: row.data
         }];
       } catch {
         console.error(`Skipping invalid Turso state row ${row.id}.`);
@@ -279,7 +284,7 @@ export class MemoryDatabase {
    */
   private async upsertRows(
     config: { url: string; authToken: string },
-    rows: Array<{ id: string; data: Record<string, unknown>; updated_at: string; expectedUpdatedAt?: string }>
+    rows: Array<{ id: string; data: Record<string, unknown>; updated_at: string; expectedUpdatedAt?: string; expectedRaw?: string }>
   ): Promise<void> {
     await this.ensureStorageSchema(config);
     const client = this.storageClient(config);
@@ -287,14 +292,23 @@ export class MemoryDatabase {
     try {
       for (const row of rows) {
         const data = JSON.stringify(row.data);
+        // The content precondition matters: a same-millisecond writer can
+        // change a row while leaving updated_at identical (bare ISO stamps
+        // repeat within one ms), so stamp-only CAS would wave it through.
+        // Byte-identity with the exact copy this instance read cannot.
+        if (row.expectedUpdatedAt !== undefined && row.expectedRaw === undefined) {
+          // Base stamp without the base content is an internal inconsistency
+          // (every recorded read/write sets both): refuse rather than weaken.
+          throw new Error(`Save rejected: no complete base copy is held for ${row.id}. No changes were applied.`);
+        }
         const res = row.expectedUpdatedAt === undefined
           ? await tx.execute({
               sql: 'INSERT OR IGNORE INTO oncehere_state (id, data, updated_at) VALUES (?, ?, ?)',
               args: [row.id, data, row.updated_at]
             })
           : await tx.execute({
-              sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ?',
-              args: [data, row.updated_at, row.id, row.expectedUpdatedAt]
+              sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ? AND data = ?',
+              args: [data, row.updated_at, row.id, row.expectedUpdatedAt, row.expectedRaw]
             });
         if ((res.rowsAffected ?? 0) === 0) {
           throw new Error(`Save rejected: ${row.id} was written by another instance at the same time. No changes were applied.`);
@@ -363,6 +377,7 @@ export class MemoryDatabase {
       const indexRow = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
       if (indexRow?.data && this.restoreTenantIndex(indexRow.data)) {
         if (indexRow.updatedAt) this.indexStoredAt = indexRow.updatedAt;
+        this.indexStoredRaw = indexRow.raw;
         this.loadedFromStorage = true;
         return;
       }
@@ -411,6 +426,7 @@ export class MemoryDatabase {
         stored.compression === 'gzip' ? 'gzip' : undefined
       ));
       if (row.updatedAt) this.tenantStoredAt.set(archiveId, row.updatedAt);
+      if (row.raw) this.tenantStoredRaw.set(archiveId, row.raw);
     })();
     this.tenantLoading.set(archiveId, loading);
     try {
@@ -455,6 +471,7 @@ export class MemoryDatabase {
         stored.compression === 'gzip' ? 'gzip' : undefined
       ));
       if (row.updatedAt) this.tenantStoredAt.set(archiveId, row.updatedAt);
+      if (row.raw) this.tenantStoredRaw.set(archiveId, row.raw);
     } catch (error) {
       console.error('Archive freshness check failed; serving the in-memory copy.', error);
     }
@@ -473,7 +490,10 @@ export class MemoryDatabase {
       if (now - this.indexCheckedAt < minGapMs) return 0;
       this.indexCheckedAt = now;
       const indexRow = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
-      if (indexRow?.updatedAt) this.indexStoredAt = indexRow.updatedAt;
+      if (indexRow?.updatedAt) {
+        this.indexStoredAt = indexRow.updatedAt;
+        this.indexStoredRaw = indexRow.raw;
+      }
       const index = indexRow?.data;
       if (!index || index.format !== TENANT_INDEX_FORMAT || !Array.isArray(index.archives)) return 0;
       let added = 0;
@@ -530,6 +550,7 @@ export class MemoryDatabase {
     const row = this.tenantStorageRow(archiveId);
     await this.upsertRows(config, [row]);
     this.tenantStoredAt.set(archiveId, row.updated_at);
+    this.tenantStoredRaw.set(archiveId, JSON.stringify(row.data));
     this.loadedTenantIds.add(archiveId);
   }
 
@@ -538,8 +559,9 @@ export class MemoryDatabase {
     // Seed: indexStoredAt is undefined and the row does not exist yet, so the
     // write is a plain INSERT. Every later write is conditional on the copy
     // this instance last read or wrote.
-    await this.upsertRows(config, [{ ...row, expectedUpdatedAt: this.indexStoredAt }]);
+    await this.upsertRows(config, [{ ...row, expectedUpdatedAt: this.indexStoredAt, expectedRaw: this.indexStoredRaw }]);
     this.indexStoredAt = row.updated_at;
+    this.indexStoredRaw = JSON.stringify(row.data);
   }
 
   private async seedTurso(): Promise<void> {
@@ -584,11 +606,13 @@ export class MemoryDatabase {
           const tenantRow = this.tenantStorageRow(archiveId);
           const indexRow = this.tenantIndexRow();
           await this.upsertRows(config, [
-            { ...tenantRow, expectedUpdatedAt: this.tenantStoredAt.get(archiveId) },
-            { ...indexRow, expectedUpdatedAt: this.indexStoredAt }
+            { ...tenantRow, expectedUpdatedAt: this.tenantStoredAt.get(archiveId), expectedRaw: this.tenantStoredRaw.get(archiveId) },
+            { ...indexRow, expectedUpdatedAt: this.indexStoredAt, expectedRaw: this.indexStoredRaw }
           ]);
           this.tenantStoredAt.set(archiveId, tenantRow.updated_at);
+          this.tenantStoredRaw.set(archiveId, JSON.stringify(tenantRow.data));
           this.indexStoredAt = indexRow.updated_at;
+          this.indexStoredRaw = JSON.stringify(indexRow.data);
           this.loadedTenantIds.add(archiveId);
           waiters.forEach(({ resolve }) => resolve());
         } catch (error) {
