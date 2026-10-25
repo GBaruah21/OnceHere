@@ -1,7 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
-import { db, archiveSaveVersion } from './db.js';
+import { db, archiveSaveVersion, stampSaveVersion } from './db.js';
 import {
   createSignedToken,
   verifySignedToken,
@@ -485,6 +485,7 @@ apiRouter.post('/archives', (req: Request, res: Response) => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
+    newArchive.saveVersion = stampSaveVersion(newArchive);
 
     db.createArchive(newArchive);
 

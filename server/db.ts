@@ -54,20 +54,54 @@ export function newVersionToken(): string {
  * deterministic stand-in from stable fields so every instance computes the
  * same value for the same untouched archive.
  */
-export function archiveSaveVersion(archive: { saveVersion?: string; updatedAt?: string; createdAt?: string; id: string }): string {
+/**
+ * Deterministic JSON with recursively sorted keys, used only for version
+ * hashing - two records with identical content hash identically regardless of
+ * key insertion order.
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return '{' + entries.map(([k, v]) => JSON.stringify(k) + ':' + canonicalJson(v)).join(',') + '}';
+}
+
+/** Content fingerprint of an archive record, excluding the version fields themselves. */
+export function archiveContentHash(archive: object): string {
+  const { updatedAt: _u, saveVersion: _s, ...content } = archive as Record<string, unknown>;
+  return createHash('sha256').update(canonicalJson(content)).digest('hex').slice(0, 24);
+}
+
+/**
+ * Stamp the authoritative save token for a finished record: the record's own
+ * updatedAt plus a hash of its full content. Any later write that changes
+ * anything - content OR only updatedAt - without restamping breaks coherence,
+ * which archiveSaveVersion detects regardless of clock direction.
+ */
+export function stampSaveVersion(archive: { updatedAt?: string }): string {
+  const iso = archive.updatedAt || new Date().toISOString();
+  return `${iso}#${archiveContentHash(archive)}`;
+}
+
+export function archiveSaveVersion<T extends { saveVersion?: string; updatedAt?: string; createdAt?: string; id: string }>(archive: T): string {
   const base = archive.updatedAt || archive.createdAt || archive.id;
-  // Mixed-version protection: an older writer (previous deployed code in a
-  // rollback window) advances updatedAt without stamping saveVersion. If the
-  // stored saveVersion predates the newest updatedAt, it no longer describes
-  // the current state - fall back to the updatedAt-derived token so stale
-  // bases conflict and fresh reads get a base that covers the newest write.
-  if (archive.saveVersion) {
-    const svTime = Date.parse(archive.saveVersion.split('#')[0]);
-    const upTime = Date.parse(base);
-    if (Number.isFinite(svTime) && Number.isFinite(upTime) && upTime > svTime) {
-      return `${base}#legacy`;
-    }
-    return archive.saveVersion;
+  const sv = archive.saveVersion;
+  if (!sv) return `${base}#legacy`;
+  const hashIndex = sv.indexOf('#');
+  if (hashIndex <= 0) return `${base}#legacy`;
+  const iso = sv.slice(0, hashIndex);
+  const hash = sv.slice(hashIndex + 1);
+  // Coherent only when BOTH the token timestamp is the record's own updatedAt
+  // AND the content hash still matches. A legacy writer (previous deployment
+  // in a rollback window) advances updatedAt and/or content while preserving
+  // the old token; that breaks coherence under every clock skew - behind,
+  // ahead, or the exact same millisecond - because detection no longer depends
+  // on comparing two writers' clocks. Legacy uuid-era tokens fail the hash
+  // shape check and fall back the same way; the next save restamps them.
+  if (iso === base && /^[0-9a-f]{24}$/.test(hash) && hash === archiveContentHash(archive)) {
+    return sv;
   }
   return `${base}#legacy`;
 }
@@ -911,9 +945,9 @@ export class MemoryDatabase {
     const updated: Archive = {
       ...existing,
       ...updates,
-      updatedAt: new Date().toISOString(),
-      saveVersion: newVersionToken()
+      updatedAt: new Date().toISOString()
     };
+    updated.saveVersion = stampSaveVersion(updated);
     this.archives.set(id, updated);
     this.addRevision(id, 'archive', 'Updated archive settings & details', actor, updated);
     return updated;
@@ -923,7 +957,7 @@ export class MemoryDatabase {
     const existing = this.archives.get(id);
     if (!existing) return false;
     existing.deletedAt = new Date().toISOString();
-    existing.saveVersion = newVersionToken();
+    existing.saveVersion = stampSaveVersion(existing);
     this.archives.set(id, existing);
     return true;
   }
@@ -1242,7 +1276,8 @@ export class MemoryDatabase {
     if (!rev) return false;
 
     if (rev.entityType === 'archive' && rev.snapshotData) {
-      this.archives.set(archiveId, { ...rev.snapshotData, updatedAt: new Date().toISOString(), saveVersion: newVersionToken() });
+      const restored = { ...rev.snapshotData, updatedAt: new Date().toISOString() };
+      this.archives.set(archiveId, { ...restored, saveVersion: stampSaveVersion(restored) });
     } else if (rev.entityType === 'sections' && Array.isArray(rev.snapshotData)) {
       this.sections.set(archiveId, rev.snapshotData);
     } else if (rev.entityType === 'timeline' && Array.isArray(rev.snapshotData)) {

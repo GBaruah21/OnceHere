@@ -1,7 +1,7 @@
 import express, { NextFunction, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
-import { db, newVersionToken } from './db.js';
+import { db, newVersionToken, stampSaveVersion } from './db.js';
 import {
   createSignedToken,
   findArchiveAndVerifyKey,
@@ -291,7 +291,7 @@ ownerKeyRouter.post('/archives/:id/auth/recovery/regenerate', async (req: Reques
     const backupKey = generateBackupOwnerKey();
     archive.backupRecoveryKeyHash = bcrypt.hashSync(backupKey, 10);
     archive.updatedAt = new Date().toISOString();
-    archive.saveVersion = newVersionToken();
+    archive.saveVersion = stampSaveVersion(archive);
 
     const info = clientInfo(req);
     db.addAccessLog(archive.id, {
@@ -340,7 +340,7 @@ ownerKeyRouter.delete('/archives/:id/auth/recovery/backup', async (req: Request,
     const previousSaveVersion = archive.saveVersion;
     archive.backupRecoveryKeyHash = undefined;
     archive.updatedAt = new Date().toISOString();
-    archive.saveVersion = newVersionToken();
+    archive.saveVersion = stampSaveVersion(archive);
 
     try {
       await db.persistArchive(archive.id);
