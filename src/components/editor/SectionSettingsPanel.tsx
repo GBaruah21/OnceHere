@@ -1694,7 +1694,7 @@ export const SectionSettingsPanel: React.FC<SectionSettingsPanelProps> = ({
                     {onToggleHideWallPost && (
                       <button
                         type="button"
-                        onClick={() => onToggleHideWallPost(post.id, isHidden)}
+                        onClick={() => onToggleHideWallPost(post.id, !isHidden)}
                         title={isHidden ? 'Make visible to all visitors' : 'Hide from visitors'}
                         className={`p-1.5 rounded-lg text-xs font-mono transition-colors cursor-pointer ${
                           isHidden
