@@ -110,11 +110,11 @@ describe('protected rollback + restore under the rowVersion barrier', () => {
     const current = JSON.parse(String((await readRow(tenantRowId)).data));
     expect(current.rowVersion).not.toBe(backupData.rowVersion);
     // Protected restore of the backup (fresh mint inside buildRestoreRow),
-    // conditioned on a FRESH inventory of the current durable row.
-    const currentStamp = String((await readRow(tenantRowId)).updated_at);
+    // conditioned on a FRESH content inventory of the current durable row.
+    const inventory = await restore.inventoryRows(raw, [tenantRowId]);
     const result = await restore.restoreRows(raw,
       [{ id: tenantRowId, data: backupData, updated_at: String(backup.updated_at) }],
-      { expected: { [tenantRowId]: currentStamp } });
+      { expected: { [tenantRowId]: inventory[0] } });
     expect(result.restored).toEqual([tenantRowId]);
     const restored = JSON.parse(String((await readRow(tenantRowId)).data));
     expect(restored.rowVersion).not.toBe(backupData.rowVersion); // fresh, not replayed
@@ -164,7 +164,10 @@ describe('protected rollback + restore under the rowVersion barrier', () => {
     await expect(restore.restoreRows(raw, [
       { id: tenantRowId, data: tenantBackup },
       { id: 'tenant-index', data: indexBackup }
-    ], { expected: { [tenantRowId]: tenantStamp, 'tenant-index': 'stale-base' } }))
+    ], { expected: {
+      [tenantRowId]: { id: tenantRowId, data: tenantBackup, updated_at: tenantStamp },
+      'tenant-index': { id: 'tenant-index', data: { stale: true }, updated_at: 'stale-base' }
+    } }))
       .rejects.toThrow(/Restore aborted|Refusing to restore/);
     // Atomicity: NEITHER row was restored.
     expect(String((await readRow(tenantRowId)).data)).toBe(tenantBefore);
@@ -173,7 +176,7 @@ describe('protected rollback + restore under the rowVersion barrier', () => {
 
   it('aborts instead of overwriting a save that landed between inventory and restore', async () => {
     const backup = JSON.parse(String((await readRow(tenantRowId)).data));
-    const inventoryStamp = String((await readRow(tenantRowId)).updated_at);
+    const inventory = await restore.inventoryRows(raw, [tenantRowId]);
     // A concurrent save lands after the inventory but before the restore.
     const concurrent = new MemoryDatabase();
     await concurrent.ensureLoaded();
@@ -182,12 +185,34 @@ describe('protected rollback + restore under the rowVersion barrier', () => {
     await concurrent.persistArchive(id);
     await expect(restore.restoreRows(raw,
       [{ id: tenantRowId, data: backup }],
-      { expected: { [tenantRowId]: inventoryStamp } }))
+      { expected: { [tenantRowId]: inventory[0] } }))
       .rejects.toThrow(/Restore aborted/);
     // The concurrent save is untouched; nothing was restored over it.
     const durable = JSON.parse(String((await readRow(tenantRowId)).data));
     const winnerSnapshot = decodeSnapshot(durable.chunks, durable.sha256, durable.compression);
     expect((winnerSnapshot.archive as { subtitle: string }).subtitle).toBe('concurrent winner');
+  });
+
+  it('same-ms repro: refuses when content changed under an UNCHANGED updated_at stamp', async () => {
+    const inventory = await restore.inventoryRows(raw, [tenantRowId]);
+    const backup = JSON.parse(String((await readRow(tenantRowId)).data));
+    // Change the durable row's content while forcing the stamp back to the
+    // inventoried value. Under the barrier the only writer that can do this
+    // is a barrier-passing one with a bare-ISO stamp - the rollback build:
+    // fresh rowVersion (guard passes), same-millisecond updated_at.
+    const changed = { ...inventory[0].data, marker: 'same-ms-change', rowVersion: `2026-01-01T00:00:00.000Z#same-ms-writer` };
+    await raw.execute({
+      sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ?',
+      args: [JSON.stringify(changed), inventory[0].updated_at, tenantRowId]
+    });
+    expect(String((await readRow(tenantRowId)).updated_at)).toBe(inventory[0].updated_at);
+    // A stamp-only precondition would wave the restore through and erase the
+    // change; the content precondition must refuse and write NOTHING.
+    await expect(restore.restoreRows(raw,
+      [{ id: tenantRowId, data: backup }],
+      { expected: { [tenantRowId]: inventory[0] } }))
+      .rejects.toThrow(/Restore aborted/);
+    expect(JSON.parse(String((await readRow(tenantRowId)).data)).marker).toBe('same-ms-change');
   });
 
   it('refuses to restore over an existing row with no expected base and no force', async () => {

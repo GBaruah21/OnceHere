@@ -44,14 +44,34 @@ export function buildRestoreRow(row, mint = mintRowVersion) {
 // Restore is ATOMIC and FAIL-CLOSED:
 //   - every row is written inside ONE transaction; any failure rolls back ALL
 //     rows, so a restore can never leave a half-restored (incoherent) set.
-//   - pass `expected` ({ id: updated_at }) from a fresh inventory of the
-//     CURRENT database: each existing row is then restored only if it still
-//     matches that base, so a concurrent save between inventory and restore
-//     aborts everything instead of being silently overwritten.
+//   - pass `expected` from a fresh inventory of the CURRENT database
+//     (--expect file: [{ id, data, updated_at }], exactly what --inventory
+//     writes). Each existing row is restored only if it still matches that
+//     base BY CONTENT: updated_at alone is not enough - a same-millisecond
+//     writer can change a row while its bare-ISO stamp stays identical.
+//     A concurrent save between inventory and restore aborts everything
+//     instead of being silently overwritten.
 //   - without an expected base, only rows that do NOT exist yet are written
 //     (INSERT OR IGNORE); an existing row aborts the restore. `force: true`
 //     is the explicit, logged override (unconditional upsert, still atomic
 //     and verified) for a deliberate restore over unknown current state.
+
+// Current-state inventory for the given ids, in the exact shape --expect and
+// --rows consume. Operator flow: inventory -> inspect -> restore --expect.
+export async function inventoryRows(client, ids) {
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => '?').join(', ');
+  const result = await client.execute({
+    sql: `SELECT id, data, updated_at FROM oncehere_state WHERE id IN (${placeholders}) ORDER BY id ASC`,
+    args: ids
+  });
+  return result.rows.map((row) => ({
+    id: String(row.id),
+    data: JSON.parse(String(row.data)),
+    updated_at: String(row.updated_at)
+  }));
+}
+
 export async function restoreRows(client, rows, { dryRun = false, expected = {}, force = false } = {}) {
   const plan = rows.map((row) => buildRestoreRow(row));
   if (dryRun) {
@@ -64,8 +84,8 @@ export async function restoreRows(client, rows, { dryRun = false, expected = {},
       const base = expected[row.id];
       if (base !== undefined && !force) {
         const res = await tx.execute({
-          sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ?',
-          args: [data, row.updated_at, row.id, base]
+          sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ? AND data = ?',
+          args: [data, row.updated_at, row.id, base.updated_at, typeof base.data === 'string' ? base.data : JSON.stringify(base.data)]
         });
         if ((res.rowsAffected ?? 0) === 0) {
           throw new Error(`Restore aborted: ${row.id} changed since the expected base was read. NOTHING was written - re-inventory and retry.`);
@@ -116,10 +136,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const [url, token, rowsFile, expectFile] = [opt('url'), opt('token'), opt('rows'), opt('expect')];
   const dryRun = args.includes('--dry-run');
   const force = args.includes('--force');
+  const inventoryOnly = args.includes('--inventory');
   if (!url || !rowsFile || (!dryRun && !token)) {
-    console.error('Usage: node db/protected-restore.mjs --url <turso-url> --token <token> --rows <file.json> [--expect <file.json>] [--force] [--dry-run]');
-    console.error('  --expect: JSON map { id: updated_at } from a FRESH inventory of the current database.');
-    console.error('  --force : unconditional restore over unknown current state (deliberate override; still atomic + verified).');
+    console.error('Usage: node db/protected-restore.mjs --url <turso-url> --token <token> --rows <file.json> [--inventory] [--expect <file.json>] [--force] [--dry-run]');
+    console.error('  --inventory: print the current-state inventory for the ids in --rows (write it to a file for --expect).');
+    console.error('  --expect   : inventory array [{ id, data, updated_at }] from a FRESH --inventory of the current database.');
+    console.error('  --force    : unconditional restore over unknown current state (deliberate override; still atomic + verified).');
     process.exit(2);
   }
   const rows = JSON.parse(fs.readFileSync(rowsFile, 'utf8'));
@@ -127,9 +149,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error('Rows file must be a non-empty JSON array of { id, data, updated_at }.');
     process.exit(2);
   }
-  const expected = expectFile ? JSON.parse(fs.readFileSync(expectFile, 'utf8')) : {};
+  const client0 = createClient({ url, authToken: token || 'dry-run' });
+  if (inventoryOnly) {
+    console.log(JSON.stringify(await inventoryRows(client0, rows.map((r) => r.id)), null, 2));
+    process.exit(0);
+  }
+  const expectedList = expectFile ? JSON.parse(fs.readFileSync(expectFile, 'utf8')) : [];
+  const expected = Object.fromEntries((Array.isArray(expectedList) ? expectedList : []).map((r) => [r.id, r]));
   if (force) console.error('FORCE restore: unconditional upserts over current state (atomic, verified).');
-  const client = createClient({ url, authToken: token || 'dry-run' });
+  const client = client0;
   try {
     const result = await restoreRows(client, rows, { dryRun, expected, force });
     console.log(JSON.stringify(result, null, 2));
