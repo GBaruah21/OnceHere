@@ -237,3 +237,161 @@ describe('protected rollback + restore under the rowVersion barrier', () => {
     expect(triggers.rows.map((r) => r.name)).toEqual(['rv_guard_delete', 'rv_guard_insert', 'rv_guard_update']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Merge restore: the launch recovery condition. A reversal must restore the
+// backup content WITHOUT erasing data that arrived after the backup (new
+// entries, new archives, logs, sessions) and without interrupting operation.
+// ---------------------------------------------------------------------------
+describe('merge restore preserves intervening data (launch recovery condition)', () => {
+  const MDB = '/tmp/merge-restore-test.db';
+  let mraw: ReturnType<typeof createClient>;
+  const INDEX = 'tenant-index';
+
+  const minArchive = (id: string) => ({
+    id, slug: id, workspaceSlug: `ws-${id}`,
+    title: `Archive ${id}`, subtitle: 'backup subtitle',
+    visibility: 'public', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  } as never);
+
+  const wallPost = (id: string, archiveId: string) => ({
+    id, archiveId, authorName: 'Tester', text: `note ${id}`, cardStyle: 'polaroid',
+    isPinned: false, isApproved: true, likesCount: 0, createdAt: new Date().toISOString()
+  } as never);
+
+  const decodeTenant = async (rowId: string) => {
+    const row = (await mraw.execute({ sql: 'SELECT data FROM oncehere_state WHERE id = ?', args: [rowId] })).rows[0];
+    const env = JSON.parse(String(row.data));
+    return decodeSnapshot(env.chunks, env.sha256, env.compression) as Record<string, unknown>;
+  };
+
+  beforeAll(async () => {
+    for (const suffix of ['', '-wal', '-shm']) fs.rmSync(MDB + suffix, { force: true });
+    process.env.TURSO_DATABASE_URL = `file:${MDB}`;
+    mraw = createClient({ url: `file:${MDB}`, authToken: 'test-token' });
+    await mraw.execute('CREATE TABLE IF NOT EXISTS oncehere_state (id TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL, updated_at TEXT NOT NULL)');
+    for (const stmt of barrierStatements()) await mraw.execute(stmt);
+  });
+
+  it('restores backup content while keeping post-backup entries, archives, logs, sessions', async () => {
+    // 1. BACKUP POINT: archive A with 'backup subtitle'
+    const instA = new MemoryDatabase();
+    await instA.ensureLoaded();
+    instA.createArchive(minArchive('arch-merge'));
+    instA.createArchive(minArchive('arch-del'));
+    await instA.persistArchive('arch-merge');
+    await instA.persistArchive('arch-del');
+    const backupRows = await restore.inventoryRows(mraw, ['tenant-arch-merge', 'tenant-arch-del', INDEX]);
+
+    // 2. INTERVENING OPERATION (new instance = the site kept running):
+    const instB = new MemoryDatabase();
+    await instB.ensureLoaded();
+    await instB.ensureArchiveLoaded('arch-merge'); // read the durable base before editing (CAS precondition)
+    await instB.ensureArchiveLoaded('arch-del');
+    instB.updateArchive('arch-merge', { subtitle: 'edited after backup' }, 'owner');
+    instB.addWallPost('arch-merge', wallPost('post-after-backup', 'arch-merge'));
+    instB.createArchive(minArchive('arch-new')); // archive created AFTER the backup
+    instB.deleteArchive('arch-del');           // archive deleted AFTER the backup
+    await instB.persistArchive('arch-merge');
+    await instB.persistArchive('arch-del');
+    await instB.persistArchive('arch-new');
+    // an intervening session, injected at the data layer (fresh rowVersion = barrier-passing writer)
+    {
+      const row = (await mraw.execute({ sql: 'SELECT data FROM oncehere_state WHERE id = ?', args: ['tenant-arch-merge'] })).rows[0];
+      const env = JSON.parse(String(row.data));
+      const snap = decodeSnapshot(env.chunks, env.sha256, env.compression) as Record<string, unknown>;
+      snap.sessions = [['tok-intervening', { token: 'tok-intervening', archiveId: 'arch-merge', createdAt: new Date().toISOString() }]];
+      const enc = encodeSnapshot(snap);
+      await mraw.execute({
+        sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ?',
+        args: [JSON.stringify({ format: 1, ...enc, rowVersion: freshVersion() }), new Date().toISOString(), 'tenant-arch-merge']
+      });
+    }
+
+    // 3. INVENTORY + MERGE + APPLY (operator flow: inventory -> merge -> conditional apply)
+    const inv = await restore.inventoryRows(mraw, ['tenant-arch-merge', 'tenant-arch-del', INDEX]);
+    const merged = restore.buildMergedRestoreRows(backupRows, inv);
+    expect(merged.rows.map((r: { id: string }) => r.id).sort()).toEqual(['tenant-arch-del', 'tenant-arch-merge', 'tenant-index'].sort());
+    // Every merge decision is surfaced in the audit report - nothing is chosen silently.
+    expect(merged.report).toContain('preserved-new wallPosts/post-after-backup (created after backup)');
+    expect(merged.report).toContain('preserved-new index/arch-new (archive created after backup)');
+    expect(merged.report).toContain('preserved-deletion archive (deleted after backup; not resurrected)');
+    expect(merged.report).toContain('preserved-deletion index/arch-del (deleted after backup; not resurrected)');
+    expect(merged.report.some((line: string) => line.startsWith('reverted archive settings'))).toBe(true);
+    const applied = await restore.restoreMergedRows(mraw, merged, inv);
+    expect(applied.restored.length).toBe(3);
+
+    // 4. VERIFY with a fresh instance (continued operation reads the merged state)
+    const instC = new MemoryDatabase();
+    await instC.ensureLoaded();
+    await instC.ensureArchiveLoaded('arch-merge'); // tenant content loads lazily
+    const arch = instC.findById('arch-merge') as { subtitle?: string } | undefined;
+    expect(arch?.subtitle).toBe('backup subtitle');                    // reversal worked
+    expect(instC.getWallPosts('arch-merge').map(p => p.id)).toContain('post-after-backup'); // new entry preserved
+    expect(instC.findById('arch-new')).toBeTruthy();                   // new archive preserved
+    expect(instC.findById('arch-del')).toBeUndefined(); // deleted archives stay hidden from listings
+    const idxRow = JSON.parse(String((await mraw.execute({ sql: 'SELECT data FROM oncehere_state WHERE id = ?', args: [INDEX] })).rows[0].data));
+    const delEntry = (idxRow.archives as [string, { deletedAt?: string }][]).find(([entryId]) => entryId === 'arch-del');
+    expect(delEntry?.[1].deletedAt).toBeTruthy(); // tombstone preserved, NOT resurrected by the reversal
+    const revisions = (instC as unknown as { revisions: Map<string, { id: string; summary: string }[]> }).revisions.get('arch-merge') || [];
+    const summaries = revisions.map(r => r.summary);
+    expect(summaries).toContain('Archive workspace initialized');      // backup-era history kept
+    expect(summaries).toContain('Updated archive settings & details'); // intervening history kept (union, never shrunk)
+    const snapC = await decodeTenant('tenant-arch-merge');
+    expect(JSON.stringify(snapC.sessions)).toContain('tok-intervening'); // session preserved (nobody logged out)
+  });
+
+  it('aborts the whole merge when any row changed after inventory (nothing half-restored)', async () => {
+    const backupRows = await restore.inventoryRows(mraw, ['tenant-arch-merge', INDEX]);
+    const inv = await restore.inventoryRows(mraw, ['tenant-arch-merge', INDEX]);
+    // concurrent writer lands between inventory and restore (barrier-passing shape)
+    const row = (await mraw.execute({ sql: 'SELECT data FROM oncehere_state WHERE id = ?', args: ['tenant-arch-merge'] })).rows[0];
+    const env = JSON.parse(String(row.data));
+    const snap = decodeSnapshot(env.chunks, env.sha256, env.compression) as Record<string, unknown>;
+    (snap.archive as Record<string, unknown>).subtitle = 'concurrent winner';
+    const enc = encodeSnapshot(snap);
+    await mraw.execute({
+      sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ?',
+      args: [JSON.stringify({ format: 1, ...enc, rowVersion: freshVersion() }), new Date().toISOString(), 'tenant-arch-merge']
+    });
+    const merged = restore.buildMergedRestoreRows(backupRows, inv);
+    await expect(restore.restoreMergedRows(mraw, merged, inv)).rejects.toThrow(/changed since inventory/);
+    const instD = new MemoryDatabase();
+    await instD.ensureLoaded();
+    await instD.ensureArchiveLoaded('arch-merge'); // the concurrent winner lives in the tenant row
+    expect((instD.findById('arch-merge') as { subtitle?: string })?.subtitle).toBe('concurrent winner');
+  });
+
+  it('hard removal is impossible under the barrier, and a missing row restores via row-absent', async () => {
+    const instE = new MemoryDatabase();
+    await instE.ensureLoaded();
+    instE.createArchive(minArchive('arch-gone'));
+    await instE.persistArchive('arch-gone');
+    const goneBackup = await restore.inventoryRows(mraw, ['tenant-arch-gone']);
+    // The barrier REJECTS deleting a stamped row: an intervening hard removal
+    // cannot happen while the guards stand (so merge never needs to guess).
+    await expect(mraw.execute({ sql: 'DELETE FROM oncehere_state WHERE id = ?', args: ['tenant-arch-gone'] }))
+      .rejects.toThrow(/rowVersion barrier/);
+    // The row-absent path (row missing from inventory: pre-barrier or external
+    // removal) restores the backup content merged against nothing. Simulated
+    // with a never-persisted id reusing arch-gone's backup envelope.
+    const missingBackup = goneBackup.map((r: { id: string; data: unknown; updated_at: string }) => ({ ...r, id: 'tenant-arch-missing' }));
+    const merged = restore.buildMergedRestoreRows(missingBackup, []);
+    expect(merged.rows[0].precondition).toBe('row-absent');
+    await restore.restoreMergedRows(mraw, merged, []);
+    const rowBack = (await mraw.execute({ sql: 'SELECT data FROM oncehere_state WHERE id = ?', args: ['tenant-arch-missing'] })).rows[0];
+    expect(rowBack).toBeTruthy();
+    const instF = new MemoryDatabase();
+    await instF.ensureLoaded();
+    expect(instF.findById('arch-gone')).toBeTruthy(); // the blocked DELETE never landed
+  });
+
+  it('refuses to merge a legacy (format 0) index row with a clear error', async () => {
+    const legacyIndex = JSON.stringify({ format: 0, archives: [['legacy-one', { id: 'legacy-one' }]], rowVersion: freshVersion() });
+    const currentIndex = JSON.stringify({ format: 0, archives: [['legacy-one', { id: 'legacy-one' }], ['new-one', { id: 'new-one' }]], rowVersion: freshVersion() });
+    expect(() => restore.buildMergedRestoreRows(
+      [{ id: INDEX, data: JSON.parse(legacyIndex), updated_at: 'x' }],
+      [{ id: INDEX, data: currentIndex, updated_at: 'y' }]
+    )).toThrow(/platform index envelopes only/);
+  });
+});

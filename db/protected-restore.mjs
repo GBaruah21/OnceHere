@@ -22,10 +22,27 @@
 //   - never issues DELETE, DROP, or writes to ids outside the rows file
 
 import { createClient } from '@libsql/client';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import fs from 'node:fs';
 
 export const mintRowVersion = () => `${new Date().toISOString()}#${randomUUID()}`;
+
+
+const INDEX_ROW_ID = 'tenant-index';
+function gunzip(chunks) {
+  return gunzipSync(Buffer.from(chunks.map(c => String(c)).join(''), 'base64')).toString('utf8');
+}
+function makeTenantEnvelope(snapshot) {
+  const json = JSON.stringify(snapshot);
+  return {
+    format: 1,
+    chunks: [gzipSync(Buffer.from(json, 'utf8')).toString('base64')],
+    compression: 'gzip',
+    sha256: createHash('sha256').update(json).digest('hex'),
+    rowVersion: mintRowVersion()
+  };
+}
 
 // Build the row to write for one restore entry: identical content, FRESH
 // version markers. Minting per call means a repeated restore of the same
@@ -165,4 +182,248 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error(`Restore stopped: ${error.message}`);
     process.exit(1);
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Entry-level MERGE mode (reversal that preserves intervening data).
+//
+// The user's recovery condition: a reversal must not erase data that arrived
+// AFTER the backup point, and operation must continue. Whole-row replacement
+// violates that (new entries added after the backup live inside the current
+// row). Merge mode therefore restores the backup CONTENT for entities that
+// existed at backup time while KEEPING:
+//   - entities whose id is absent from the backup (post-backup additions),
+//   - append-only logs from both backup and current (union; history never shrinks),
+//   - current auth sessions (nobody is logged out; continued operation),
+//   - a current archive.deletedAt marker (a deletion after the backup stays deleted;
+//     restoring content does not silently resurrect the listing).
+// Entities present only in the backup are restored (a hard removal after the
+// backup is reversed). Deletions use hard removal in OnceHere's data model, so
+// there is no tombstone to preserve per-entity.
+//
+// EXACT MERGE POLICY (audited per entity - nothing is chosen silently):
+//   - Entity in BOTH backup and current (same id), content differs: the BACKUP
+//     version is restored. This is the reversal itself: a post-backup EDIT to a
+//     pre-existing entry is reverted. Reported as 'reverted'.
+//   - Entity ONLY in current (new id): PRESERVED untouched. Reported as
+//     'preserved-new'. This is the user's condition: no new entries are lost.
+//   - Entity ONLY in backup: restored. Reported as 'restored-removed'.
+//   - Archive deleted after the backup: deletion STICKS (tenant + index).
+//     Reported as 'preserved-deletion'. A restore never resurrects a listing.
+//   - Append-only logs: union of both sides. Sessions: current kept.
+//   - platformSettings: backup version (reversal); stated, not hidden.
+// buildMergedRestoreRows returns a per-row report of every decision so the
+// operator reviews EXACTLY what changes before anything is applied. Merge mode
+// is a recovery TOOL; it executes only when deliberately invoked - it neither
+// runs automatically nor authorizes any restore by itself.
+// Index rows merge per archive entry the same way: backup versions for archives
+// known at backup time, current-only archives (created after the backup) preserved,
+// platform settings from the backup, legacy id list unioned. The current row's
+// storage shape (legacy array vs platform envelope) is preserved.
+// The merged rows flow through the SAME atomic conditional transaction:
+// preconditions are the CURRENT rows, so any concurrent change aborts the write
+// and nothing is applied. Re-inventory and retry merges against fresher state.
+// ---------------------------------------------------------------------------
+
+const ENTITY_COLLECTIONS = ['sections', 'timelineEvents', 'members', 'memberMessages', 'mediaItems', 'albums', 'wallPosts'];
+const LOG_COLLECTIONS = ['revisions', 'accessLogs', 'shareActivity'];
+
+function mergeEntityCollection(backupList, currentList, report, collectionName) {
+  const bList = Array.isArray(backupList) ? backupList : [];
+  const cList = Array.isArray(currentList) ? currentList : [];
+  const backupById = new Map(bList.map(e => [e && e.id, e]));
+  const currentById = new Map(cList.map(e => [e && e.id, e]));
+  const merged = bList.slice();
+  for (const e of bList) {
+    const cur = e && currentById.get(e.id);
+    if (cur && JSON.stringify(cur) !== JSON.stringify(e)) report.push(`reverted ${collectionName}/${e.id} (post-backup edit undone)`);
+  }
+  for (const e of cList) {
+    if (e && e.id !== undefined && !backupById.has(e.id)) {
+      merged.push(e);
+      report.push(`preserved-new ${collectionName}/${e.id} (created after backup)`);
+    }
+  }
+  return merged;
+}
+
+function mergeLogCollection(backupList, currentList) {
+  const seen = new Set();
+  const merged = [];
+  for (const e of [...(Array.isArray(currentList) ? currentList : []), ...(Array.isArray(backupList) ? backupList : [])]) {
+    const key = e && e.id !== undefined ? e.id : JSON.stringify(e);
+    if (!seen.has(key)) { seen.add(key); merged.push(e); }
+  }
+  return merged;
+}
+
+function decodeCurrentTenantSnapshot(content) {
+  if (typeof content !== 'object' || !content) return undefined;
+  if (content.format === 1 && Array.isArray(content.chunks)) {
+    try { return JSON.parse(gunzip(content.chunks)); } catch { return undefined; }
+  }
+  if (content.format === 0 && Array.isArray(content.archives) && content.archives[0]) return content.archives[0].snapshot;
+  return undefined;
+}
+
+function mergeTenantSnapshot(backupSnapshot, currentSnapshot, report) {
+  if (!currentSnapshot || typeof currentSnapshot !== 'object') {
+    report.push('restored-removed whole snapshot (row absent at merge time)');
+    return backupSnapshot;
+  }
+  const merged = { ...backupSnapshot };
+  merged.archive = {
+    ...(backupSnapshot.archive || {}),
+    createdAt: (currentSnapshot.archive && currentSnapshot.archive.createdAt) || (backupSnapshot.archive || {}).createdAt,
+    deletedAt: (currentSnapshot.archive && currentSnapshot.archive.deletedAt) || (backupSnapshot.archive || {}).deletedAt,
+  };
+  if (merged.archive.deletedAt === undefined) delete merged.archive.deletedAt;
+  else if ((currentSnapshot.archive || {}).deletedAt && !(backupSnapshot.archive || {}).deletedAt) {
+    report.push('preserved-deletion archive (deleted after backup; not resurrected)');
+  }
+  if (JSON.stringify({ ...(backupSnapshot.archive || {}), deletedAt: undefined, createdAt: undefined })
+      !== JSON.stringify({ ...(currentSnapshot.archive || {}), deletedAt: undefined, createdAt: undefined })) {
+    report.push('reverted archive settings/content fields to backup (post-backup edits undone)');
+  }
+  for (const key of ENTITY_COLLECTIONS) merged[key] = mergeEntityCollection(backupSnapshot[key], currentSnapshot[key], report, key);
+  for (const key of LOG_COLLECTIONS) merged[key] = mergeLogCollection(backupSnapshot[key], currentSnapshot[key]);
+  if (currentSnapshot.sessions !== undefined) merged.sessions = currentSnapshot.sessions; // auth state stays current
+  return merged;
+}
+
+function mergeIndexData(backupData, currentData, report) {
+  if (!currentData || typeof currentData !== 'object') return { merged: backupData, legacy: false };
+  const bLegacy = backupData && backupData.format === 0;
+  const cLegacy = currentData.format === 0;
+  if (bLegacy || cLegacy) {
+    // Legacy full-snapshot index rows carry per-archive-id entity maps and
+    // sessions; merging those entry-by-entry belongs to the migration path.
+    throw new Error('merge mode supports platform index envelopes only (format 1); migrate or decode legacy rows first');
+  }
+  const pairs = d => (Array.isArray(d.archives) ? d.archives : []); // [id, archive] tuples
+  const bPairs = pairs(backupData), cPairs = pairs(currentData);
+  const bIds = new Set(bPairs.map(p => p[0]));
+  const cById = new Map(cPairs.map(p => [p[0], p]));
+  // Backup versions for archives known at backup time (the reversal), EXCEPT a
+  // deletion that happened after the backup stays deleted in the listing too
+  // (matches the tenant-row rule: a restore must not silently resurrect).
+  const mergedPairs = bPairs.map(p => {
+    const cur = cById.get(p[0]);
+    if (cur && cur[1] && cur[1].deletedAt && !(p[1] && p[1].deletedAt)) {
+      if (report) report.push(`preserved-deletion index/${p[0]} (deleted after backup; not resurrected)`);
+      return cur;
+    }
+    if (cur && JSON.stringify(cur[1]) !== JSON.stringify(p[1]) && report) report.push(`reverted index/${p[0]} listing entry to backup`);
+    return p;
+  });
+  for (const p of cPairs) if (!bIds.has(p[0])) {
+    mergedPairs.push(p); // archives created after backup preserved
+    if (report) report.push(`preserved-new index/${p[0]} (archive created after backup)`);
+  }
+  const legacyIds = new Set([...(backupData.legacyArchiveIds || []), ...(currentData.legacyArchiveIds || [])]);
+  const content = {
+    format: 1,
+    archives: mergedPairs,
+    legacyArchiveIds: [...legacyIds],
+    platformSettings: backupData.platformSettings !== undefined ? backupData.platformSettings : currentData.platformSettings,
+  };
+  return {
+    merged: {
+      ...content,
+      sha256: createHash('sha256').update(canonicalJson(content)).digest('hex'),
+      rowVersion: mintRowVersion(),
+    },
+    legacy: false
+  };
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  const entries = Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return '{' + entries.map(([k, v]) => JSON.stringify(k) + ':' + canonicalJson(v)).join(',') + '}';
+}
+
+// Build merged restore rows from a rows file's rows + current inventory
+// ([{id, data(raw string), updated_at}]). Returns {rows, skipped, notes}:
+// rows carry {id, content(JSON string), precondition:'content-match'|'row-absent'};
+// skipped lists ids whose merged content already equals current (no write needed).
+export function buildMergedRestoreRows(sourceRows, inventory) {
+  const currentById = new Map(inventory.map(r => [r.id, r]));
+  const rows = [];
+  const skipped = [];
+  const notes = [];
+  const report = [];
+  for (const src of sourceRows) {
+    if (!src || typeof src.id !== 'string' || src.data === undefined) throw new Error('Each merge row needs { id: string, data: object|string }.');
+    const srcContent = typeof src.data === 'string' ? src.data : JSON.stringify(src.data);
+    const current = currentById.get(src.id);
+    let mergedContent;
+    if (src.id === INDEX_ROW_ID) {
+      let backupData;
+      try { backupData = JSON.parse(srcContent); } catch { throw new Error('merged index row content is not valid JSON'); }
+      const currentData = current ? (() => { try { return JSON.parse(typeof current.data === 'string' ? current.data : JSON.stringify(current.data)); } catch { return undefined; } })() : undefined;
+      mergedContent = JSON.stringify(mergeIndexData(backupData, currentData, report).merged);
+    } else {
+      let backupData;
+      try { backupData = JSON.parse(srcContent); } catch { throw new Error('merged tenant row content is not valid JSON'); }
+      if (backupData && backupData.format === 0 && Array.isArray(backupData.archives)) throw new Error('cannot merge a multi-archive legacy tenant row');
+      const backupSnapshot = (backupData && backupData.format === 1 && Array.isArray(backupData.chunks))
+        ? JSON.parse(gunzip(backupData.chunks))
+        : undefined;
+      if (!backupSnapshot) throw new Error(`cannot decode backup snapshot for ${src.id}`);
+      const currentSnapshot = current ? decodeCurrentTenantSnapshot((() => { try { return JSON.parse(typeof current.data === 'string' ? current.data : JSON.stringify(current.data)); } catch { return undefined; } })()) : undefined;
+      const mergedSnapshot = mergeTenantSnapshot(backupSnapshot, currentSnapshot, report);
+      mergedContent = JSON.stringify(makeTenantEnvelope(mergedSnapshot));
+    }
+    const currentRaw = current ? (typeof current.data === 'string' ? current.data : JSON.stringify(current.data)) : undefined;
+    if (current && currentRaw === mergedContent) { skipped.push(src.id); continue; }
+    rows.push({
+      id: src.id,
+      content: mergedContent,
+      precondition: current ? 'content-match' : 'row-absent',
+      expectedContent: currentRaw,
+      updatedAt: new Date().toISOString(),
+    });
+    notes.push(`${src.id}: merged against ${current ? 'current row' : 'absent row (restore creates it)'}`);
+  }
+  return { rows, skipped, notes, report };
+}
+
+
+// Apply merged rows atomically with the same fail-closed guarantees as
+// restoreRows: ONE transaction, content-matched preconditions taken from the
+// CURRENT inventory (not from the backup), abort-on-first-mismatch with full
+// rollback, and post-commit re-read verification of every written row.
+export async function restoreMergedRows(client, merged, inventory, { dryRun = false } = {}) {
+  const currentById = new Map(inventory.map(r => [r.id, r]));
+  if (dryRun) return { dryRun: true, planned: merged.rows.map(r => ({ id: r.id, precondition: r.precondition })), skipped: merged.skipped };
+  const tx = await client.transaction('write');
+  const done = [];
+  try {
+    for (const row of merged.rows) {
+      const cur = currentById.get(row.id);
+      if (row.precondition === 'content-match') {
+        const res = await tx.execute({
+          sql: 'UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ? AND data = ?',
+          args: [row.content, row.updatedAt, row.id, cur.updated_at, typeof cur.data === 'string' ? cur.data : JSON.stringify(cur.data)]
+        });
+        if ((res.rowsAffected ?? 0) === 0) throw new Error(`Merge restore aborted: ${row.id} changed since inventory. NOTHING was written - re-inventory and re-merge.`);
+      } else {
+        const res = await tx.execute({ sql: 'INSERT OR IGNORE INTO oncehere_state (id, data, updated_at) VALUES (?, ?, ?)', args: [row.id, row.content, row.updatedAt] });
+        if ((res.rowsAffected ?? 0) === 0) throw new Error(`Merge restore aborted: ${row.id} appeared after inventory. NOTHING was written - re-inventory and re-merge.`);
+      }
+      done.push(row.id);
+    }
+    await tx.commit();
+  } catch (error) {
+    await tx.rollback().catch(() => undefined);
+    throw error;
+  }
+  for (const row of merged.rows) {
+    const stored = (await client.execute({ sql: 'SELECT data FROM oncehere_state WHERE id = ?', args: [row.id] })).rows[0];
+    if (!stored || String(stored.data) !== row.content) throw new Error(`Post-merge verification failed for ${row.id}: stored content does not match the merged row.`);
+  }
+  return { restored: done, skipped: merged.skipped };
 }
