@@ -174,7 +174,13 @@ export class MemoryDatabase {
   private schemaReady?: Promise<void>;
   // Freshness tracking so a warm serverless instance notices changes saved by another instance.
   private tenantStoredAt = new Map<string, string>(); // archiveId -> updated_at we last loaded or wrote
+  // Content hash (envelope sha256) of the same durable copy. updated_at alone
+  // cannot order two pre-barrier writers: old code stamps a bare ISO string,
+  // so an old in-flight write can carry the SAME updated_at with CHANGED
+  // content (same-millisecond stamps). The CAS must compare content, not time.
+  private tenantStoredHash = new Map<string, string>(); // archiveId -> envelope sha256
   private indexVersionToken?: string;
+  private indexStoredHash?: string; // envelope sha256 of the index row we last loaded or wrote
   private tenantCheckedAt = new Map<string, number>();
   private indexCheckedAt = 0;
 
@@ -253,11 +259,17 @@ export class MemoryDatabase {
   }
 
   private tenantIndexSnapshot(): Record<string, unknown> {
-    return {
+    const content = {
       format: TENANT_INDEX_FORMAT,
       archives: Array.from(this.archives.entries()),
       legacyArchiveIds: Array.from(this.legacyArchiveIds),
-      platformSettings: this.platformSettings,
+      platformSettings: this.platformSettings
+    };
+    return {
+      ...content,
+      // Content fingerprint for the durable CAS (same role as the tenant
+      // envelope's sha256): updated_at cannot order pre-barrier writers.
+      sha256: createHash('sha256').update(canonicalJson(content)).digest('hex'),
       // Same barrier contract as the tenant rows: the index is shared by all
       // archives, so a stale writer must not revert it either.
       rowVersion: newVersionToken()
@@ -414,6 +426,7 @@ export class MemoryDatabase {
       const indexRow = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
       if (indexRow?.data && this.restoreTenantIndex(indexRow.data)) {
         if (indexRow.updatedAt) this.indexVersionToken = indexRow.updatedAt;
+        this.indexStoredHash = typeof indexRow.data.sha256 === 'string' ? indexRow.data.sha256 : undefined;
         this.loadedFromStorage = true;
         return;
       }
@@ -461,7 +474,10 @@ export class MemoryDatabase {
         stored.sha256,
         stored.compression === 'gzip' ? 'gzip' : undefined
       ));
-      if (row.updatedAt) this.tenantStoredAt.set(archiveId, row.updatedAt);
+      if (row.updatedAt) {
+        this.tenantStoredAt.set(archiveId, row.updatedAt);
+        this.tenantStoredHash.set(archiveId, stored.sha256 as string);
+      }
     })();
     this.tenantLoading.set(archiveId, loading);
     try {
@@ -510,7 +526,10 @@ export class MemoryDatabase {
         stored.sha256,
         stored.compression === 'gzip' ? 'gzip' : undefined
       ));
-      if (row.updatedAt) this.tenantStoredAt.set(archiveId, row.updatedAt);
+      if (row.updatedAt) {
+        this.tenantStoredAt.set(archiveId, row.updatedAt);
+        this.tenantStoredHash.set(archiveId, stored.sha256 as string);
+      }
     } catch (error) {
       console.error('Archive freshness check failed; serving the in-memory copy.', error);
     }
@@ -531,6 +550,7 @@ export class MemoryDatabase {
       const indexRow = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
       const index = indexRow?.data;
       if (indexRow?.updatedAt) this.indexVersionToken = indexRow.updatedAt;
+      if (indexRow?.data && typeof indexRow.data.sha256 === 'string') this.indexStoredHash = indexRow.data.sha256;
       if (!index || index.format !== TENANT_INDEX_FORMAT || !Array.isArray(index.archives)) return 0;
       let added = 0;
       for (const [id, archive] of index.archives as [string, Archive][]) {
@@ -568,7 +588,10 @@ export class MemoryDatabase {
         stored.sha256,
         stored.compression === 'gzip' ? 'gzip' : undefined
       ));
-      if (row.updatedAt) this.tenantStoredAt.set(archiveId, row.updatedAt);
+      if (row.updatedAt) {
+        this.tenantStoredAt.set(archiveId, row.updatedAt);
+        this.tenantStoredHash.set(archiveId, stored.sha256 as string);
+      }
       if (this.archives.has(archiveId)) this.loadedTenantIds.add(archiveId);
       return this.archives.has(archiveId);
     } catch (error) {
@@ -700,6 +723,7 @@ export class MemoryDatabase {
     const row = this.tenantStorageRow(archiveId);
     await this.upsertRows(config, [row]);
     this.tenantStoredAt.set(archiveId, row.updated_at);
+    this.tenantStoredHash.set(archiveId, row.data.sha256 as string);
     this.loadedTenantIds.add(archiveId);
   }
 
@@ -718,9 +742,10 @@ export class MemoryDatabase {
   private async writeTenantIndexGuarded(config: { url: string; authToken: string }): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const row = this.tenantIndexRow();
-      const wrote = await this.conditionalTenantWrite(config, row, this.indexVersionToken);
+      const wrote = await this.conditionalTenantWrite(config, row, this.indexVersionToken, this.indexStoredHash);
       if (wrote) {
         this.indexVersionToken = row.updated_at;
+        this.indexStoredHash = row.data.sha256 as string;
         return;
       }
       const winner = (await this.fetchRows(config, [TENANT_INDEX_ID]))[0];
@@ -735,6 +760,7 @@ export class MemoryDatabase {
           }
         }
         this.indexVersionToken = winner.updatedAt;
+        this.indexStoredHash = typeof data.sha256 === 'string' ? data.sha256 : undefined;
       } else {
         // No readable winner: do not guess; fail honestly.
         break;
@@ -796,7 +822,8 @@ export class MemoryDatabase {
   private async conditionalTenantWrite(
     config: { url: string; authToken: string },
     row: { id: string; data: Record<string, unknown>; updated_at: string },
-    expectedUpdatedAt: string | undefined
+    expectedUpdatedAt: string | undefined,
+    expectedHash?: string
   ): Promise<boolean> {
     await this.ensureStorageSchema(config);
     const client = this.storageClient(config);
@@ -804,6 +831,17 @@ export class MemoryDatabase {
       const result = await client.execute({
         sql: 'INSERT OR IGNORE INTO oncehere_state (id, data, updated_at) VALUES (?, ?, ?)',
         args: [row.id, JSON.stringify(row.data), row.updated_at]
+      });
+      return (result.rowsAffected ?? 0) > 0;
+    }
+    if (expectedHash !== undefined) {
+      // Content-guarded CAS: the durable copy must be the exact one this write
+      // is based on. A pre-barrier writer stamps bare-ISO updated_at, so a
+      // same-millisecond overwrite can carry an unchanged updated_at with
+      // changed content - token equality alone would wave it through.
+      const result = await client.execute({
+        sql: `UPDATE oncehere_state SET data = ?, updated_at = ? WHERE id = ? AND updated_at = ? AND json_extract(data, '$.sha256') = ?`,
+        args: [JSON.stringify(row.data), row.updated_at, row.id, expectedUpdatedAt, expectedHash]
       });
       return (result.rowsAffected ?? 0) > 0;
     }
@@ -829,7 +867,10 @@ export class MemoryDatabase {
           stored.sha256,
           stored.compression === 'gzip' ? 'gzip' : undefined
         ));
-        if (row.updatedAt) this.tenantStoredAt.set(archiveId, row.updatedAt);
+        if (row.updatedAt) {
+          this.tenantStoredAt.set(archiveId, row.updatedAt);
+          this.tenantStoredHash.set(archiveId, stored.sha256 as string);
+        }
       }
       this.loadedTenantIds.add(archiveId);
     } catch (error) {
@@ -851,6 +892,16 @@ export class MemoryDatabase {
           // must NOT be silently overwritten - reload the winner and reject so the
           // caller can surface an honest conflict instead of a lost update.
           const expected = this.tenantStoredAt.get(archiveId);
+          const expectedHash = this.tenantStoredHash.get(archiveId);
+          // Token without content hash is an internal inconsistency (every
+          // recorded read/write sets both): refuse rather than weaken the CAS.
+          if (expected !== undefined && expectedHash === undefined) {
+            await this.reloadTenantFromStorage(config, archiveId);
+            const inconsistency = new TenantConflictError(archiveId);
+            const queued0 = this.tenantPending.get(archiveId)?.splice(0) || [];
+            queued0.forEach(({ reject }) => reject(inconsistency));
+            throw inconsistency;
+          }
           // Test-only seam (ONCEHERE_TEST_PERSIST_BARRIER_DIR is never set in
           // production): lets a two-process test hold this instance inside the
           // refresh->write race window while another instance writes.
@@ -865,7 +916,7 @@ export class MemoryDatabase {
               await new Promise((resolve) => setTimeout(resolve, 50));
             }
           }
-          const wrote = await this.conditionalTenantWrite(config, tenantRow, expected);
+          const wrote = await this.conditionalTenantWrite(config, tenantRow, expected, expectedHash);
           if (!wrote) {
             await this.reloadTenantFromStorage(config, archiveId);
             // Every still-queued write for this tenant was computed from the
@@ -877,6 +928,7 @@ export class MemoryDatabase {
           }
           await this.writeTenantIndexGuarded(config);
           this.tenantStoredAt.set(archiveId, tenantRow.updated_at);
+          this.tenantStoredHash.set(archiveId, tenantRow.data.sha256 as string);
           this.loadedTenantIds.add(archiveId);
           waiters.forEach(({ resolve }) => resolve());
         } catch (error) {
