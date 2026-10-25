@@ -64,7 +64,7 @@ export const InstagramStoryModal: React.FC<InstagramStoryModalProps> = ({
   // Curated photo collection from archive media + beautiful fallbacks
   const availablePhotos = [
     customPhotoUrl,
-    ...(media.map((m) => m.url).filter(Boolean)),
+    ...(media.map((m) => (m.type === 'video' ? m.thumbnailUrl : m.url)).filter(Boolean)),
     'https://images.unsplash.com/photo-1523240795612-9a054b0db644?auto=format&fit=crop&w=1200&q=80',
     'https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=1200&q=80',
     'https://images.unsplash.com/photo-1511632765486-a01980e01a18?auto=format&fit=crop&w=1200&q=80',
